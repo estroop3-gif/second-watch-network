@@ -82,6 +82,9 @@ export interface SocketEvents {
     user_id: string;
     read_at: string;
   }) => void;
+
+  // Backlot DOOD
+  dood_updated: (data: { project_id: string; sync_type: string }) => void;
 }
 
 export interface SocketContextValue {

@@ -8,6 +8,7 @@
  */
 import React, { useState } from 'react';
 import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -18,12 +19,22 @@ import {
   TrendingUp,
   TrendingDown,
   Minus,
+  ArrowUpDown,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ProjectedScheduleItem, HotSetSceneLog } from '@/types/backlot';
 import { CurrentActivityCard } from './CurrentActivityCard';
 import { ScheduleItemRow } from './ScheduleItemRow';
-import { formatScheduleTime } from '@/hooks/backlot';
+import { ScheduleReorderView } from './ScheduleReorderView';
+import { AddSceneModal } from './AddSceneModal';
+import { AddActivityModal } from './AddActivityModal';
+import { SwapSceneDialog } from './SwapSceneDialog';
+import {
+  formatScheduleTime,
+  useRemoveSceneFromHotSet,
+  useRemoveActivity,
+} from '@/hooks/backlot';
+import { toast } from 'sonner';
 
 interface TabbedScheduleViewProps {
   items: ProjectedScheduleItem[];
@@ -33,6 +44,7 @@ interface TabbedScheduleViewProps {
   isWrapped: boolean;
   canEdit: boolean;
   defaultTab?: 'current' | 'full' | 'completed';
+  sessionId: string;
   // Scene actions
   onStartScene?: (sceneId: string) => void;
   onCompleteScene?: (sceneId: string) => void;
@@ -54,6 +66,11 @@ interface TabbedScheduleViewProps {
   isLoading?: boolean;
   className?: string;
   timezone?: string | null;
+  // Reorder functionality
+  onReorderSchedule?: (items: Array<{ id: string; type: 'scene' | 'block'; duration_minutes?: number }>) => void;
+  isReordering?: boolean;
+  // Callback when schedule is modified (scene/activity added/deleted/swapped)
+  onScheduleModified?: () => void;
 }
 
 export const TabbedScheduleView: React.FC<TabbedScheduleViewProps> = ({
@@ -64,6 +81,7 @@ export const TabbedScheduleView: React.FC<TabbedScheduleViewProps> = ({
   isWrapped,
   canEdit,
   defaultTab = 'current',
+  sessionId,
   onStartScene,
   onCompleteScene,
   onSkipScene,
@@ -82,8 +100,66 @@ export const TabbedScheduleView: React.FC<TabbedScheduleViewProps> = ({
   isLoading,
   className,
   timezone,
+  onReorderSchedule,
+  isReordering,
+  onScheduleModified,
 }) => {
   const [activeTab, setActiveTab] = useState(defaultTab);
+  const [isReorderMode, setIsReorderMode] = useState(false);
+
+  // Modal states
+  const [showAddSceneModal, setShowAddSceneModal] = useState(false);
+  const [showAddActivityModal, setShowAddActivityModal] = useState(false);
+  const [swapSceneData, setSwapSceneData] = useState<HotSetSceneLog | null>(null);
+
+  // Delete mutations
+  const removeSceneMutation = useRemoveSceneFromHotSet();
+  const removeActivityMutation = useRemoveActivity();
+
+  const isDeleting = removeSceneMutation.isPending || removeActivityMutation.isPending;
+
+  // Handle delete scene
+  const handleDeleteScene = async (logId: string, sceneNumber: string) => {
+    try {
+      await removeSceneMutation.mutateAsync({ sessionId, logId });
+      toast.success(`Scene ${sceneNumber} removed from schedule`);
+      onScheduleModified?.();
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to remove scene');
+    }
+  };
+
+  // Handle delete activity
+  const handleDeleteActivity = async (blockId: string, name: string) => {
+    try {
+      await removeActivityMutation.mutateAsync({ sessionId, blockId });
+      toast.success(`${name} removed from schedule`);
+      onScheduleModified?.();
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to remove activity');
+    }
+  };
+
+  // Handle swap scene (open dialog with selected scene)
+  const handleSwapScene = (sceneLog: HotSetSceneLog) => {
+    setSwapSceneData(sceneLog);
+  };
+
+  // Handle modal success callbacks
+  const handleAddSceneSuccess = () => {
+    setShowAddSceneModal(false);
+    onScheduleModified?.();
+  };
+
+  const handleAddActivitySuccess = () => {
+    setShowAddActivityModal(false);
+    onScheduleModified?.();
+  };
+
+  const handleSwapSuccess = () => {
+    setSwapSceneData(null);
+    onScheduleModified?.();
+  };
 
   // Split items by status
   const completedItems = items.filter(i => i.status === 'completed');
@@ -136,29 +212,29 @@ export const TabbedScheduleView: React.FC<TabbedScheduleViewProps> = ({
     <div className={cn('space-y-4', className)}>
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)}>
         <TabsList className="grid w-full grid-cols-3 bg-charcoal-black border border-muted-gray/20">
-          <TabsTrigger value="current" className="relative">
-            <Play className="w-4 h-4 mr-2" />
-            Current
+          <TabsTrigger value="current" className="relative px-1 sm:px-3">
+            <Play className="w-4 h-4 sm:mr-2" />
+            <span className="hidden sm:inline">Current</span>
             {currentItem && (
               <Badge
                 variant="outline"
-                className="ml-2 bg-accent-yellow/20 text-accent-yellow border-accent-yellow/30"
+                className="hidden sm:inline-flex ml-2 bg-accent-yellow/20 text-accent-yellow border-accent-yellow/30"
               >
                 Live
               </Badge>
             )}
           </TabsTrigger>
-          <TabsTrigger value="full">
-            <Calendar className="w-4 h-4 mr-2" />
-            Full Day
-            <Badge variant="outline" className="ml-2 text-xs">
+          <TabsTrigger value="full" className="px-1 sm:px-3">
+            <Calendar className="w-4 h-4 sm:mr-2" />
+            <span className="hidden sm:inline">Full Day</span>
+            <Badge variant="outline" className="ml-1 sm:ml-2 text-xs">
               {completedCount}/{totalItems}
             </Badge>
           </TabsTrigger>
-          <TabsTrigger value="completed">
-            <CheckCircle2 className="w-4 h-4 mr-2" />
-            Completed
-            <Badge variant="outline" className="ml-2 text-xs">
+          <TabsTrigger value="completed" className="px-1 sm:px-3">
+            <CheckCircle2 className="w-4 h-4 sm:mr-2" />
+            <span className="hidden sm:inline">Completed</span>
+            <Badge variant="outline" className="ml-1 sm:ml-2 text-xs">
               {completedCount}
             </Badge>
           </TabsTrigger>
@@ -196,8 +272,16 @@ export const TabbedScheduleView: React.FC<TabbedScheduleViewProps> = ({
           {/* Next Items Preview - Shows chronological progression through day */}
           {upcomingItems.length > 0 && (
             <Card className="bg-soft-black border-muted-gray/20">
-              <div className="px-4 py-3 border-b border-muted-gray/20">
+              <div className="px-4 py-3 border-b border-muted-gray/20 flex items-center justify-between">
                 <h3 className="text-sm font-medium text-bone-white">Coming Up Next</h3>
+                {projectedWrap && (
+                  <div className="flex items-center gap-1 text-muted-gray">
+                    <Clock className="w-3 h-3" />
+                    <span className="text-xs">
+                      Wrap: <span className="text-bone-white font-medium">{formatScheduleTime(projectedWrap, timezone)}</span>
+                    </span>
+                  </div>
+                )}
               </div>
               <div className="p-3 space-y-2">
                 {upcomingItems.map((item, index) => {
@@ -324,65 +408,98 @@ export const TabbedScheduleView: React.FC<TabbedScheduleViewProps> = ({
 
         {/* Tab 2: Full Day Schedule */}
         <TabsContent value="full">
-          <Card className="bg-soft-black border-muted-gray/20">
-            <div className="px-4 py-3 border-b border-muted-gray/20 flex items-center justify-between">
-              <h3 className="text-sm font-medium text-bone-white">Full Day Schedule</h3>
-              <div className="flex items-center gap-3 text-sm">
-                {overallVariance !== 0 && (
-                  <Badge
-                    variant="outline"
-                    className={cn(
-                      'text-xs',
-                      isAhead && 'text-green-400 border-green-500/30',
-                      isBehind && 'text-red-400 border-red-500/30'
-                    )}
-                  >
-                    {isAhead ? '+' : ''}{overallVariance}m
-                  </Badge>
-                )}
-                {projectedWrap && (
-                  <div className="flex items-center gap-1 text-muted-gray">
-                    <Clock className="w-3 h-3" />
-                    <span className="text-xs">
-                      Wrap: {formatScheduleTime(projectedWrap, timezone)}
-                    </span>
-                  </div>
-                )}
+          {isReorderMode ? (
+            <ScheduleReorderView
+              items={items}
+              onSave={(orderedItems) => {
+                if (onReorderSchedule) {
+                  onReorderSchedule(orderedItems);
+                }
+                setIsReorderMode(false);
+              }}
+              onCancel={() => setIsReorderMode(false)}
+              isSaving={isReordering}
+              timezone={timezone}
+              onAddScene={() => setShowAddSceneModal(true)}
+              onAddActivity={() => setShowAddActivityModal(true)}
+              onDeleteScene={handleDeleteScene}
+              onDeleteActivity={handleDeleteActivity}
+              onSwapScene={handleSwapScene}
+              isDeleting={isDeleting}
+            />
+          ) : (
+            <Card className="bg-soft-black border-muted-gray/20 overflow-hidden">
+              <div className="px-3 sm:px-4 py-3 border-b border-muted-gray/20 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-medium text-bone-white">Full Day Schedule</h3>
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-sm">
+                  {/* Reorder button - only show when session is active and not wrapped */}
+                  {isActive && !isWrapped && canEdit && onReorderSchedule && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setIsReorderMode(true)}
+                      className="h-7 text-xs border-muted-gray/30 hover:bg-accent-yellow/10 hover:border-accent-yellow/30 hover:text-accent-yellow"
+                    >
+                      <ArrowUpDown className="w-3 h-3 sm:mr-1" />
+                      <span className="hidden sm:inline">Reorder</span>
+                    </Button>
+                  )}
+                  {overallVariance !== 0 && (
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        'text-xs',
+                        isAhead && 'text-green-400 border-green-500/30',
+                        isBehind && 'text-red-400 border-red-500/30'
+                      )}
+                    >
+                      {isAhead ? '+' : ''}{overallVariance}m
+                    </Badge>
+                  )}
+                  {projectedWrap && (
+                    <div className="flex items-center gap-1 text-muted-gray">
+                      <Clock className="w-3 h-3" />
+                      <span className="text-xs">
+                        Wrap: {formatScheduleTime(projectedWrap, timezone)}
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-            <div className="p-3 space-y-1">
-              {items.map((item, index) => (
-                <ScheduleItemRow
-                  key={item.id || index}
-                  item={item}
-                  canEdit={canEdit}
-                  onStartActivity={onStartActivity}
-                  onCompleteActivity={onCompleteActivity}
-                  onSkipActivity={onSkipActivity}
-                  onStartScene={onStartScene}
-                  onClickScene={onClickScene}
-                  isLoading={isLoading}
-                  showProjectedTimes
-                  timezone={timezone}
-                />
-              ))}
-            </div>
-            {/* Legend */}
-            <div className="px-4 py-2 border-t border-muted-gray/20 flex items-center gap-4 text-xs text-muted-gray">
-              <div className="flex items-center gap-1">
-                <div className="w-2 h-2 rounded-full bg-green-400" />
-                <span>Completed</span>
+              <div className="p-3 space-y-1">
+                {items.map((item, index) => (
+                  <ScheduleItemRow
+                    key={item.id || index}
+                    item={item}
+                    canEdit={canEdit}
+                    onStartActivity={onStartActivity}
+                    onCompleteActivity={onCompleteActivity}
+                    onSkipActivity={onSkipActivity}
+                    onStartScene={onStartScene}
+                    onClickScene={onClickScene}
+                    isLoading={isLoading}
+                    showProjectedTimes
+                    timezone={timezone}
+                  />
+                ))}
               </div>
-              <div className="flex items-center gap-1">
-                <div className="w-2 h-2 rounded-full bg-accent-yellow" />
-                <span>Current</span>
+              {/* Legend */}
+              <div className="px-4 py-2 border-t border-muted-gray/20 flex items-center gap-4 text-xs text-muted-gray">
+                <div className="flex items-center gap-1">
+                  <div className="w-2 h-2 rounded-full bg-green-400" />
+                  <span>Completed</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <div className="w-2 h-2 rounded-full bg-accent-yellow" />
+                  <span>Current</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <div className="w-2 h-2 rounded-full bg-muted-gray/30" />
+                  <span>Pending</span>
+                </div>
               </div>
-              <div className="flex items-center gap-1">
-                <div className="w-2 h-2 rounded-full bg-muted-gray/30" />
-                <span>Pending</span>
-              </div>
-            </div>
-          </Card>
+            </Card>
+          )}
         </TabsContent>
 
         {/* Tab 3: Completed */}
@@ -394,23 +511,23 @@ export const TabbedScheduleView: React.FC<TabbedScheduleViewProps> = ({
 
             {/* Summary Stats */}
             {completedItems.length > 0 && (
-              <div className="px-4 py-3 border-b border-muted-gray/20 grid grid-cols-3 gap-4">
-                <div>
-                  <div className="text-xs text-muted-gray mb-1">Total Completed</div>
-                  <div className="text-xl font-bold text-bone-white">{completedCount}</div>
+              <div className="px-3 sm:px-4 py-3 border-b border-muted-gray/20 grid grid-cols-3 gap-2 sm:gap-4">
+                <div className="min-w-0">
+                  <div className="text-xs text-muted-gray mb-1 truncate">Completed</div>
+                  <div className="text-lg sm:text-xl font-bold text-bone-white">{completedCount}</div>
                 </div>
-                <div>
-                  <div className="text-xs text-muted-gray mb-1">Total Variance</div>
+                <div className="min-w-0">
+                  <div className="text-xs text-muted-gray mb-1 truncate">Variance</div>
                   <div className={cn(
-                    'text-xl font-bold',
+                    'text-lg sm:text-xl font-bold',
                     totalVariance > 0 ? 'text-green-400' : totalVariance < 0 ? 'text-red-400' : 'text-bone-white'
                   )}>
                     {totalVariance > 0 ? '+' : ''}{totalVariance}m
                   </div>
                 </div>
-                <div>
-                  <div className="text-xs text-muted-gray mb-1">Avg per Item</div>
-                  <div className="text-xl font-bold text-bone-white">
+                <div className="min-w-0">
+                  <div className="text-xs text-muted-gray mb-1 truncate">Avg</div>
+                  <div className="text-lg sm:text-xl font-bold text-bone-white">
                     {completedCount > 0 ? Math.round(totalVariance / completedCount) : 0}m
                   </div>
                 </div>
@@ -443,6 +560,33 @@ export const TabbedScheduleView: React.FC<TabbedScheduleViewProps> = ({
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Schedule Modification Modals */}
+      <AddSceneModal
+        open={showAddSceneModal}
+        onOpenChange={setShowAddSceneModal}
+        sessionId={sessionId}
+        scheduleItems={items}
+        onSuccess={handleAddSceneSuccess}
+      />
+
+      <AddActivityModal
+        open={showAddActivityModal}
+        onOpenChange={setShowAddActivityModal}
+        sessionId={sessionId}
+        scheduleItems={items}
+        onSuccess={handleAddActivitySuccess}
+      />
+
+      {swapSceneData && (
+        <SwapSceneDialog
+          open={!!swapSceneData}
+          onOpenChange={(open) => !open && setSwapSceneData(null)}
+          sessionId={sessionId}
+          sceneToSwap={swapSceneData}
+          onSuccess={handleSwapSuccess}
+        />
+      )}
     </div>
   );
 };

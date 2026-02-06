@@ -1,7 +1,7 @@
 /**
  * ClearanceSendModal - Send clearance document to recipients via email
  */
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
@@ -50,12 +50,20 @@ export default function ClearanceSendModal({
   const [sendResult, setSendResult] = useState<{
     sent: number;
     failed: number;
+    errorDetails?: { email: string; error: string }[];
   } | null>(null);
 
   const { recipients, isLoading } = useClearanceRecipients(clearanceId);
   const sendMutation = useSendClearance();
 
   const recipientsWithEmail = recipients.filter(r => r.email);
+
+  // Auto-select all recipients when they load
+  useEffect(() => {
+    if (open && recipientsWithEmail.length > 0 && selectedRecipientIds.length === 0) {
+      setSelectedRecipientIds(recipientsWithEmail.map(r => r.id));
+    }
+  }, [open, recipientsWithEmail.length]);
 
   const handleSelectAll = () => {
     if (selectedRecipientIds.length === recipientsWithEmail.length) {
@@ -92,14 +100,22 @@ export default function ClearanceSendModal({
       setSendResult({
         sent: result.emails_sent,
         failed: result.emails_failed,
+        errorDetails: result.error_details || undefined,
       });
 
       if (result.emails_sent > 0 && result.emails_failed === 0) {
         toast.success(`Document sent to ${result.emails_sent} recipient(s)`);
-      } else if (result.emails_failed > 0) {
+      } else if (result.emails_failed > 0 && result.emails_sent > 0) {
         toast.warning(`${result.emails_sent} sent, ${result.emails_failed} failed`);
+      } else if (result.emails_failed > 0 && result.emails_sent === 0) {
+        toast.error('Failed to send emails. Check error details.');
       }
     } catch (error) {
+      setSendResult({
+        sent: 0,
+        failed: selectedRecipientIds.length,
+        errorDetails: [{ email: '', error: error instanceof Error ? error.message : 'Failed to send' }],
+      });
       toast.error(error instanceof Error ? error.message : 'Failed to send');
     }
   };
@@ -135,7 +151,7 @@ export default function ClearanceSendModal({
 
         {sendResult ? (
           // Results View
-          <div className="py-8 text-center space-y-4">
+          <div className="py-6 text-center space-y-4">
             {sendResult.failed === 0 ? (
               <>
                 <CheckCircle2 className="h-16 w-16 mx-auto text-green-500" />
@@ -150,20 +166,43 @@ export default function ClearanceSendModal({
               </>
             ) : (
               <>
-                <AlertCircle className="h-16 w-16 mx-auto text-yellow-500" />
+                <AlertCircle className="h-16 w-16 mx-auto text-red-500" />
                 <div>
                   <p className="text-lg font-medium text-bone-white">
-                    Partially sent
+                    {sendResult.sent > 0 ? 'Partially sent' : 'Send failed'}
                   </p>
                   <p className="text-muted-foreground">
-                    {sendResult.sent} sent, {sendResult.failed} failed
+                    {sendResult.sent > 0
+                      ? `${sendResult.sent} sent, ${sendResult.failed} failed`
+                      : `Failed to send to ${sendResult.failed} recipient(s)`}
                   </p>
                 </div>
+                {sendResult.errorDetails && sendResult.errorDetails.length > 0 && (
+                  <div className="mt-3 text-left bg-red-500/10 border border-red-500/30 rounded-lg p-3 max-h-[120px] overflow-y-auto">
+                    <p className="text-xs font-medium text-red-400 mb-1">Error details:</p>
+                    {sendResult.errorDetails.map((detail, i) => (
+                      <p key={i} className="text-xs text-red-300/80">
+                        {detail.email ? `${detail.email}: ` : ''}{detail.error}
+                      </p>
+                    ))}
+                  </div>
+                )}
               </>
             )}
-            <Button onClick={handleClose} className="mt-4">
-              Close
-            </Button>
+            <div className="flex items-center justify-center gap-3 mt-4">
+              {sendResult.failed > 0 && (
+                <Button
+                  variant="outline"
+                  onClick={() => setSendResult(null)}
+                  className="border-accent-yellow/50 text-accent-yellow hover:bg-accent-yellow/10"
+                >
+                  Try Again
+                </Button>
+              )}
+              <Button onClick={handleClose}>
+                Close
+              </Button>
+            </div>
           </div>
         ) : (
           // Send Form

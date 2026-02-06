@@ -53,6 +53,7 @@ export function useExternalSeats(projectId: string) {
       return response;
     },
     enabled: !!projectId,
+    staleTime: 30_000,
   });
 }
 

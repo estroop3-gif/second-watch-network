@@ -13,7 +13,7 @@ import mimetypes
 import json
 
 from app.core.database import get_client, execute_query, execute_single
-from app.core.storage import s3_client, BACKLOT_FILES_BUCKET
+from app.core.storage import s3_client, BACKLOT_FILES_BUCKET, BACKLOT_BUCKET
 
 router = APIRouter()
 
@@ -1084,6 +1084,407 @@ async def get_files_by_target(
     """, {"project_id": project_id, "target_type": target_type, "target_id": target_id})
 
     return {"files": files}
+
+
+# =====================================================
+# Get All Tags for Project
+# =====================================================
+
+# =====================================================
+# Unified Files — All Project Files Across Tools
+# =====================================================
+
+SOURCE_LABELS = {
+    'project_files': 'Project Files',
+    'scripts': 'Scripts',
+    'receipts': 'Receipts',
+    'clearances': 'Clearances',
+    'dailies': 'Dailies',
+    'review_versions': 'Review',
+    'standalone_assets': 'Assets',
+    'continuity_exports': 'Continuity',
+    'moodboards': 'Moodboards',
+    'storyboards': 'Storyboards',
+}
+
+
+def _build_unified_query(project_id: str, source: Optional[str], search: Optional[str],
+                         file_type: Optional[str], limit: int, offset: int):
+    """Build UNION ALL query across all file-storing tables."""
+    params = {"project_id": project_id, "limit": limit, "offset": offset}
+
+    subqueries = []
+
+    # 1. project_files
+    subqueries.append("""
+        SELECT id::text, name, 'project_files' AS source, 'Project Files' AS source_label,
+               s3_key AS file_url, size_bytes, mime_type, created_at, id::text AS source_entity_id
+        FROM backlot_project_files
+        WHERE project_id = :project_id AND upload_status != 'DELETED' AND s3_key IS NOT NULL AND s3_key != ''
+    """)
+
+    # 2. scripts (master records + all continuity exports: PDFs, notes, breakdowns, sides)
+    subqueries.append("""
+        SELECT id::text, title AS name, 'scripts' AS source, 'Scripts' AS source_label,
+               file_url, NULL::bigint AS size_bytes, 'application/pdf' AS mime_type,
+               created_at, id::text AS source_entity_id
+        FROM backlot_scripts
+        WHERE project_id = :project_id AND file_url IS NOT NULL AND file_url != ''
+        UNION ALL
+        SELECT id::text, file_name AS name, 'scripts' AS source, 'Scripts' AS source_label,
+               file_url, file_size AS size_bytes, 'application/pdf' AS mime_type,
+               created_at, id::text AS source_entity_id
+        FROM backlot_continuity_exports
+        WHERE project_id = :project_id AND file_url IS NOT NULL AND file_url != ''
+    """)
+
+    # 3. receipts
+    subqueries.append("""
+        SELECT id::text, original_filename AS name, 'receipts' AS source, 'Receipts' AS source_label,
+               file_url, file_size_bytes AS size_bytes, file_type AS mime_type,
+               created_at, id::text AS source_entity_id
+        FROM backlot_receipts
+        WHERE project_id = :project_id AND file_url IS NOT NULL AND file_url != ''
+    """)
+
+    # 4. clearances
+    subqueries.append("""
+        SELECT id::text, file_name AS name, 'clearances' AS source, 'Clearances' AS source_label,
+               file_url, NULL::bigint AS size_bytes, NULL::text AS mime_type,
+               created_at, id::text AS source_entity_id
+        FROM backlot_clearance_items
+        WHERE project_id = :project_id AND file_url IS NOT NULL AND file_url != ''
+    """)
+
+    # 5. dailies
+    subqueries.append("""
+        SELECT id::text, file_name AS name, 'dailies' AS source, 'Dailies' AS source_label,
+               cloud_url AS file_url, file_size_bytes AS size_bytes, 'video/*' AS mime_type,
+               created_at, id::text AS source_entity_id
+        FROM backlot_dailies_clips
+        WHERE project_id = :project_id AND cloud_url IS NOT NULL AND cloud_url != ''
+    """)
+
+    # 6. review_versions (join to review_assets for project_id)
+    subqueries.append("""
+        SELECT rv.id::text, COALESCE(rv.original_filename, ra.name) AS name,
+               'review_versions' AS source, 'Review' AS source_label,
+               COALESCE(rv.s3_key, rv.file_url) AS file_url,
+               rv.file_size_bytes AS size_bytes, NULL::text AS mime_type,
+               rv.created_at, rv.id::text AS source_entity_id
+        FROM backlot_review_versions rv
+        JOIN backlot_review_assets ra ON ra.id = rv.asset_id
+        WHERE ra.project_id = :project_id
+        AND (rv.s3_key IS NOT NULL AND rv.s3_key != '' OR rv.file_url IS NOT NULL AND rv.file_url != '')
+    """)
+
+    # 7. standalone_assets
+    subqueries.append("""
+        SELECT id::text, file_name AS name, 'standalone_assets' AS source, 'Assets' AS source_label,
+               COALESCE(s3_key, source_url) AS file_url, file_size_bytes AS size_bytes,
+               mime_type, created_at, id::text AS source_entity_id
+        FROM backlot_standalone_assets
+        WHERE project_id = :project_id
+        AND (s3_key IS NOT NULL AND s3_key != '' OR source_url IS NOT NULL AND source_url != '')
+    """)
+
+    # 8. continuity_exports — now empty, all records moved to scripts source (#2)
+    # Kept as placeholder to preserve source_indices mapping
+    subqueries.append("""
+        SELECT NULL::text AS id, NULL::text AS name, 'continuity_exports' AS source, 'Continuity' AS source_label,
+               NULL::text AS file_url, NULL::bigint AS size_bytes, NULL::text AS mime_type,
+               NULL::timestamptz AS created_at, NULL::text AS source_entity_id
+        WHERE false
+    """)
+
+    # 9. moodboards
+    subqueries.append("""
+        SELECT id::text, COALESCE(title, 'Moodboard Image') AS name,
+               'moodboards' AS source, 'Moodboards' AS source_label,
+               image_url AS file_url, NULL::bigint AS size_bytes, 'image/*' AS mime_type,
+               created_at, id::text AS source_entity_id
+        FROM moodboard_items
+        WHERE project_id = :project_id AND image_url IS NOT NULL AND image_url != ''
+    """)
+
+    # 10. storyboards (panels via storyboards join)
+    subqueries.append("""
+        SELECT sp.id::text, COALESCE(sp.title, 'Storyboard Panel') AS name,
+               'storyboards' AS source, 'Storyboards' AS source_label,
+               sp.reference_image_url AS file_url, NULL::bigint AS size_bytes,
+               'image/*' AS mime_type, sp.created_at, sp.id::text AS source_entity_id
+        FROM storyboard_panels sp
+        JOIN storyboards sb ON sb.id = sp.storyboard_id
+        WHERE sb.project_id = :project_id
+        AND sp.reference_image_url IS NOT NULL AND sp.reference_image_url != ''
+    """)
+
+    # Apply source filter
+    if source:
+        source_indices = {
+            'project_files': 0, 'scripts': 1, 'receipts': 2, 'clearances': 3,
+            'dailies': 4, 'review_versions': 5, 'standalone_assets': 6,
+            'continuity_exports': 7, 'moodboards': 8, 'storyboards': 9,
+        }
+        idx = source_indices.get(source)
+        if idx is not None:
+            subqueries = [subqueries[idx]]
+
+    union_query = " UNION ALL ".join(subqueries)
+
+    # Wrap with filters, ordering, pagination
+    where_clauses = []
+
+    if search:
+        where_clauses.append("name ILIKE :search")
+        params["search"] = f"%{search}%"
+
+    if file_type:
+        mime_map = {
+            'video': "mime_type LIKE 'video/%'",
+            'image': "mime_type LIKE 'image/%'",
+            'audio': "mime_type LIKE 'audio/%'",
+            'document': "mime_type LIKE 'application/pdf' OR mime_type LIKE 'application/msword' OR mime_type LIKE 'application/vnd.%' OR mime_type LIKE 'text/%'",
+        }
+        mime_filter = mime_map.get(file_type)
+        if mime_filter:
+            where_clauses.append(f"({mime_filter})")
+
+    outer_where = ""
+    if where_clauses:
+        outer_where = "WHERE " + " AND ".join(where_clauses)
+
+    sql = f"""
+        SELECT id, name, source, source_label, file_url, size_bytes, mime_type,
+               created_at, source_entity_id
+        FROM ({union_query}) AS unified
+        {outer_where}
+        ORDER BY created_at DESC
+        LIMIT :limit OFFSET :offset
+    """
+
+    return sql, params
+
+
+@router.get("/projects/{project_id}/files/all")
+async def get_all_project_files(
+    project_id: str,
+    source: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    file_type: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    authorization: str = Header(...)
+):
+    """Get unified view of all files across all project tools."""
+    token = authorization.replace("Bearer ", "")
+    import jwt
+    decoded = jwt.decode(token, options={"verify_signature": False})
+    user_id = decoded.get("sub")
+
+    await verify_project_access(project_id, user_id)
+
+    sql, params = _build_unified_query(project_id, source, search, file_type, limit, offset)
+
+    files = execute_query(sql, params)
+
+    # Serialize datetimes
+    for f in files:
+        if f.get('created_at') and hasattr(f['created_at'], 'isoformat'):
+            f['created_at'] = f['created_at'].isoformat()
+
+    return {"files": files, "total": len(files), "limit": limit, "offset": offset}
+
+
+@router.get("/projects/{project_id}/files/all/{source}/{source_entity_id}/download")
+async def download_unified_file(
+    project_id: str,
+    source: str,
+    source_entity_id: str,
+    authorization: str = Header(...)
+):
+    """Get download URL for a unified file from any source."""
+    token = authorization.replace("Bearer ", "")
+    import jwt
+    decoded = jwt.decode(token, options={"verify_signature": False})
+    user_id = decoded.get("sub")
+
+    await verify_project_access(project_id, user_id)
+
+    file_url = None
+    filename = "download"
+    s3_key = None
+    bucket = None
+
+    if source == 'project_files':
+        row = execute_single("""
+            SELECT s3_bucket, s3_key, name, mime_type FROM backlot_project_files
+            WHERE id = :id AND project_id = :project_id AND upload_status = 'COMPLETE'
+        """, {"id": source_entity_id, "project_id": project_id})
+        if row:
+            bucket = row['s3_bucket']
+            s3_key = row['s3_key']
+            filename = row.get('name', 'download')
+
+    elif source == 'scripts':
+        row = execute_single("""
+            SELECT file_url, title FROM backlot_scripts
+            WHERE id = :id AND project_id = :project_id
+        """, {"id": source_entity_id, "project_id": project_id})
+        if row:
+            file_url = row['file_url']
+            filename = row.get('title', 'script')
+
+    elif source == 'receipts':
+        row = execute_single("""
+            SELECT file_url, original_filename FROM backlot_receipts
+            WHERE id = :id AND project_id = :project_id
+        """, {"id": source_entity_id, "project_id": project_id})
+        if row:
+            file_url = row['file_url']
+            filename = row.get('original_filename', 'receipt')
+
+    elif source == 'clearances':
+        row = execute_single("""
+            SELECT file_url, file_name FROM backlot_clearance_items
+            WHERE id = :id AND project_id = :project_id
+        """, {"id": source_entity_id, "project_id": project_id})
+        if row:
+            file_url = row['file_url']
+            filename = row.get('file_name', 'clearance')
+
+    elif source == 'dailies':
+        row = execute_single("""
+            SELECT cloud_url, file_name FROM backlot_dailies_clips
+            WHERE id = :id AND project_id = :project_id
+        """, {"id": source_entity_id, "project_id": project_id})
+        if row:
+            file_url = row['cloud_url']
+            filename = row.get('file_name', 'clip')
+
+    elif source == 'review_versions':
+        row = execute_single("""
+            SELECT rv.s3_key, rv.file_url, rv.storage_mode,
+                   COALESCE(rv.original_filename, ra.name) as filename
+            FROM backlot_review_versions rv
+            JOIN backlot_review_assets ra ON ra.id = rv.asset_id
+            WHERE rv.id = :id AND ra.project_id = :project_id
+        """, {"id": source_entity_id, "project_id": project_id})
+        if row:
+            filename = row.get('filename', 'review')
+            if row.get('storage_mode') == 's3' and row.get('s3_key'):
+                s3_key = row['s3_key']
+                bucket = BACKLOT_FILES_BUCKET
+            else:
+                file_url = row.get('file_url')
+
+    elif source == 'standalone_assets':
+        row = execute_single("""
+            SELECT s3_key, source_url, file_name, mime_type FROM backlot_standalone_assets
+            WHERE id = :id AND project_id = :project_id
+        """, {"id": source_entity_id, "project_id": project_id})
+        if row:
+            filename = row.get('file_name', 'asset')
+            if row.get('s3_key'):
+                s3_key = row['s3_key']
+                bucket = BACKLOT_FILES_BUCKET
+            else:
+                file_url = row.get('source_url')
+
+    elif source == 'continuity_exports':
+        row = execute_single("""
+            SELECT file_url, file_name FROM backlot_continuity_exports
+            WHERE id = :id AND project_id = :project_id
+        """, {"id": source_entity_id, "project_id": project_id})
+        if row:
+            file_url = row['file_url']
+            filename = row.get('file_name', 'continuity')
+
+    elif source == 'moodboards':
+        row = execute_single("""
+            SELECT image_url, title FROM moodboard_items
+            WHERE id = :id AND project_id = :project_id
+        """, {"id": source_entity_id, "project_id": project_id})
+        if row:
+            file_url = row['image_url']
+            filename = row.get('title', 'moodboard-image')
+
+    elif source == 'storyboards':
+        row = execute_single("""
+            SELECT sp.reference_image_url, sp.title
+            FROM storyboard_panels sp
+            JOIN storyboards sb ON sb.id = sp.storyboard_id
+            WHERE sp.id = :id AND sb.project_id = :project_id
+        """, {"id": source_entity_id, "project_id": project_id})
+        if row:
+            file_url = row['reference_image_url']
+            filename = row.get('title', 'storyboard-panel')
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
+
+    # Generate presigned URL for S3 keys
+    if s3_key and bucket:
+        # Handle s3:// URI format
+        if s3_key.startswith('s3://'):
+            parts = s3_key.replace('s3://', '').split('/', 1)
+            if len(parts) == 2:
+                bucket = parts[0]
+                s3_key = parts[1]
+
+        try:
+            url = s3_client.generate_presigned_url(
+                'get_object',
+                Params={
+                    'Bucket': bucket,
+                    'Key': s3_key,
+                    'ResponseContentDisposition': f'attachment; filename="{filename}"'
+                },
+                ExpiresIn=PRESIGNED_URL_EXPIRY
+            )
+            return {"download_url": url, "filename": filename}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to generate download URL: {str(e)}")
+
+    # For external URLs, return directly
+    if file_url:
+        # Handle s3:// URI format in file_url too
+        if file_url.startswith('s3://'):
+            parts = file_url.replace('s3://', '').split('/', 1)
+            if len(parts) == 2:
+                try:
+                    url = s3_client.generate_presigned_url(
+                        'get_object',
+                        Params={
+                            'Bucket': parts[0],
+                            'Key': parts[1],
+                            'ResponseContentDisposition': f'attachment; filename="{filename}"'
+                        },
+                        ExpiresIn=PRESIGNED_URL_EXPIRY
+                    )
+                    return {"download_url": url, "filename": filename}
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail=f"Failed to generate download URL: {str(e)}")
+
+        # Check if it's a relative S3 key (no protocol prefix, not a full URL)
+        if not file_url.startswith('http://') and not file_url.startswith('https://'):
+            try:
+                url = s3_client.generate_presigned_url(
+                    'get_object',
+                    Params={
+                        'Bucket': BACKLOT_BUCKET,
+                        'Key': file_url,
+                        'ResponseContentDisposition': f'attachment; filename="{filename}"'
+                    },
+                    ExpiresIn=PRESIGNED_URL_EXPIRY
+                )
+                return {"download_url": url, "filename": filename}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to generate download URL: {str(e)}")
+
+        return {"download_url": file_url, "filename": filename}
+
+    raise HTTPException(status_code=404, detail="File not found")
 
 
 # =====================================================

@@ -186,7 +186,7 @@ export const HotSetTimeline: React.FC<HotSetTimelineProps> = ({
   // Fallback to vertical list view when timeline data is not available (before day starts)
   if (!timeline) {
     return (
-      <div className="p-4 space-y-2 max-h-96 overflow-y-auto">
+      <div className="p-3 sm:p-4 space-y-2 max-h-96 overflow-y-auto overflow-x-hidden">
         {importedSchedule.map((block, index) => {
           const isScene = block.type === 'scene';
           const isClickable = isScene && onSceneClick && block.scene_number;
@@ -195,7 +195,7 @@ export const HotSetTimeline: React.FC<HotSetTimelineProps> = ({
             <div
               key={block.id || index}
               className={cn(
-                'flex items-center gap-3 p-3 rounded-lg border transition-colors',
+                'flex items-center gap-2 sm:gap-3 p-2 sm:p-3 rounded-lg border transition-colors',
                 block.type === 'scene' && 'bg-blue-500/10 border-blue-500/20',
                 block.type === 'meal' && 'bg-green-500/10 border-green-500/20',
                 block.type === 'company_move' && 'bg-orange-500/10 border-orange-500/20',
@@ -219,8 +219,8 @@ export const HotSetTimeline: React.FC<HotSetTimelineProps> = ({
               } : undefined}
             >
               {/* Time */}
-              <div className="w-16 shrink-0 text-right">
-                <span className="text-sm font-mono text-bone-white">
+              <div className="w-14 sm:w-16 shrink-0 text-right">
+                <span className="text-xs sm:text-sm font-mono text-bone-white">
                   {formatScheduleTime(block.start_time, timezone)}
                 </span>
               </div>
@@ -241,7 +241,7 @@ export const HotSetTimeline: React.FC<HotSetTimelineProps> = ({
 
               {/* Content */}
               <div className="flex-1 min-w-0">
-                <div className="font-medium text-bone-white truncate">
+                <div className="font-medium text-bone-white truncate text-sm sm:text-base">
                   {block.type === 'scene'
                     ? `Scene ${block.scene_number || '?'}`
                     : block.activity_name || block.type.replace('_', ' ')}
@@ -276,15 +276,15 @@ export const HotSetTimeline: React.FC<HotSetTimelineProps> = ({
 
   return (
     <TooltipProvider>
-      <div className="bg-soft-black rounded-lg border border-muted-gray/30 p-4">
+      <div className="bg-soft-black rounded-lg border border-muted-gray/30 p-3 sm:p-4 overflow-hidden">
         {/* Header with time range and deviation */}
-        <div className="flex items-center justify-between mb-4">
-          <div className="text-sm text-muted-gray">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+          <div className="text-xs sm:text-sm text-muted-gray">
             {formatScheduleTime(timeline?.day_start, timezone)} - {formatScheduleTime(timeline?.day_end, timezone)}
           </div>
           <div
             className={cn(
-              'text-sm font-medium',
+              'text-xs sm:text-sm font-medium',
               deviationMinutes > 15
                 ? 'text-red-400'
                 : deviationMinutes > 0

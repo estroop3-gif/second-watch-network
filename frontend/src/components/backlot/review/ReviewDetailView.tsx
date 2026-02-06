@@ -45,9 +45,11 @@ import {
   Clock,
 } from 'lucide-react';
 import { useReviewAsset, useReviewNotes, useReviewPlayer } from '@/hooks/backlot/useReview';
-import { ReviewAsset, ReviewNote, ReviewVersion, formatTimecode } from '@/types/backlot';
+import { useEmbeddedPlayer } from '@/hooks/backlot/useEmbeddedPlayer';
+import { ReviewAsset, ReviewNote, ReviewVersion, ReviewVersionEnhanced, formatTimecode } from '@/types/backlot';
 import { formatDistanceToNow } from 'date-fns';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
 
 interface ReviewDetailViewProps {
   assetId: string;
@@ -250,7 +252,7 @@ const NoteCard: React.FC<{
   );
 };
 
-// Timeline with markers
+// Timeline with markers and drag-to-scrub
 const Timeline: React.FC<{
   currentTime: number;
   duration: number;
@@ -258,15 +260,41 @@ const Timeline: React.FC<{
   onSeek: (time: number) => void;
 }> = ({ currentTime, duration, notes, onSeek }) => {
   const timelineRef = useRef<HTMLDivElement>(null);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 
-  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+  const seekFromEvent = useCallback((clientX: number) => {
     if (!timelineRef.current || duration <= 0) return;
     const rect = timelineRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const percentage = x / rect.width;
+    const percentage = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     onSeek(percentage * duration);
+  }, [duration, onSeek]);
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(true);
+    seekFromEvent(e.clientX);
   };
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      seekFromEvent(e.clientX);
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, seekFromEvent]);
 
   // Get marker positions for timecoded notes
   const markers = notes
@@ -281,13 +309,27 @@ const Timeline: React.FC<{
     <TooltipProvider>
       <div
         ref={timelineRef}
-        className="relative h-2 bg-muted-gray/30 rounded-full cursor-pointer group"
-        onClick={handleClick}
+        className={cn(
+          'relative bg-muted-gray/30 rounded-full group transition-all select-none',
+          isDragging ? 'h-3 cursor-grabbing' : 'h-2 hover:h-3 cursor-pointer'
+        )}
+        onMouseDown={handleMouseDown}
       >
         {/* Progress bar */}
         <div
           className="absolute h-full bg-accent-yellow rounded-full transition-all"
           style={{ width: `${progress}%` }}
+        />
+
+        {/* Playhead */}
+        <div
+          className={cn(
+            'absolute top-1/2 -translate-y-1/2 rounded-full bg-accent-yellow transition-all',
+            isDragging
+              ? 'w-4 h-4 -ml-2 shadow-lg'
+              : 'w-3 h-3 -ml-1.5 opacity-0 group-hover:opacity-100'
+          )}
+          style={{ left: `${progress}%` }}
         />
 
         {/* Note markers */}
@@ -307,9 +349,6 @@ const Timeline: React.FC<{
             </TooltipContent>
           </Tooltip>
         ))}
-
-        {/* Hover indicator */}
-        <div className="absolute -top-1 left-0 right-0 h-4 opacity-0 group-hover:opacity-100 transition-opacity" />
       </div>
     </TooltipProvider>
   );
@@ -323,12 +362,14 @@ export const ReviewDetailView: React.FC<ReviewDetailViewProps> = ({
 }) => {
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const [isMuted, setIsMuted] = useState(false);
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
   const [newNoteContent, setNewNoteContent] = useState('');
   const [addNoteAtTimecode, setAddNoteAtTimecode] = useState<number | null>(null);
   const [showVersionPicker, setShowVersionPicker] = useState(false);
+  const [streamUrl, setStreamUrl] = useState<string | null>(null);
 
   // Hooks
   const {
@@ -338,6 +379,7 @@ export const ReviewDetailView: React.FC<ReviewDetailViewProps> = ({
     isLoading: assetLoading,
     createVersion,
     makeVersionActive,
+    refetch: refetchAsset,
   } = useReviewAsset({ assetId });
 
   const {
@@ -368,20 +410,98 @@ export const ReviewDetailView: React.FC<ReviewDetailViewProps> = ({
     getNotesAtTimecode,
   } = useReviewNotes({ versionId: activeVersion?.id || null });
 
+  // Determine if this is an S3-stored version
+  const enhancedVersion = activeVersion as ReviewVersionEnhanced | undefined;
+  const isS3Storage = enhancedVersion?.storage_mode === 's3';
+  const isTranscoding = enhancedVersion?.transcode_status === 'processing';
+  const transcodeFailed = enhancedVersion?.transcode_status === 'failed';
+
+  // Detect external video embeds
+  const videoUrl = activeVersion?.video_url || (activeVersion as any)?.file_url || '';
+  const ytMatch = videoUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/);
+  const vimeoMatch = videoUrl.match(/(?:vimeo\.com\/)(\d+)/);
+  const isExternalEmbed = !isS3Storage && (!!ytMatch || !!vimeoMatch);
+  const embedUrl = ytMatch
+    ? `https://www.youtube.com/embed/${ytMatch[1]}?autoplay=0&rel=0&enablejsapi=1&origin=${window.location.origin}`
+    : vimeoMatch
+    ? `https://player.vimeo.com/video/${vimeoMatch[1]}`
+    : null;
+
+  // Embedded player hook for YouTube/Vimeo timecode tracking
+  const embeddedProvider = ytMatch ? 'youtube' : 'vimeo';
+  const embeddedVideoId = ytMatch ? ytMatch[1] : vimeoMatch ? vimeoMatch[1] : '';
+  const embeddedPlayer = useEmbeddedPlayer({
+    provider: embeddedProvider as 'youtube' | 'vimeo',
+    videoId: embeddedVideoId,
+    iframeRef,
+  });
+
+  // Unified player state: use embedded player for external embeds, native player otherwise
+  const playerTime = isExternalEmbed ? embeddedPlayer.currentTime : currentTime;
+  const playerDuration = isExternalEmbed ? embeddedPlayer.duration : duration;
+  const playerIsPlaying = isExternalEmbed ? embeddedPlayer.isPlaying : isPlaying;
+  const playerSeekTo = isExternalEmbed ? embeddedPlayer.seekTo : seekTo;
+  const playerTogglePlay = isExternalEmbed ? embeddedPlayer.togglePlay : togglePlay;
+  const playerPlay = isExternalEmbed ? embeddedPlayer.play : play;
+  const playerPause = isExternalEmbed ? embeddedPlayer.pause : pause;
+  const playerSeekRelative = useCallback(
+    (delta: number) => {
+      if (isExternalEmbed) {
+        embeddedPlayer.seekTo(embeddedPlayer.currentTime + delta);
+      } else {
+        seekRelative(delta);
+      }
+    },
+    [isExternalEmbed, embeddedPlayer, seekRelative]
+  );
+
+  // Poll for asset data while transcoding is in progress
+  useEffect(() => {
+    if (!isTranscoding) return;
+    const interval = setInterval(() => {
+      refetchAsset();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [isTranscoding, refetchAsset]);
+
+  // Fetch presigned stream URL for S3 versions (only when transcode is done)
+  useEffect(() => {
+    if (!activeVersion) {
+      setStreamUrl(null);
+      return;
+    }
+    if (isTranscoding) {
+      setStreamUrl(null);
+      return;
+    }
+    if (isS3Storage && enhancedVersion?.s3_key) {
+      api.getReviewVersionStreamUrl(activeVersion.id).then((res) => {
+        setStreamUrl(res.url);
+      }).catch((err) => {
+        console.error('Failed to load stream URL:', err);
+        setStreamUrl(activeVersion.video_url || null);
+      });
+    } else {
+      // DB column is file_url, but TS type says video_url — handle both
+      const url = (activeVersion as any).file_url || activeVersion.video_url || null;
+      setStreamUrl(url);
+    }
+  }, [activeVersion?.id, isS3Storage, isTranscoding]);
+
   // Bind video element
   useEffect(() => {
     if (videoRef.current) {
       bindVideoElement(videoRef.current);
     }
-  }, [bindVideoElement, activeVersion?.video_url]);
+  }, [bindVideoElement, streamUrl]);
 
   // Highlight note when playhead is near it
   useEffect(() => {
-    const nearbyNotes = getNotesAtTimecode(currentTime, 1);
+    const nearbyNotes = getNotesAtTimecode(playerTime, 1);
     if (nearbyNotes.length > 0 && !activeNoteId) {
       setActiveNoteId(nearbyNotes[0].id);
     }
-  }, [currentTime, getNotesAtTimecode, activeNoteId]);
+  }, [playerTime, getNotesAtTimecode, activeNoteId]);
 
   // Handle keyboard shortcuts
   useEffect(() => {
@@ -391,15 +511,15 @@ export const ReviewDetailView: React.FC<ReviewDetailViewProps> = ({
       switch (e.key) {
         case ' ':
           e.preventDefault();
-          togglePlay();
+          playerTogglePlay();
           break;
         case 'ArrowLeft':
           e.preventDefault();
-          seekRelative(-5);
+          playerSeekRelative(-5);
           break;
         case 'ArrowRight':
           e.preventDefault();
-          seekRelative(5);
+          playerSeekRelative(5);
           break;
         case 'm':
           setIsMuted(!isMuted);
@@ -409,7 +529,7 @@ export const ReviewDetailView: React.FC<ReviewDetailViewProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [togglePlay, seekRelative, isMuted]);
+  }, [playerTogglePlay, playerSeekRelative, isMuted]);
 
   // Handle adding a note
   const handleAddNote = async () => {
@@ -449,14 +569,14 @@ export const ReviewDetailView: React.FC<ReviewDetailViewProps> = ({
 
   // Handle seeking to a note
   const handleSeekToNote = (seconds: number) => {
-    seekTo(seconds);
-    pause();
+    playerSeekTo(seconds);
+    playerPause();
   };
 
   // Add note at current time
   const handleAddNoteAtCurrentTime = () => {
-    pause();
-    setAddNoteAtTimecode(currentTime);
+    playerPause();
+    setAddNoteAtTimecode(playerTime);
   };
 
   // Handle version change
@@ -533,21 +653,52 @@ export const ReviewDetailView: React.FC<ReviewDetailViewProps> = ({
         <div className="flex-1 flex flex-col">
           {/* Video container */}
           <div ref={videoContainerRef} className="flex-1 bg-black relative">
-            <video
-              ref={videoRef}
-              src={activeVersion.video_url}
-              className="w-full h-full object-contain"
-              muted={isMuted}
-              onClick={togglePlay}
-            />
-
-            {/* Play/pause overlay on click */}
-            {!isPlaying && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div className="w-16 h-16 rounded-full bg-black/50 flex items-center justify-center">
-                  <Play className="w-8 h-8 text-white fill-white ml-1" />
+            {isTranscoding ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black z-10">
+                <Loader2 className="w-10 h-10 animate-spin text-accent-yellow mb-4" />
+                <p className="text-bone-white font-medium text-lg">Transcoding...</p>
+                <p className="text-muted-gray text-sm mt-1">Your video is being processed. This may take a few minutes.</p>
+              </div>
+            ) : transcodeFailed ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black z-10">
+                <X className="w-10 h-10 text-primary-red mb-4" />
+                <p className="text-bone-white font-medium text-lg">Transcoding Failed</p>
+                <p className="text-muted-gray text-sm mt-1">
+                  {(enhancedVersion as any)?.transcode_error || 'An error occurred during processing.'}
+                </p>
+              </div>
+            ) : isExternalEmbed && embedUrl ? (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="w-full max-h-full aspect-video">
+                  <iframe
+                    ref={iframeRef}
+                    src={embedUrl}
+                    className="w-full h-full"
+                    allow="autoplay; fullscreen; picture-in-picture"
+                    allowFullScreen
+                    frameBorder="0"
+                  />
                 </div>
               </div>
+            ) : (
+              <>
+                <video
+                  ref={videoRef}
+                  src={streamUrl || undefined}
+                  className="w-full h-full object-contain"
+                  muted={isMuted}
+                  onClick={playerTogglePlay}
+                />
+
+                {/* Play/pause overlay on click */}
+                {!playerIsPlaying && (
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <div className="w-16 h-16 rounded-full bg-black/50 flex items-center justify-center">
+                      <Play className="w-8 h-8 text-white fill-white ml-1" />
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
@@ -555,30 +706,32 @@ export const ReviewDetailView: React.FC<ReviewDetailViewProps> = ({
           <div className="px-4 py-3 bg-charcoal-black border-t border-muted-gray/20">
             {/* Timeline */}
             <Timeline
-              currentTime={currentTime}
-              duration={duration}
+              currentTime={playerTime}
+              duration={playerDuration}
               notes={timecodedNotes}
-              onSeek={seekTo}
+              onSeek={playerSeekTo}
             />
 
             {/* Control buttons */}
             <div className="flex items-center justify-between mt-3">
               <div className="flex items-center gap-2">
-                <Button variant="ghost" size="icon" onClick={() => seekRelative(-5)}>
+                <Button variant="ghost" size="icon" onClick={() => playerSeekRelative(-5)}>
                   <SkipBack className="h-5 w-5" />
                 </Button>
-                <Button variant="ghost" size="icon" onClick={togglePlay}>
-                  {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+                <Button variant="ghost" size="icon" onClick={playerTogglePlay}>
+                  {playerIsPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
                 </Button>
-                <Button variant="ghost" size="icon" onClick={() => seekRelative(5)}>
+                <Button variant="ghost" size="icon" onClick={() => playerSeekRelative(5)}>
                   <SkipForward className="h-5 w-5" />
                 </Button>
-                <Button variant="ghost" size="icon" onClick={() => setIsMuted(!isMuted)}>
-                  {isMuted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
-                </Button>
+                {!isExternalEmbed && (
+                  <Button variant="ghost" size="icon" onClick={() => setIsMuted(!isMuted)}>
+                    {isMuted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+                  </Button>
+                )}
 
                 <span className="text-sm text-muted-gray font-mono ml-2">
-                  {formatTimecode(currentTime)} / {formatTimecode(duration)}
+                  {formatTimecode(playerTime)} / {formatTimecode(playerDuration)}
                 </span>
               </div>
 
@@ -586,7 +739,7 @@ export const ReviewDetailView: React.FC<ReviewDetailViewProps> = ({
                 {canEdit && (
                   <Button variant="outline" size="sm" onClick={handleAddNoteAtCurrentTime}>
                     <MessageSquare className="h-4 w-4 mr-2" />
-                    Add Note at {formatTimecode(currentTime)}
+                    Add Note at {formatTimecode(playerTime)}
                   </Button>
                 )}
               </div>

@@ -63,7 +63,7 @@ const LiveTimer: React.FC<{ startTime: string | null; className?: string }> = ({
 
   if (!startTime) return <span className="text-muted-gray">--:--</span>;
 
-  return <span className={cn('font-mono text-4xl', className)}>{formatSeconds(seconds)}</span>;
+  return <span className={cn('font-mono text-3xl sm:text-4xl', className)}>{formatSeconds(seconds)}</span>;
 };
 
 interface CurrentActivityCardProps {
@@ -220,53 +220,54 @@ export const CurrentActivityCard: React.FC<CurrentActivityCardProps> = ({
           )}
         </CardTitle>
       </CardHeader>
-      <CardContent className="p-6">
+      <CardContent className="p-4 sm:p-6">
         {/* Current Scene */}
         {showScene && currentScene && (
-          <div className="text-center space-y-4">
+          <div className="text-center space-y-3 sm:space-y-4">
             <div>
-              <span className="text-6xl font-bold text-accent-yellow">
+              <span className="text-4xl sm:text-6xl font-bold text-accent-yellow">
                 {currentScene.scene_number || 'Scene'}
               </span>
               {currentScene.int_ext && (
-                <Badge variant="outline" className="ml-3 text-lg">
+                <Badge variant="outline" className="ml-2 sm:ml-3 text-sm sm:text-lg">
                   {currentScene.int_ext}
                 </Badge>
               )}
             </div>
-            <p className="text-xl text-bone-white">
+            <p className="text-lg sm:text-xl text-bone-white truncate">
               {currentScene.set_name || currentScene.description}
             </p>
 
             {/* Timer */}
-            <div className="py-6">
+            <div className="py-4 sm:py-6">
               <LiveTimer startTime={currentScene.actual_start_time || null} />
-              <p className="text-sm text-muted-gray mt-2">
+              <p className="text-xs sm:text-sm text-muted-gray mt-2">
                 Est: {currentScene.estimated_minutes || 30} min
               </p>
             </div>
 
             {/* Controls */}
             {canEdit && (
-              <div className="flex justify-center gap-4">
+              <div className="flex flex-wrap justify-center gap-2 sm:gap-4">
                 <Button
-                  size="lg"
+                  size="default"
                   onClick={() => onCompleteScene?.(currentScene.id)}
                   disabled={isCompletingScene}
                   className="bg-green-600 hover:bg-green-500 text-white"
                 >
-                  <CheckCircle2 className="w-5 h-5 mr-2" />
-                  Complete Scene
+                  <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
+                  <span className="hidden sm:inline">Complete Scene</span>
+                  <span className="sm:hidden">Done</span>
                 </Button>
                 <Button
-                  size="lg"
+                  size="default"
                   variant="outline"
                   onClick={() => onSkipScene?.(currentScene.id)}
                   disabled={isSkippingScene}
                   className="border-red-500/30 text-red-400 hover:bg-red-500/10"
                 >
-                  <SkipForward className="w-5 h-5 mr-2" />
-                  Skip
+                  <SkipForward className="w-4 h-4 sm:w-5 sm:h-5 sm:mr-2" />
+                  <span className="hidden sm:inline">Skip</span>
                 </Button>
               </div>
             )}
@@ -275,56 +276,56 @@ export const CurrentActivityCard: React.FC<CurrentActivityCardProps> = ({
 
         {/* Current Activity (meal, company move, crew_call, first_shot, wrap, etc.) */}
         {showActivity && activeItem && (
-          <div className="text-center space-y-4">
+          <div className="text-center space-y-3 sm:space-y-4">
             <div>
-              <ActivityIcon className={cn('w-16 h-16 mx-auto', activityColor.split(' ')[0])} />
+              <ActivityIcon className={cn('w-12 h-12 sm:w-16 sm:h-16 mx-auto', activityColor.split(' ')[0])} />
             </div>
             <div>
-              <h3 className="text-2xl font-bold text-bone-white">
+              <h3 className="text-xl sm:text-2xl font-bold text-bone-white truncate">
                 {activeItem.name}
               </h3>
               {activeItem.description && (
-                <p className="text-muted-gray mt-1">{activeItem.description}</p>
+                <p className="text-sm text-muted-gray mt-1 truncate">{activeItem.description}</p>
               )}
             </div>
 
             {/* Timer */}
-            <div className="py-6">
+            <div className="py-4 sm:py-6">
               <LiveTimer
                 startTime={activeItem.actual_start_time || null}
                 className={activityColor.split(' ')[0]}
               />
-              <p className="text-sm text-muted-gray mt-2">
+              <p className="text-xs sm:text-sm text-muted-gray mt-2">
                 of {activeItem.planned_duration_minutes} min
               </p>
             </div>
 
             {/* Controls */}
             {canEdit && activeItem.source_id && (
-              <div className="flex justify-center gap-4">
+              <div className="flex flex-wrap justify-center gap-2 sm:gap-4">
                 <Button
-                  size="lg"
+                  size="default"
                   onClick={() => onCompleteActivity?.(activeItem.source_id!)}
                   disabled={isCompletingActivity}
                   className={activeItem.type === 'wrap'
                     ? 'bg-red-600 hover:bg-red-500 text-white'
                     : 'bg-green-600 hover:bg-green-500 text-white'}
                 >
-                  <CheckCircle2 className="w-5 h-5 mr-2" />
+                  <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
                   {activeItem.type === 'meal' ? 'End Meal' :
                    activeItem.type === 'wrap' ? 'Wrap Day' : 'Complete'}
                 </Button>
                 {/* Don't show skip for wrap - it doesn't make sense to skip wrapping */}
                 {activeItem.type !== 'wrap' && (
                   <Button
-                    size="lg"
+                    size="default"
                     variant="outline"
                     onClick={() => onSkipActivity?.(activeItem.source_id!)}
                     disabled={isSkippingActivity}
                     className="border-red-500/30 text-red-400 hover:bg-red-500/10"
                   >
-                    <SkipForward className="w-5 h-5 mr-2" />
-                    Skip
+                    <SkipForward className="w-4 h-4 sm:w-5 sm:h-5 sm:mr-2" />
+                    <span className="hidden sm:inline">Skip</span>
                   </Button>
                 )}
               </div>

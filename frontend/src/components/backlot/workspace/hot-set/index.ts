@@ -33,3 +33,17 @@ export { HotSetSettingsPanel } from './HotSetSettingsPanel';
 
 // Reports
 export { HotSetDayReportView } from './HotSetDayReportView';
+
+// Session Tasks & AD Notes Enhancement
+export { SessionTasksCard } from './SessionTasksCard';
+export { AdNotesHistoryCard } from './AdNotesHistoryCard';
+export { AdNoteComments } from './AdNoteComments';
+export { AdNoteDetailModal } from './AdNoteDetailModal';
+
+// Schedule Reorder View
+export { ScheduleReorderView } from './ScheduleReorderView';
+
+// Schedule Modification (Add/Remove/Swap)
+export { AddSceneModal } from './AddSceneModal';
+export { AddActivityModal } from './AddActivityModal';
+export { SwapSceneDialog } from './SwapSceneDialog';

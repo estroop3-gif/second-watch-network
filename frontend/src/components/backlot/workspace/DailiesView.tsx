@@ -2,7 +2,7 @@
  * DailiesView - Main dailies management view with day/card/clip browsing
  */
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Progress } from '@/components/ui/progress';
 import {
   Dialog,
   DialogContent,
@@ -36,6 +37,7 @@ import {
   CalendarPlus,
   HardDrive,
   Cloud,
+  CloudUpload,
   Circle,
   Star,
   MoreVertical,
@@ -63,6 +65,11 @@ import {
   LayoutGrid,
   List,
   Key,
+  Upload,
+  X,
+  FileVideo,
+  Globe,
+  CheckCircle2,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
@@ -79,6 +86,16 @@ import {
   useDesktopHelper,
   useUnlinkedProductionDays,
   useImportProductionDays,
+  useDailiesProductionDayView,
+  useEnsureDailiesDay,
+  useProductionDayClips,
+  useAssignClipsToDay,
+  useUnassignClipsFromDay,
+  useMediaLibrary,
+  useProjectCameras,
+  useProjectScenes,
+  useStandaloneAssets,
+  DailiesProductionDayView,
 } from '@/hooks/backlot';
 import {
   BacklotDailiesDay,
@@ -89,10 +106,12 @@ import {
   DailiesStorageMode,
   DAILIES_STORAGE_MODE_LABELS,
   DAILIES_RATING_LABELS,
+  StandaloneAsset,
 } from '@/types/backlot';
 import { formatDate } from '@/lib/dateUtils';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
 import ClipDetailView from './ClipDetailView';
 import LocalBrowser from './LocalBrowser';
 import MediaLibrary from './MediaLibrary';
@@ -606,11 +625,375 @@ const DaySection: React.FC<{
   );
 };
 
+// Add Footage Modal Component
+const AddFootageModal: React.FC<{
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  projectId: string;
+  productionDayId: string;
+  existingClipIds: Set<string>;
+  onSubmit: (clipIds: string[]) => void;
+  isSubmitting: boolean;
+}> = ({ open, onOpenChange, projectId, productionDayId, existingClipIds, onSubmit, isSubmitting }) => {
+  const [searchText, setSearchText] = useState('');
+  const [cameraFilter, setCameraFilter] = useState<string | null>(null);
+  const [sceneFilter, setSceneFilter] = useState<string | null>(null);
+  const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(new Set());
+
+  const { clips, isLoading } = useMediaLibrary({
+    projectId,
+    filters: {
+      textSearch: searchText || undefined,
+      camera: cameraFilter || undefined,
+      sceneNumber: sceneFilter || undefined,
+    },
+    limit: 200,
+    enabled: open,
+  });
+
+  const { data: cameras = [] } = useProjectCameras(open ? projectId : null);
+  const { data: scenes = [] } = useProjectScenes(open ? projectId : null);
+
+  // Reset selection when modal opens
+  useEffect(() => {
+    if (open) {
+      setSelectedClipIds(new Set());
+      setSearchText('');
+      setCameraFilter(null);
+      setSceneFilter(null);
+    }
+  }, [open]);
+
+  const toggleClip = (clipId: string) => {
+    setSelectedClipIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(clipId)) {
+        next.delete(clipId);
+      } else {
+        next.add(clipId);
+      }
+      return next;
+    });
+  };
+
+  const handleSubmit = () => {
+    onSubmit(Array.from(selectedClipIds));
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-4xl max-h-[85vh] overflow-hidden flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Film className="w-5 h-5 text-accent-yellow" />
+            Add Footage
+          </DialogTitle>
+        </DialogHeader>
+
+        {/* Search & Filters */}
+        <div className="flex items-center gap-3 py-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-gray" />
+            <Input
+              placeholder="Search clips..."
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+          <Select value={cameraFilter || '__all__'} onValueChange={(v) => setCameraFilter(v === '__all__' ? null : v)}>
+            <SelectTrigger className="w-[130px] bg-charcoal-black/50 border-muted-gray/30">
+              <SelectValue placeholder="Camera" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">All Cameras</SelectItem>
+              {cameras.map((cam) => (
+                <SelectItem key={cam} value={cam}>{cam}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={sceneFilter || '__all__'} onValueChange={(v) => setSceneFilter(v === '__all__' ? null : v)}>
+            <SelectTrigger className="w-[130px] bg-charcoal-black/50 border-muted-gray/30">
+              <SelectValue placeholder="Scene" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">All Scenes</SelectItem>
+              {scenes.map((sc) => (
+                <SelectItem key={sc} value={sc}>Sc. {sc}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {/* Clip Grid */}
+        <div className="flex-1 overflow-y-auto min-h-0 pb-2">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-6 h-6 text-accent-yellow animate-spin" />
+            </div>
+          ) : clips.length === 0 ? (
+            <div className="text-center py-12">
+              <Film className="w-12 h-12 text-muted-gray/30 mx-auto mb-3" />
+              <p className="text-muted-gray">No clips found</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
+              {clips.map((clip) => {
+                const alreadyAssigned = existingClipIds.has(clip.id);
+                const isSelected = selectedClipIds.has(clip.id);
+                return (
+                  <div
+                    key={clip.id}
+                    className={cn(
+                      'relative bg-charcoal-black/50 border rounded-lg p-2 cursor-pointer transition-colors',
+                      alreadyAssigned
+                        ? 'border-muted-gray/10 opacity-50 cursor-not-allowed'
+                        : isSelected
+                          ? 'border-accent-yellow ring-1 ring-accent-yellow/50'
+                          : 'border-muted-gray/20 hover:border-accent-yellow/30'
+                    )}
+                    onClick={() => !alreadyAssigned && toggleClip(clip.id)}
+                  >
+                    {/* Checkbox overlay */}
+                    <div className="absolute top-1 left-1 z-10">
+                      <div
+                        className={cn(
+                          'w-5 h-5 rounded border-2 flex items-center justify-center',
+                          alreadyAssigned
+                            ? 'border-muted-gray/30 bg-muted-gray/20'
+                            : isSelected
+                              ? 'border-accent-yellow bg-accent-yellow'
+                              : 'border-muted-gray/50 bg-charcoal-black/70'
+                        )}
+                      >
+                        {(isSelected || alreadyAssigned) && (
+                          <Check className="w-3 h-3 text-charcoal-black" />
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Thumbnail */}
+                    <div className="aspect-video bg-charcoal-black rounded mb-1 flex items-center justify-center overflow-hidden">
+                      {clip.thumbnail_url ? (
+                        <img src={clip.thumbnail_url} alt={clip.file_name} className="w-full h-full object-cover" />
+                      ) : (
+                        <Film className="w-6 h-6 text-muted-gray/30" />
+                      )}
+                    </div>
+
+                    {/* Info */}
+                    <p className="text-xs text-bone-white truncate">{clip.file_name}</p>
+                    <div className="flex items-center gap-1 text-xs text-muted-gray">
+                      {clip.scene_number && <span>Sc.{clip.scene_number}</span>}
+                      {clip.take_number && <span>Tk.{clip.take_number}</span>}
+                    </div>
+                    {alreadyAssigned && (
+                      <p className="text-xs text-muted-gray/70 italic">Already added</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between pt-3 border-t border-muted-gray/20">
+          <span className="text-sm text-muted-gray">
+            {selectedClipIds.size > 0 ? `${selectedClipIds.size} selected` : 'Select clips to add'}
+          </span>
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSubmit}
+              disabled={selectedClipIds.size === 0 || isSubmitting}
+              className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+            >
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Adding...
+                </>
+              ) : (
+                <>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add to Day
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+// Production Day Section Component (Auto-imported from Schedule)
+const ProductionDaySection: React.FC<{
+  prodDay: DailiesProductionDayView;
+  projectId: string;
+  canEdit: boolean;
+  onSelectClip: (clip: BacklotDailiesClip) => void;
+  onOpenAddFootage: (productionDayId: string) => void;
+  isExpanded: boolean;
+}> = ({
+  prodDay,
+  projectId,
+  canEdit,
+  onSelectClip,
+  onOpenAddFootage,
+  isExpanded,
+}) => {
+  const { data: dayClips = [], isLoading: loadingClips } = useProductionDayClips(projectId, prodDay.production_day_id);
+  const unassignClips = useUnassignClipsFromDay();
+
+  const formatDuration = (seconds: number | undefined) => {
+    if (!seconds) return '0m';
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    if (hours > 0) return `${hours}h ${mins}m`;
+    return `${mins}m`;
+  };
+
+  const dayLabel = prodDay.title && !prodDay.title.match(/^Day\s+\d+$/)
+    ? `Day ${prodDay.day_number} - ${prodDay.title}`
+    : `Day ${prodDay.day_number}`;
+
+  const handleToggleCircle = async (clipId: string, isCircle: boolean) => {
+    const token = api.getToken();
+    if (!token) return;
+    const apiBase = import.meta.env.VITE_API_URL || '';
+    try {
+      await fetch(`${apiBase}/api/v1/backlot/dailies/clips/${clipId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ is_circle_take: isCircle }),
+      });
+    } catch (err) {
+      console.error('Failed to toggle circle take:', err);
+    }
+  };
+
+  return (
+    <AccordionItem value={prodDay.production_day_id} className="border border-muted-gray/20 rounded-lg mb-4">
+      <AccordionTrigger className="px-4 py-3 hover:no-underline hover:bg-charcoal-black/30">
+        <div className="flex items-center justify-between w-full pr-4">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <Calendar className="w-5 h-5 text-accent-yellow" />
+              <span className="font-medium text-bone-white">{dayLabel}</span>
+            </div>
+            <span className="text-sm text-muted-gray">
+              {formatDate(prodDay.date, 'MMMM d, yyyy')}
+            </span>
+            {prodDay.location_name && (
+              <Badge variant="outline" className="border-muted-gray/30 text-muted-gray">
+                <MapPin className="w-3 h-3 mr-1" />
+                {prodDay.location_name}
+              </Badge>
+            )}
+            {prodDay.is_completed && (
+              <Badge className="bg-green-500/20 text-green-400 text-xs">
+                <Check className="w-3 h-3 mr-1" />
+                Shot
+              </Badge>
+            )}
+          </div>
+          <div className="flex items-center gap-4 text-sm text-muted-gray">
+            {prodDay.scene_count > 0 && (
+              <span>{prodDay.scene_count} scenes</span>
+            )}
+            {prodDay.clip_count > 0 ? (
+              <>
+                <span>{prodDay.clip_count} clips</span>
+                {prodDay.circle_take_count > 0 && (
+                  <span className="text-green-400">{prodDay.circle_take_count} circles</span>
+                )}
+                <span>{formatDuration(prodDay.total_duration_seconds)}</span>
+              </>
+            ) : (
+              <span className="text-muted-gray/50 italic">No footage yet</span>
+            )}
+          </div>
+        </div>
+      </AccordionTrigger>
+      <AccordionContent className="px-4 pb-4">
+        <div className="space-y-4">
+          {/* Day Actions */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {canEdit && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onOpenAddFootage(prodDay.production_day_id)}
+                  className="border-muted-gray/30"
+                >
+                  <Plus className="w-4 h-4 mr-1" />
+                  Add Footage
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {/* Clips Grid */}
+          {loadingClips ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="w-6 h-6 text-accent-yellow animate-spin" />
+            </div>
+          ) : dayClips.length > 0 ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+              {dayClips.map((clip) => (
+                <ClipCard
+                  key={clip.id}
+                  clip={clip}
+                  onSelect={() => onSelectClip(clip)}
+                  onToggleCircle={(id, isCircle) => handleToggleCircle(id, isCircle)}
+                  canEdit={canEdit}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-8 bg-charcoal-black/30 rounded-lg">
+              <Film className="w-8 h-8 text-muted-gray/30 mx-auto mb-2" />
+              <p className="text-sm text-muted-gray">No footage for this day</p>
+              <p className="text-xs text-muted-gray/50 mt-1">
+                Use "Add Footage" to assign clips from the media library
+              </p>
+              {canEdit && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-3 border-muted-gray/30"
+                  onClick={() => onOpenAddFootage(prodDay.production_day_id)}
+                >
+                  <Plus className="w-4 h-4 mr-1" />
+                  Add Footage
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+      </AccordionContent>
+    </AccordionItem>
+  );
+};
+
 // Main Component
 const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
-  const { days, isLoading, createDay, updateDay, deleteDay } = useDailiesDays({ projectId });
+  const queryClient = useQueryClient();
+  const { days, isLoading: loadingLegacyDays, createDay, updateDay, deleteDay } = useDailiesDays({ projectId });
   const { data: summary } = useDailiesSummary(projectId);
   const { isConnected: helperConnected, status: helperStatus } = useDesktopHelper();
+
+  // Production day view (auto-imported from schedule)
+  const { data: productionDays = [], isLoading: loadingProductionDays } = useDailiesProductionDayView(projectId);
+  const ensureDailiesDay = useEnsureDailiesDay();
 
   // State
   const [viewMode, setViewMode] = useState<DailiesViewMode>('day');
@@ -620,12 +1003,173 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
   const [showCardForm, setShowCardForm] = useState(false);
   const [editingCard, setEditingCard] = useState<BacklotDailiesCard | null>(null);
   const [cardDayId, setCardDayId] = useState<string | null>(null);
+  const [cardProductionDayId, setCardProductionDayId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showLocalBrowser, setShowLocalBrowser] = useState(false);
   const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [selectedProductionDays, setSelectedProductionDays] = useState<string[]>([]);
   const [createFootageAssets, setCreateFootageAssets] = useState(false);
+  const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
+  const [showAddFootageModal, setShowAddFootageModal] = useState(false);
+  const [addFootageTargetDayId, setAddFootageTargetDayId] = useState<string | null>(null);
+  const [isAssigningClips, setIsAssigningClips] = useState(false);
+
+  // Embed Asset state
+  const [showEmbedModal, setShowEmbedModal] = useState(false);
+  const [embedSearchQuery, setEmbedSearchQuery] = useState('');
+  const [selectedEmbedAsset, setSelectedEmbedAsset] = useState<StandaloneAsset | null>(null);
+  const [isEmbedding, setIsEmbedding] = useState(false);
+
+  const { assets: standaloneAssetsForEmbed = [], isLoading: embedAssetsLoading } = useStandaloneAssets({
+    projectId: showEmbedModal ? projectId : null,
+  });
+
+  const filteredEmbedAssets = standaloneAssetsForEmbed.filter((a) => {
+    if (!embedSearchQuery) return true;
+    const q = embedSearchQuery.toLowerCase();
+    return a.name.toLowerCase().includes(q) || a.source_url?.toLowerCase().includes(q);
+  });
+
+  const handleEmbedAsset = async () => {
+    if (!selectedEmbedAsset) return;
+    setIsEmbedding(true);
+    try {
+      // Create a dailies clip linked to the standalone asset
+      await api.completeDailiesBrowserUpload({
+        standalone_asset_id: selectedEmbedAsset.id,
+        project_id: projectId,
+      });
+
+      queryClient.invalidateQueries({ queryKey: ['dailies-clips'] });
+      queryClient.invalidateQueries({ queryKey: ['media-library'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-standalone-assets'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-unified-assets'] });
+      queryClient.invalidateQueries({ queryKey: ['dailies-production-day-view'] });
+
+      toast.success('Asset embedded as dailies clip');
+      setShowEmbedModal(false);
+      setSelectedEmbedAsset(null);
+      setEmbedSearchQuery('');
+    } catch (error) {
+      console.error('Error embedding asset:', error);
+      toast.error('Failed to embed asset');
+    } finally {
+      setIsEmbedding(false);
+    }
+  };
+
+  // Browser upload state
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const uploadFileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'processing' | 'complete' | 'error'>('idle');
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const resetUpload = () => {
+    setUploadFile(null);
+    setUploadStatus('idle');
+    setUploadProgress(0);
+    setUploadError(null);
+    if (uploadFileInputRef.current) uploadFileInputRef.current.value = '';
+  };
+
+  const handleUploadFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const validTypes = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/webm', 'video/x-matroska'];
+    if (!validTypes.includes(file.type)) {
+      setUploadError('Please select a valid video file (MP4, MOV, AVI, WebM, MKV)');
+      return;
+    }
+    setUploadFile(file);
+    setUploadError(null);
+  };
+
+  const handleUploadDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('video/')) {
+      setUploadFile(file);
+      setUploadError(null);
+    }
+  };
+
+  const uploadToS3 = (url: string, file: File): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', url, true);
+      xhr.setRequestHeader('Content-Type', file.type);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          setUploadProgress(Math.min((e.loaded / e.total) * 100, 99));
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) resolve();
+        else reject(new Error(`Upload failed with status ${xhr.status}`));
+      };
+      xhr.onerror = () => reject(new Error('Upload failed'));
+      xhr.send(file);
+    });
+  };
+
+  const handleBrowserUploadSubmit = async () => {
+    if (!uploadFile) return;
+    try {
+      setUploadStatus('uploading');
+      setUploadProgress(0);
+
+      // 1. Get presigned URL (creates standalone asset)
+      const { upload_url, standalone_asset_id } = await api.getDailiesBrowserUploadUrl(
+        projectId,
+        uploadFile.name,
+        uploadFile.type || 'video/mp4',
+      );
+
+      // 2. Upload to S3
+      await uploadToS3(upload_url, uploadFile);
+
+      // 3. Create dailies clip linked to standalone asset
+      setUploadStatus('processing');
+      setUploadProgress(100);
+      await api.completeDailiesBrowserUpload({
+        standalone_asset_id,
+        project_id: projectId,
+      });
+
+      setUploadStatus('complete');
+
+      // Invalidate queries so media library and clips refresh
+      queryClient.invalidateQueries({ queryKey: ['media-library'] });
+      queryClient.invalidateQueries({ queryKey: ['dailies-clips'] });
+      queryClient.invalidateQueries({ queryKey: ['dailies-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-standalone-assets'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-unified-assets'] });
+
+      setShowUploadModal(false);
+      resetUpload();
+    } catch (error) {
+      setUploadStatus('error');
+      setUploadError('Upload failed. Please try again.');
+    }
+  };
+
+  // Production day clips hooks
+  const assignClips = useAssignClipsToDay();
+  const { data: addFootageTargetClips = [] } = useProductionDayClips(
+    projectId,
+    addFootageTargetDayId
+  );
+  const existingClipIds = useMemo(
+    () => new Set(addFootageTargetClips.map((c) => c.id)),
+    [addFootageTargetClips]
+  );
+
+  // Determine if we should use production day view (if there are production days from schedule)
+  const useProductionDayView = productionDays.length > 0;
+  const isLoading = loadingLegacyDays || loadingProductionDays;
 
   // Production day import hooks
   const { data: unlinkedDays = [], isLoading: loadingUnlinkedDays } = useUnlinkedProductionDays(projectId);
@@ -721,6 +1265,35 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
 
   const handleOpenCardForm = (dayId: string, card?: BacklotDailiesCard) => {
     setCardDayId(dayId);
+    setCardProductionDayId(null);
+    if (card) {
+      setEditingCard(card);
+      setCardForm({
+        camera_label: card.camera_label,
+        roll_name: card.roll_name,
+        storage_mode: card.storage_mode,
+        media_root_path: card.media_root_path || '',
+        storage_location: card.storage_location || '',
+        notes: card.notes || '',
+      });
+    } else {
+      setEditingCard(null);
+      setCardForm({
+        camera_label: 'A',
+        roll_name: '',
+        storage_mode: 'local_drive',
+        media_root_path: '',
+        storage_location: '',
+        notes: '',
+      });
+    }
+    setShowCardForm(true);
+  };
+
+  // Handle opening card form for production day (creates dailies day on-demand)
+  const handleOpenCardFormForProductionDay = (dailiesDayId: string, productionDayId: string, card?: BacklotDailiesCard) => {
+    setCardDayId(dailiesDayId || null);
+    setCardProductionDayId(productionDayId);
     if (card) {
       setEditingCard(card);
       setCardForm({
@@ -747,15 +1320,32 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
 
   const handleSubmitCard = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!cardDayId) return;
     setIsSubmitting(true);
     try {
+      let dayIdToUse = cardDayId;
+
+      // If no dailies day exists but we have a production day, create one on-demand
+      if (!dayIdToUse && cardProductionDayId) {
+        const result = await ensureDailiesDay.mutateAsync({
+          projectId,
+          productionDayId: cardProductionDayId,
+        });
+        dayIdToUse = result.day.id;
+        setCardDayId(dayIdToUse);
+      }
+
+      if (!dayIdToUse) {
+        console.error('No day ID available for card creation');
+        return;
+      }
+
       if (editingCard) {
         await updateCard.mutateAsync({ id: editingCard.id, ...cardForm });
       } else {
-        await createCard.mutateAsync({ dayId: cardDayId, projectId, ...cardForm });
+        await createCard.mutateAsync({ dayId: dayIdToUse, projectId, ...cardForm });
       }
       setShowCardForm(false);
+      setCardProductionDayId(null);
     } catch (err) {
       console.error('Failed to save card:', err);
     } finally {
@@ -799,6 +1389,29 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
       setSelectedProductionDays([]);
     } else {
       setSelectedProductionDays(unlinkedDays.map((d) => d.id));
+    }
+  };
+
+  const handleOpenAddFootage = (productionDayId: string) => {
+    setAddFootageTargetDayId(productionDayId);
+    setShowAddFootageModal(true);
+  };
+
+  const handleAssignClips = async (clipIds: string[]) => {
+    if (!addFootageTargetDayId || clipIds.length === 0) return;
+    setIsAssigningClips(true);
+    try {
+      await assignClips.mutateAsync({
+        projectId,
+        productionDayId: addFootageTargetDayId,
+        clipIds,
+      });
+      setShowAddFootageModal(false);
+      setAddFootageTargetDayId(null);
+    } catch (err) {
+      console.error('Failed to assign clips:', err);
+    } finally {
+      setIsAssigningClips(false);
     }
   };
 
@@ -872,7 +1485,32 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
             <Download className="w-4 h-4 mr-2" />
             Get Desktop Helper
           </Button>
-          {canEdit && unlinkedDays.length > 0 && (
+          {/* Browser Upload Button */}
+          {canEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => { resetUpload(); setShowUploadModal(true); }}
+              className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10 hover:border-accent-yellow/50"
+            >
+              <Upload className="w-4 h-4 mr-2" />
+              Upload
+            </Button>
+          )}
+          {/* Embed Asset Button */}
+          {canEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowEmbedModal(true)}
+              className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10 hover:border-accent-yellow/50"
+            >
+              <LinkIcon className="w-4 h-4 mr-2" />
+              Embed Asset
+            </Button>
+          )}
+          {/* Only show import button when NOT using production day view and there are unlinked days */}
+          {canEdit && !useProductionDayView && unlinkedDays.length > 0 && (
             <Button
               variant="outline"
               size="sm"
@@ -886,7 +1524,8 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
               </Badge>
             </Button>
           )}
-          {canEdit && (
+          {/* Only show Add Shoot Day when NOT using production day view */}
+          {canEdit && !useProductionDayView && (
             <Button
               onClick={() => handleOpenDayForm()}
               className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
@@ -923,39 +1562,71 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
         </div>
       )}
 
-      {/* View Toggle */}
-      <div className="flex items-center gap-2">
-        <span className="text-sm text-muted-gray">View:</span>
-        <div className="flex bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setViewMode('day')}
-            className={cn(
-              'h-8 px-3 gap-2',
-              viewMode === 'day'
-                ? 'bg-accent-yellow/20 text-accent-yellow'
-                : 'text-muted-gray hover:text-bone-white'
-            )}
-          >
-            <Calendar className="w-4 h-4" />
-            By Day
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setViewMode('all')}
-            className={cn(
-              'h-8 px-3 gap-2',
-              viewMode === 'all'
-                ? 'bg-accent-yellow/20 text-accent-yellow'
-                : 'text-muted-gray hover:text-bone-white'
-            )}
-          >
-            <LayoutGrid className="w-4 h-4" />
-            All Clips
-          </Button>
+      {/* View Toggle and Day Selector */}
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-gray">View:</span>
+          <div className="flex bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setViewMode('day')}
+              className={cn(
+                'h-8 px-3 gap-2',
+                viewMode === 'day'
+                  ? 'bg-accent-yellow/20 text-accent-yellow'
+                  : 'text-muted-gray hover:text-bone-white'
+              )}
+            >
+              <Calendar className="w-4 h-4" />
+              By Day
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setViewMode('all')}
+              className={cn(
+                'h-8 px-3 gap-2',
+                viewMode === 'all'
+                  ? 'bg-accent-yellow/20 text-accent-yellow'
+                  : 'text-muted-gray hover:text-bone-white'
+              )}
+            >
+              <LayoutGrid className="w-4 h-4" />
+              All Clips
+            </Button>
+          </div>
         </div>
+
+        {/* Day Selector Dropdown (only for day view with production days) */}
+        {viewMode === 'day' && useProductionDayView && productionDays.length > 5 && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-gray">Jump to:</span>
+            <Select
+              value={selectedDayId || ''}
+              onValueChange={(value) => {
+                setSelectedDayId(value || null);
+                // Scroll to the selected day
+                if (value) {
+                  const element = document.getElementById(`day-${value}`);
+                  element?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+              }}
+            >
+              <SelectTrigger className="w-[200px] h-8 bg-charcoal-black/50 border-muted-gray/30">
+                <SelectValue placeholder="Select a day..." />
+              </SelectTrigger>
+              <SelectContent>
+                {productionDays.map((day) => (
+                  <SelectItem key={day.production_day_id} value={day.production_day_id}>
+                    Day {day.day_number} - {formatDate(day.date, 'MMM d')}
+                    {day.has_footage && ' ✓'}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
       </div>
 
       {/* Content based on view mode */}
@@ -965,7 +1636,41 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
           canEdit={canEdit}
           onSelectClip={setSelectedClip}
         />
+      ) : useProductionDayView ? (
+        /* Production Day View - Auto-imported from Schedule */
+        productionDays.length > 0 ? (
+          <Accordion
+            type="multiple"
+            defaultValue={productionDays
+              .filter((d) => d.has_footage)
+              .slice(0, 2)
+              .map((d) => d.production_day_id)}
+          >
+            {productionDays.map((prodDay) => (
+              <div key={prodDay.production_day_id} id={`day-${prodDay.production_day_id}`}>
+                <ProductionDaySection
+                  prodDay={prodDay}
+                  projectId={projectId}
+                  canEdit={canEdit}
+                  onSelectClip={setSelectedClip}
+                  onOpenAddFootage={handleOpenAddFootage}
+                  isExpanded={prodDay.has_footage}
+                />
+              </div>
+            ))}
+          </Accordion>
+        ) : (
+          <div className="text-center py-16 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg">
+            <Calendar className="w-16 h-16 text-muted-gray/30 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-bone-white mb-2">No production days scheduled</h3>
+            <p className="text-muted-gray mb-6 max-w-md mx-auto">
+              Add production days in the Schedule tab to start organizing your dailies.
+              Days from your schedule will automatically appear here.
+            </p>
+          </div>
+        )
       ) : days.length > 0 ? (
+        /* Legacy Day View - Manual dailies days */
         <Accordion type="multiple" defaultValue={days.slice(0, 2).map((d) => d.id)}>
           {days.map((day) => (
             <DaySection
@@ -987,8 +1692,8 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
           <Film className="w-16 h-16 text-muted-gray/30 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-bone-white mb-2">No dailies yet</h3>
           <p className="text-muted-gray mb-6 max-w-md mx-auto">
-            Add shoot days to start organizing your dailies. You can upload clips to the cloud
-            or register local drive footage for review.
+            Add shoot days to start organizing your dailies, or add production days to the Schedule tab
+            to have them automatically appear here.
           </p>
           {canEdit && (
             <Button
@@ -1348,6 +2053,134 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
         </DialogContent>
       </Dialog>
 
+      {/* Add Footage Modal */}
+      {addFootageTargetDayId && (
+        <AddFootageModal
+          open={showAddFootageModal}
+          onOpenChange={(open) => {
+            setShowAddFootageModal(open);
+            if (!open) setAddFootageTargetDayId(null);
+          }}
+          projectId={projectId}
+          productionDayId={addFootageTargetDayId}
+          existingClipIds={existingClipIds}
+          onSubmit={handleAssignClips}
+          isSubmitting={isAssigningClips}
+        />
+      )}
+
+      {/* Browser Upload Dialog */}
+      <Dialog open={showUploadModal} onOpenChange={(open) => { setShowUploadModal(open); if (!open) resetUpload(); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CloudUpload className="w-5 h-5 text-accent-yellow" />
+              Upload Footage
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            {uploadStatus === 'idle' || uploadStatus === 'error' ? (
+              <>
+                {/* Drop zone */}
+                <div
+                  className={cn(
+                    'border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors',
+                    uploadFile
+                      ? 'border-accent-yellow/50 bg-accent-yellow/5'
+                      : 'border-muted-gray/30 hover:border-accent-yellow/30 hover:bg-charcoal-black/50'
+                  )}
+                  onDrop={handleUploadDrop}
+                  onDragOver={(e) => e.preventDefault()}
+                  onClick={() => uploadFileInputRef.current?.click()}
+                >
+                  <input
+                    ref={uploadFileInputRef}
+                    type="file"
+                    accept="video/*"
+                    onChange={handleUploadFileSelect}
+                    className="hidden"
+                  />
+                  {uploadFile ? (
+                    <div className="space-y-2">
+                      <FileVideo className="w-10 h-10 text-accent-yellow mx-auto" />
+                      <p className="text-sm text-bone-white font-medium">{uploadFile.name}</p>
+                      <p className="text-xs text-muted-gray">
+                        {(uploadFile.size / (1024 * 1024)).toFixed(1)} MB
+                      </p>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={(e) => { e.stopPropagation(); resetUpload(); }}
+                        className="text-muted-gray hover:text-red-400"
+                      >
+                        <X className="w-3 h-3 mr-1" />
+                        Remove
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <Upload className="w-10 h-10 text-muted-gray/50 mx-auto" />
+                      <p className="text-sm text-muted-gray">
+                        Drag and drop a video file, or click to browse
+                      </p>
+                      <p className="text-xs text-muted-gray/50">
+                        MP4, MOV, AVI, WebM, MKV
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {uploadError && (
+                  <p className="text-sm text-red-400">{uploadError}</p>
+                )}
+
+                <div className="flex justify-end gap-3 pt-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => { setShowUploadModal(false); resetUpload(); }}
+                    className="text-muted-gray"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={handleBrowserUploadSubmit}
+                    disabled={!uploadFile}
+                    className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                  >
+                    <Upload className="w-4 h-4 mr-2" />
+                    Upload
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className="space-y-4 py-4">
+                <div className="text-center space-y-2">
+                  {uploadStatus === 'complete' ? (
+                    <Check className="w-10 h-10 text-green-400 mx-auto" />
+                  ) : (
+                    <Loader2 className="w-10 h-10 text-accent-yellow mx-auto animate-spin" />
+                  )}
+                  <p className="text-sm text-bone-white font-medium">
+                    {uploadStatus === 'uploading' ? 'Uploading...' :
+                     uploadStatus === 'processing' ? 'Processing...' :
+                     'Upload complete'}
+                  </p>
+                  {uploadFile && (
+                    <p className="text-xs text-muted-gray">{uploadFile.name}</p>
+                  )}
+                </div>
+                <Progress value={uploadProgress} className="h-2" />
+                <p className="text-xs text-muted-gray text-center">
+                  {Math.round(uploadProgress)}%
+                </p>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Import from Schedule Dialog */}
       <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
         <DialogContent className="sm:max-w-lg">
@@ -1490,6 +2323,109 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
                   <>
                     <CalendarPlus className="w-4 h-4 mr-2" />
                     Import {selectedProductionDays.length} Day{selectedProductionDays.length !== 1 ? 's' : ''}
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Embed Asset Dialog */}
+      <Dialog open={showEmbedModal} onOpenChange={(open) => { setShowEmbedModal(open); if (!open) { setSelectedEmbedAsset(null); setEmbedSearchQuery(''); } }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <LinkIcon className="w-5 h-5 text-accent-yellow" />
+              Embed Asset
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <p className="text-sm text-muted-gray">
+              Select a standalone asset to embed as a dailies clip.
+            </p>
+
+            {/* Search */}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-gray" />
+              <Input
+                value={embedSearchQuery}
+                onChange={(e) => setEmbedSearchQuery(e.target.value)}
+                placeholder="Search assets..."
+                className="pl-10"
+              />
+            </div>
+
+            {/* Asset list */}
+            <div className="max-h-[300px] overflow-y-auto space-y-2 border border-muted-gray/20 rounded-lg p-2">
+              {embedAssetsLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="w-5 h-5 text-accent-yellow animate-spin" />
+                </div>
+              ) : filteredEmbedAssets.length === 0 ? (
+                <div className="text-center py-8 text-muted-gray text-sm">
+                  No assets found. Add assets in the Assets tab first.
+                </div>
+              ) : (
+                filteredEmbedAssets.map((asset) => (
+                  <div
+                    key={asset.id}
+                    className={cn(
+                      'flex items-center gap-3 p-2 rounded-lg cursor-pointer transition-colors',
+                      selectedEmbedAsset?.id === asset.id
+                        ? 'bg-accent-yellow/10 border border-accent-yellow/50'
+                        : 'hover:bg-charcoal-black/50 border border-transparent'
+                    )}
+                    onClick={() => setSelectedEmbedAsset(asset)}
+                  >
+                    <div className="w-10 h-10 rounded bg-charcoal-black flex items-center justify-center shrink-0">
+                      {asset.source_url ? (
+                        <Globe className="w-5 h-5 text-accent-yellow" />
+                      ) : asset.thumbnail_url ? (
+                        <img src={asset.thumbnail_url} alt="" className="w-full h-full object-cover rounded" />
+                      ) : (
+                        <Film className="w-5 h-5 text-muted-gray" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-bone-white truncate">{asset.name}</p>
+                      <p className="text-xs text-muted-gray truncate">
+                        {asset.source_url ? (
+                          <span className="flex items-center gap-1">
+                            <ExternalLink className="w-3 h-3" />
+                            {asset.video_provider || 'Link'}
+                          </span>
+                        ) : (
+                          asset.file_name || asset.asset_type
+                        )}
+                      </p>
+                    </div>
+                    {selectedEmbedAsset?.id === asset.id && (
+                      <CheckCircle2 className="w-5 h-5 text-accent-yellow shrink-0" />
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowEmbedModal(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleEmbedAsset}
+                disabled={!selectedEmbedAsset || isEmbedding}
+                className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+              >
+                {isEmbedding ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Embedding...
+                  </>
+                ) : (
+                  <>
+                    <LinkIcon className="w-4 h-4 mr-2" />
+                    Embed Asset
                   </>
                 )}
               </Button>

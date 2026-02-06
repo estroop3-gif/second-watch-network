@@ -49,8 +49,9 @@ import {
   Send,
   Edit2,
   AlertTriangle,
+  Search,
 } from 'lucide-react';
-import { useTaskDetail, useTaskComments, useTaskLabels, useProjectMembers } from '@/hooks/backlot';
+import { useTaskDetail, useTaskComments, useTaskLabels, useProjectMembers, useTaskAssignees, useTaskLabelLinks } from '@/hooks/backlot';
 import {
   BacklotTask,
   BacklotTaskStatus,
@@ -65,6 +66,7 @@ import {
 import { format, formatDistanceToNow } from 'date-fns';
 import { parseLocalDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
+import { useToast } from '@/hooks/use-toast';
 
 interface TaskDetailDrawerProps {
   taskId: string | null;
@@ -164,6 +166,21 @@ const CommentItem: React.FC<CommentItemProps> = ({ comment, canEdit, onUpdate, o
 };
 
 // =====================================================
+// Predefined label colors
+// =====================================================
+const LABEL_COLORS = [
+  '#ef4444', // red
+  '#f97316', // orange
+  '#eab308', // yellow
+  '#22c55e', // green
+  '#06b6d4', // cyan
+  '#3b82f6', // blue
+  '#8b5cf6', // violet
+  '#ec4899', // pink
+  '#6b7280', // gray
+];
+
+// =====================================================
 // Main TaskDetailDrawer Component
 // =====================================================
 const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
@@ -174,10 +191,13 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
   onClose,
   onDelete,
 }) => {
+  const { toast } = useToast();
   const { task, isLoading, updateTask } = useTaskDetail(taskId);
   const { comments, createComment, updateComment, deleteComment } = useTaskComments({ taskId });
-  const { labels } = useTaskLabels({ projectId });
+  const { labels, createLabel, isLoading: labelsLoading } = useTaskLabels({ projectId });
   const { members: projectMembers } = useProjectMembers(projectId);
+  const { addAssignee, removeAssignee } = useTaskAssignees(taskId);
+  const { addLabel, removeLabel } = useTaskLabelLinks(taskId);
 
   const [newComment, setNewComment] = useState('');
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
@@ -185,6 +205,13 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
   const [title, setTitle] = useState('');
   const [editingDescription, setEditingDescription] = useState(false);
   const [description, setDescription] = useState('');
+  const [showAssigneePopover, setShowAssigneePopover] = useState(false);
+  const [showLabelPopover, setShowLabelPopover] = useState(false);
+
+  // Label search and creation state
+  const [labelSearch, setLabelSearch] = useState('');
+  const [newLabelColor, setNewLabelColor] = useState('#6366f1');
+  const [isCreatingLabel, setIsCreatingLabel] = useState(false);
 
   // Update local state when task changes
   useEffect(() => {
@@ -204,6 +231,11 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
       setEditingTitle(false);
     } catch (error) {
       console.error('Error updating title:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to update task title',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -217,22 +249,45 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
       setEditingDescription(false);
     } catch (error) {
       console.error('Error updating description:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to update task description',
+        variant: 'destructive',
+      });
     }
   };
 
   const handleStatusChange = async (status: BacklotTaskStatus) => {
     try {
       await updateTask.mutateAsync({ status });
+      toast({
+        title: 'Updated',
+        description: `Task status changed to ${TASK_STATUS_LABELS[status]}`,
+      });
     } catch (error) {
       console.error('Error updating status:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to update task status',
+        variant: 'destructive',
+      });
     }
   };
 
   const handlePriorityChange = async (priority: BacklotTaskPriority) => {
     try {
       await updateTask.mutateAsync({ priority });
+      toast({
+        title: 'Updated',
+        description: `Priority changed to ${TASK_PRIORITY_LABELS[priority]}`,
+      });
     } catch (error) {
       console.error('Error updating priority:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to update task priority',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -243,6 +298,11 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
       });
     } catch (error) {
       console.error('Error updating due date:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to update due date',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -254,6 +314,11 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
       setNewComment('');
     } catch (error) {
       console.error('Error adding comment:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to add comment',
+        variant: 'destructive',
+      });
     } finally {
       setIsSubmittingComment(false);
     }
@@ -264,6 +329,11 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
       await updateComment.mutateAsync({ commentId, content });
     } catch (error) {
       console.error('Error updating comment:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to update comment',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -271,8 +341,17 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
     if (!confirm('Delete this comment?')) return;
     try {
       await deleteComment.mutateAsync(commentId);
+      toast({
+        title: 'Deleted',
+        description: 'Comment removed',
+      });
     } catch (error) {
       console.error('Error deleting comment:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to delete comment',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -422,26 +501,99 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
               <div className="flex items-start gap-4">
                 <Label className="w-24 text-muted-gray pt-2">Assignees</Label>
                 <div className="flex-1">
-                  {task.assignees && task.assignees.length > 0 ? (
-                    <div className="flex flex-wrap gap-2">
-                      {task.assignees.map(a => (
-                        <div
-                          key={a.id}
-                          className="flex items-center gap-2 bg-muted-gray/10 rounded-full px-2 py-1"
-                        >
-                          <Avatar className="w-5 h-5">
-                            <AvatarImage src={a.profile?.avatar_url || ''} />
-                            <AvatarFallback className="text-[8px]">
-                              {(a.profile?.display_name || 'U').slice(0, 1)}
-                            </AvatarFallback>
-                          </Avatar>
-                          <span className="text-sm">
-                            {a.profile?.display_name || a.profile?.full_name}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
+                  <div className="flex flex-wrap gap-2 items-center">
+                    {task.assignees && task.assignees.map(a => (
+                      <div
+                        key={a.id}
+                        className="flex items-center gap-1 bg-muted-gray/10 rounded-full px-2 py-1 group"
+                      >
+                        <Avatar className="w-5 h-5">
+                          <AvatarImage src={a.profile?.avatar_url || ''} />
+                          <AvatarFallback className="text-[8px]">
+                            {(a.profile?.display_name || 'U').slice(0, 1)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="text-sm">
+                          {a.profile?.display_name || a.profile?.full_name}
+                        </span>
+                        {canEdit && (
+                          <button
+                            onClick={() => removeAssignee.mutate(a.id, {
+                              onError: () => {
+                                toast({
+                                  title: 'Error',
+                                  description: 'Failed to remove assignee',
+                                  variant: 'destructive',
+                                });
+                              }
+                            })}
+                            className="opacity-0 group-hover:opacity-100 ml-1 text-muted-gray hover:text-red-400"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    {canEdit && (
+                      <Popover open={showAssigneePopover} onOpenChange={setShowAssigneePopover}>
+                        <PopoverTrigger asChild>
+                          <Button variant="outline" size="sm" className="h-7 px-2">
+                            <Plus className="w-3 h-3 mr-1" />
+                            Add
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-56 p-2" align="start">
+                          <div className="space-y-1 max-h-48 overflow-y-auto">
+                            {projectMembers?.filter(m =>
+                              !task.assignees?.some(a => a.user_id === m.user_id)
+                            ).map(member => {
+                              const displayName = member.user_name || member.user_username || member.email?.split('@')[0] || 'Unknown';
+                              return (
+                              <button
+                                key={member.user_id}
+                                onClick={() => {
+                                  addAssignee.mutate(member.user_id, {
+                                    onSuccess: () => {
+                                      toast({
+                                        title: 'Added',
+                                        description: `${displayName} assigned to task`,
+                                      });
+                                    },
+                                    onError: () => {
+                                      toast({
+                                        title: 'Error',
+                                        description: 'Failed to add assignee',
+                                        variant: 'destructive',
+                                      });
+                                    },
+                                  });
+                                  setShowAssigneePopover(false);
+                                }}
+                                className="flex items-center gap-2 w-full p-2 rounded hover:bg-muted-gray/10 text-left"
+                              >
+                                <Avatar className="w-6 h-6">
+                                  <AvatarImage src={member.user_avatar || ''} />
+                                  <AvatarFallback className="text-[10px]">
+                                    {displayName.slice(0, 1).toUpperCase()}
+                                  </AvatarFallback>
+                                </Avatar>
+                                <span className="text-sm">
+                                  {displayName}
+                                </span>
+                              </button>
+                              );
+                            })}
+                            {(!projectMembers || projectMembers.filter(m =>
+                              !task.assignees?.some(a => a.user_id === m.user_id)
+                            ).length === 0) && (
+                              <p className="text-sm text-muted-gray p-2">No more members to add</p>
+                            )}
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                    )}
+                  </div>
+                  {(!task.assignees || task.assignees.length === 0) && !canEdit && (
                     <span className="text-sm text-muted-gray">No assignees</span>
                   )}
                 </div>
@@ -451,19 +603,204 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
               <div className="flex items-start gap-4">
                 <Label className="w-24 text-muted-gray pt-2">Labels</Label>
                 <div className="flex-1">
-                  {task.labels && task.labels.length > 0 ? (
-                    <div className="flex flex-wrap gap-2">
-                      {task.labels.map(label => (
-                        <span
-                          key={label.id}
-                          className="text-sm px-2 py-0.5 rounded"
-                          style={{ backgroundColor: `${label.color}20`, color: label.color }}
-                        >
-                          {label.name}
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
+                  <div className="flex flex-wrap gap-2 items-center">
+                    {task.labels && task.labels.map(labelLink => (
+                      <span
+                        key={labelLink.id}
+                        className="text-sm px-2 py-0.5 rounded flex items-center gap-1 group"
+                        style={{ backgroundColor: `${labelLink.color}20`, color: labelLink.color }}
+                      >
+                        {labelLink.name}
+                        {canEdit && (
+                          <button
+                            onClick={() => removeLabel.mutate(labelLink.id, {
+                              onError: () => {
+                                toast({
+                                  title: 'Error',
+                                  description: 'Failed to remove label',
+                                  variant: 'destructive',
+                                });
+                              }
+                            })}
+                            className="opacity-0 group-hover:opacity-100 hover:text-red-400"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        )}
+                      </span>
+                    ))}
+                    {canEdit && (
+                      <Popover
+                        open={showLabelPopover}
+                        onOpenChange={(open) => {
+                          setShowLabelPopover(open);
+                          if (!open) {
+                            setLabelSearch('');
+                            setIsCreatingLabel(false);
+                          }
+                        }}
+                      >
+                        <PopoverTrigger asChild>
+                          <Button variant="outline" size="sm" className="h-7 px-2">
+                            <Plus className="w-3 h-3 mr-1" />
+                            Add
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-72 p-0" align="start">
+                          <div className="p-2 border-b">
+                            <div className="relative">
+                              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-gray" />
+                              <Input
+                                placeholder="Search or create labels..."
+                                value={labelSearch}
+                                onChange={e => setLabelSearch(e.target.value)}
+                                className="pl-8 h-8 text-sm"
+                                autoFocus
+                              />
+                            </div>
+                          </div>
+                          <div className="max-h-48 overflow-y-auto p-2 space-y-1">
+                            {labelsLoading ? (
+                              <div className="flex items-center justify-center py-4">
+                                <Loader2 className="w-5 h-5 animate-spin text-muted-gray" />
+                              </div>
+                            ) : (
+                              (() => {
+                                const availableLabels = labels?.filter(l =>
+                                  !task.labels?.some(tl => tl.label_id === l.id) &&
+                                  l.name.toLowerCase().includes(labelSearch.toLowerCase())
+                                ) || [];
+
+                                const exactMatch = labels?.some(l => l.name.toLowerCase() === labelSearch.trim().toLowerCase());
+                                const showCreateOption = labelSearch.trim() && !exactMatch;
+
+                                return (
+                                  <>
+                                    {/* Show "Add new label" option at top when typing */}
+                                    {showCreateOption && (
+                                      <div className="border-b pb-2 mb-2">
+                                        {!isCreatingLabel ? (
+                                          <button
+                                            className="flex items-center gap-2 w-full p-2 rounded hover:bg-accent-yellow/10 text-left text-sm bg-muted-gray/5"
+                                            onClick={() => setIsCreatingLabel(true)}
+                                          >
+                                            <Plus className="w-4 h-4 text-accent-yellow" />
+                                            <span>Add "<strong>{labelSearch.trim()}</strong>"</span>
+                                          </button>
+                                        ) : (
+                                          <div className="space-y-2 p-2 bg-muted-gray/5 rounded">
+                                            <p className="text-xs text-muted-gray">Pick a color for "{labelSearch.trim()}":</p>
+                                            <div className="flex flex-wrap gap-1">
+                                              {LABEL_COLORS.map(color => (
+                                                <button
+                                                  key={color}
+                                                  className={cn(
+                                                    "w-6 h-6 rounded-full border-2 transition-transform",
+                                                    newLabelColor === color ? "border-white scale-110" : "border-transparent hover:scale-105"
+                                                  )}
+                                                  style={{ backgroundColor: color }}
+                                                  onClick={() => setNewLabelColor(color)}
+                                                />
+                                              ))}
+                                            </div>
+                                            <div className="flex gap-2">
+                                              <Button
+                                                size="sm"
+                                                className="flex-1"
+                                                disabled={createLabel.isPending}
+                                                onClick={async () => {
+                                                  try {
+                                                    const newLabel = await createLabel.mutateAsync({
+                                                      name: labelSearch.trim(),
+                                                      color: newLabelColor,
+                                                    });
+                                                    addLabel.mutate(newLabel.id, {
+                                                      onSuccess: () => {
+                                                        toast({
+                                                          title: 'Label created',
+                                                          description: `"${newLabel.name}" added to task`,
+                                                        });
+                                                      },
+                                                    });
+                                                    setLabelSearch('');
+                                                    setIsCreatingLabel(false);
+                                                    setShowLabelPopover(false);
+                                                  } catch (error) {
+                                                    console.error('Error creating label:', error);
+                                                    toast({
+                                                      title: 'Error',
+                                                      description: 'Failed to create label',
+                                                      variant: 'destructive',
+                                                    });
+                                                  }
+                                                }}
+                                              >
+                                                {createLabel.isPending ? (
+                                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                                ) : (
+                                                  'Add'
+                                                )}
+                                              </Button>
+                                              <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() => setIsCreatingLabel(false)}
+                                              >
+                                                Cancel
+                                              </Button>
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+
+                                    {/* Existing labels list */}
+                                    {availableLabels.length > 0 ? (
+                                      availableLabels.map(label => (
+                                        <button
+                                          key={label.id}
+                                          onClick={() => {
+                                            addLabel.mutate(label.id, {
+                                              onSuccess: () => {
+                                                toast({
+                                                  title: 'Added',
+                                                  description: `Label "${label.name}" added to task`,
+                                                });
+                                              },
+                                              onError: () => {
+                                                toast({
+                                                  title: 'Error',
+                                                  description: 'Failed to add label',
+                                                  variant: 'destructive',
+                                                });
+                                              },
+                                            });
+                                            setShowLabelPopover(false);
+                                          }}
+                                          className="flex items-center gap-2 w-full p-2 rounded hover:bg-muted-gray/10 text-left"
+                                        >
+                                          <span
+                                            className="w-3 h-3 rounded-full"
+                                            style={{ backgroundColor: label.color || '#888' }}
+                                          />
+                                          <span className="text-sm">{label.name}</span>
+                                        </button>
+                                      ))
+                                    ) : !showCreateOption ? (
+                                      <p className="text-sm text-muted-gray text-center py-2">
+                                        No labels yet. Type to create one.
+                                    </p>
+                                    ) : null}
+                                  </>
+                                );
+                              })()
+                            )}
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                    )}
+                  </div>
+                  {(!task.labels || task.labels.length === 0) && !canEdit && (
                     <span className="text-sm text-muted-gray">No labels</span>
                   )}
                 </div>

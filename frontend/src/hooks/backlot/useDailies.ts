@@ -1344,3 +1344,252 @@ export function useProjectScenes(projectId: string | null) {
     enabled: !!projectId,
   });
 }
+
+// =============================================================================
+// PRODUCTION DAY VIEW (Auto-Import from Schedule)
+// =============================================================================
+
+/**
+ * Unified production day view for Dailies tab.
+ * Shows all production days from schedule with their dailies status.
+ */
+export interface DailiesProductionDayView {
+  // Production day info
+  production_day_id: string;
+  day_number: number;
+  date: string;
+  title: string | null;
+  location_name: string | null;
+  is_completed: boolean;
+  call_time: string | null;
+  first_shot_time: string | null;
+  wrap_time: string | null;
+  scene_count: number;
+  // Dailies day info (null if not created yet)
+  dailies_day_id: string | null;
+  dailies_day_label: string | null;
+  dailies_day_unit: string | null;
+  dailies_day_status: string | null;
+  // Footage stats
+  has_footage: boolean;
+  card_count: number;
+  clip_count: number;
+  circle_take_count: number;
+  total_duration_seconds: number;
+}
+
+/**
+ * Hook to fetch all production days with their dailies status.
+ * This is the unified view that shows all schedule days in the Dailies tab.
+ */
+export function useDailiesProductionDayView(projectId: string | null) {
+  return useQuery({
+    queryKey: ['dailies-production-day-view', projectId],
+    queryFn: async (): Promise<DailiesProductionDayView[]> => {
+      if (!projectId) return [];
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/dailies/production-day-view`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch production day view' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return result.production_days || [];
+    },
+    enabled: !!projectId,
+  });
+}
+
+export interface EnsureDailiesDayResult {
+  day: BacklotDailiesDay;
+  created: boolean;
+}
+
+/**
+ * Hook to ensure a dailies day exists for a production day.
+ * Creates the dailies day on-demand if it doesn't exist.
+ */
+export function useEnsureDailiesDay() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      projectId,
+      productionDayId,
+    }: {
+      projectId: string;
+      productionDayId: string;
+    }): Promise<EnsureDailiesDayResult> => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/dailies/ensure-day-for-production-day`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ production_day_id: productionDayId }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to ensure dailies day' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dailies-production-day-view'] });
+      queryClient.invalidateQueries({ queryKey: ['dailies-days'] });
+      queryClient.invalidateQueries({ queryKey: ['dailies-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['unlinked-production-days'] });
+    },
+  });
+}
+
+// =============================================================================
+// PRODUCTION DAY CLIPS (Direct clip-to-day linking)
+// =============================================================================
+
+/**
+ * Fetch clips assigned to a specific production day.
+ */
+export function useProductionDayClips(projectId: string | null, productionDayId: string | null) {
+  return useQuery({
+    queryKey: ['production-day-clips', projectId, productionDayId],
+    queryFn: async () => {
+      if (!projectId || !productionDayId) return [];
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/dailies/production-days/${productionDayId}/clips`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch production day clips' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.clips || []) as BacklotDailiesClip[];
+    },
+    enabled: !!projectId && !!productionDayId,
+  });
+}
+
+/**
+ * Mutation to assign clip IDs to a production day.
+ */
+export function useAssignClipsToDay() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      projectId,
+      productionDayId,
+      clipIds,
+    }: {
+      projectId: string;
+      productionDayId: string;
+      clipIds: string[];
+    }) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/dailies/production-days/${productionDayId}/assign-clips`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ clip_ids: clipIds }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to assign clips' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json() as Promise<{ updated_count: number }>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['production-day-clips'] });
+      queryClient.invalidateQueries({ queryKey: ['dailies-production-day-view'] });
+      queryClient.invalidateQueries({ queryKey: ['dailies-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['media-library'] });
+    },
+  });
+}
+
+/**
+ * Mutation to unassign clip IDs from a production day.
+ */
+export function useUnassignClipsFromDay() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      projectId,
+      productionDayId,
+      clipIds,
+    }: {
+      projectId: string;
+      productionDayId: string;
+      clipIds: string[];
+    }) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/dailies/production-days/${productionDayId}/unassign-clips`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ clip_ids: clipIds }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to unassign clips' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json() as Promise<{ updated_count: number }>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['production-day-clips'] });
+      queryClient.invalidateQueries({ queryKey: ['dailies-production-day-view'] });
+      queryClient.invalidateQueries({ queryKey: ['dailies-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['media-library'] });
+    },
+  });
+}

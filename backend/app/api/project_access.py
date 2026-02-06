@@ -299,10 +299,14 @@ async def list_project_members(
     profiles_by_id: Dict[str, Dict] = {}
     if all_user_ids:
         profiles_resp = client.table("profiles").select(
-            "id, full_name, avatar_url, username"
+            "id, full_name, display_name, avatar_url, username"
         ).in_("id", all_user_ids).execute()
         for p in (profiles_resp.data or []):
             profiles_by_id[str(p["id"])] = p
+        # Debug: log profile data
+        print(f"[DEBUG] Fetched {len(profiles_by_id)} profiles for user_ids: {all_user_ids[:3]}...")
+        for uid, prof in list(profiles_by_id.items())[:3]:
+            print(f"[DEBUG] Profile {uid}: display_name={prof.get('display_name')}, full_name={prof.get('full_name')}")
 
     # Get all backlot roles for this project
     roles_resp = client.table("backlot_project_roles").select("*").eq("project_id", project_id).execute()
@@ -335,7 +339,7 @@ async def list_project_members(
             user_id=owner_id,
             role="owner",
             joined_at=datetime.utcnow().isoformat(),
-            user_name=owner_profile.get("full_name"),
+            user_name=owner_profile.get("display_name") or owner_profile.get("full_name"),
             user_avatar=owner_profile.get("avatar_url"),
             user_username=owner_profile.get("username"),
             backlot_roles=[r["backlot_role"] for r in owner_roles],
@@ -376,7 +380,7 @@ async def list_project_members(
             email=m.get("email"),
             invited_by=str(m["invited_by"]) if m.get("invited_by") else None,
             joined_at=joined_at,
-            user_name=profile.get("full_name"),
+            user_name=profile.get("display_name") or profile.get("full_name"),
             user_avatar=profile.get("avatar_url"),
             user_username=profile.get("username"),
             backlot_roles=[r["backlot_role"] for r in user_roles],
@@ -453,7 +457,7 @@ async def add_member(
         department=member.get("department"),
         invited_by=member.get("invited_by"),
         joined_at=member.get("joined_at", ""),
-        user_name=profile.get("full_name"),
+        user_name=profile.get("display_name") or profile.get("full_name"),
         user_avatar=profile.get("avatar_url"),
         user_username=profile.get("username"),
         backlot_roles=[request.backlot_role] if request.backlot_role else [],
@@ -828,7 +832,7 @@ async def list_overrides(
             config=o.get("config", {}),
             created_at=o.get("created_at", ""),
             updated_at=o.get("updated_at", ""),
-            user_name=profile.get("full_name"),
+            user_name=profile.get("display_name") or profile.get("full_name"),
         ))
 
     return result
@@ -876,7 +880,7 @@ async def get_user_override(
         config=o.get("config", {}),
         created_at=o.get("created_at", ""),
         updated_at=o.get("updated_at", ""),
-        user_name=profile.get("full_name"),
+        user_name=profile.get("display_name") or profile.get("full_name"),
     )
 
 
@@ -1083,7 +1087,7 @@ async def get_unified_people(
     profiles_by_id: Dict[str, Dict] = {}
     if all_user_ids:
         profiles_resp = client.table("profiles").select(
-            "id, full_name, avatar_url, username"
+            "id, full_name, display_name, avatar_url, username"
         ).in_("id", all_user_ids).execute()
         for p in (profiles_resp.data or []):
             profiles_by_id[str(p["id"])] = p
@@ -1160,7 +1164,7 @@ async def get_unified_people(
             email=m.get("email"),
             invited_by=str(m["invited_by"]) if m.get("invited_by") else None,
             joined_at=joined_at,
-            user_name=profile.get("full_name"),
+            user_name=profile.get("display_name") or profile.get("full_name"),
             user_avatar=profile.get("avatar_url"),
             user_username=profile.get("username"),
             backlot_roles=[r["backlot_role"] for r in user_roles],

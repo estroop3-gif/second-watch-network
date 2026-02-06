@@ -437,7 +437,7 @@ function BankColumn({ strips, stripboardId, projectId, canEdit, allDays, onEditS
 
   return (
     <DroppableColumn id="bank">
-      <div className="flex-shrink-0 w-80 bg-muted-gray/5 border border-muted-gray/30 rounded-lg">
+      <div className="flex-shrink-0 w-64 sm:w-72 md:w-80 bg-muted-gray/5 border border-muted-gray/30 rounded-lg">
         <div className="p-3 border-b border-muted-gray/30 bg-muted-gray/10">
           <div className="flex items-center gap-2">
             <Archive className="w-4 h-4 text-muted-gray" />
@@ -505,7 +505,7 @@ function DayColumnComponent({
 
   return (
     <DroppableColumn id={day.id}>
-      <div className="flex-shrink-0 w-80 bg-charcoal-black/30 border border-muted-gray/30 rounded-lg">
+      <div className="flex-shrink-0 w-64 sm:w-72 md:w-80 bg-charcoal-black/30 border border-muted-gray/30 rounded-lg">
         <div className="p-3 border-b border-muted-gray/30">
           <div className="flex items-center justify-between">
             <div>
@@ -1240,25 +1240,25 @@ export function StripboardView({ projectId, canEdit }: StripboardViewProps) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 md:space-y-6 overflow-x-hidden max-w-full">
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-heading text-bone-white">{stripboard.title}</h2>
-          <p className="text-sm text-muted-gray">
+          <h2 className="text-xl md:text-2xl font-heading text-bone-white">{stripboard.title}</h2>
+          <p className="text-xs md:text-sm text-muted-gray">
             {summary?.counts.total || 0} strips • {summary?.counts.bank || 0} in bank •{' '}
             {summary?.counts.scheduled || 0} scheduled
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {canEdit && (
             <>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" size="sm" disabled={isGenerating}>
-                    <Wand2 className="w-4 h-4 mr-2" />
-                    {isGenerating ? 'Generating...' : 'Generate Strips'}
+                    <Wand2 className="w-4 h-4 md:mr-2" />
+                    <span className="hidden md:inline">{isGenerating ? 'Generating...' : 'Generate Strips'}</span>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
@@ -1278,14 +1278,14 @@ export function StripboardView({ projectId, canEdit }: StripboardViewProps) {
                 </DropdownMenuContent>
               </DropdownMenu>
               <Button variant="outline" size="sm" onClick={() => setShowCreateStrip(true)}>
-                <Plus className="w-4 h-4 mr-2" />
-                Custom Strip
+                <Plus className="w-4 h-4 md:mr-2" />
+                <span className="hidden md:inline">Custom Strip</span>
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" size="sm" disabled={isSyncing}>
-                    <RefreshCw className={cn('w-4 h-4 mr-2', isSyncing && 'animate-spin')} />
-                    {isSyncing ? 'Syncing...' : 'Sync Schedule'}
+                    <RefreshCw className={cn('w-4 h-4 md:mr-2', isSyncing && 'animate-spin')} />
+                    <span className="hidden md:inline">{isSyncing ? 'Syncing...' : 'Sync Schedule'}</span>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
@@ -1313,12 +1313,12 @@ export function StripboardView({ projectId, canEdit }: StripboardViewProps) {
             </>
           )}
           <Button variant="outline" size="sm" onClick={handleExport}>
-            <Download className="w-4 h-4 mr-2" />
-            Export CSV
+            <Download className="w-4 h-4 md:mr-2" />
+            <span className="hidden md:inline">Export CSV</span>
           </Button>
           <Button variant="outline" size="sm" onClick={handleExportPdf} disabled={isExportingPdf}>
-            <Download className="w-4 h-4 mr-2" />
-            {isExportingPdf ? 'Exporting...' : 'Export PDF'}
+            <Download className="w-4 h-4 md:mr-2" />
+            <span className="hidden md:inline">{isExportingPdf ? 'Exporting...' : 'Export PDF'}</span>
           </Button>
         </div>
       </div>
@@ -1326,24 +1326,24 @@ export function StripboardView({ projectId, canEdit }: StripboardViewProps) {
       {/* Date Range Controls */}
       <Card className="bg-charcoal-black/30 border-muted-gray/30">
         <CardContent className="py-3">
-          <div className="flex items-center gap-4">
-            <Calendar className="w-4 h-4 text-muted-gray" />
+          <div className="flex flex-wrap items-center gap-2 md:gap-4">
+            <Calendar className="w-4 h-4 text-muted-gray hidden sm:block" />
             <div className="flex items-center gap-2">
-              <Label className="text-sm text-muted-gray">From</Label>
+              <Label className="text-xs md:text-sm text-muted-gray">From</Label>
               <Input
                 type="date"
                 value={dateRange.start}
                 onChange={(e) => setDateRange((prev) => ({ ...prev, start: e.target.value }))}
-                className="w-40 h-8"
+                className="w-32 md:w-40 h-8 text-sm"
               />
             </div>
             <div className="flex items-center gap-2">
-              <Label className="text-sm text-muted-gray">To</Label>
+              <Label className="text-xs md:text-sm text-muted-gray">To</Label>
               <Input
                 type="date"
                 value={dateRange.end}
                 onChange={(e) => setDateRange((prev) => ({ ...prev, end: e.target.value }))}
-                className="w-40 h-8"
+                className="w-32 md:w-40 h-8 text-sm"
               />
             </div>
             <Button variant="ghost" size="sm" onClick={() => refetch()}>
@@ -1355,11 +1355,14 @@ export function StripboardView({ projectId, canEdit }: StripboardViewProps) {
 
       {/* Stripboard Grid */}
       {loadingView ? (
-        <div className="flex gap-4">
-          <Skeleton className="h-96 w-64 flex-shrink-0" />
-          <Skeleton className="h-96 w-64 flex-shrink-0" />
-          <Skeleton className="h-96 w-64 flex-shrink-0" />
-        </div>
+        <ScrollArea className="w-full">
+          <div className="flex gap-2 sm:gap-3 md:gap-4 pb-4">
+            <Skeleton className="h-96 w-64 sm:w-72 md:w-80 flex-shrink-0" />
+            <Skeleton className="h-96 w-64 sm:w-72 md:w-80 flex-shrink-0" />
+            <Skeleton className="h-96 w-64 sm:w-72 md:w-80 flex-shrink-0" />
+          </div>
+          <ScrollBar orientation="horizontal" />
+        </ScrollArea>
       ) : (
         <DndContext
           sensors={sensors}
@@ -1368,7 +1371,7 @@ export function StripboardView({ projectId, canEdit }: StripboardViewProps) {
           onDragEnd={handleDragEnd}
         >
           <ScrollArea className="w-full">
-            <div className="flex gap-4 pb-4">
+            <div className="flex gap-2 sm:gap-3 md:gap-4 pb-4">
               {/* Bank Column */}
               <BankColumn
                 strips={viewData?.bank_strips || []}
@@ -1413,7 +1416,7 @@ export function StripboardView({ projectId, canEdit }: StripboardViewProps) {
           <DragOverlay>
             {activeStrip && (
               <div className="opacity-90">
-                <div className="bg-charcoal-black/80 border-2 border-accent-yellow rounded-lg p-3 w-80 shadow-lg">
+                <div className="bg-charcoal-black/80 border-2 border-accent-yellow rounded-lg p-3 w-64 sm:w-72 md:w-80 max-w-[calc(100vw-2rem)] shadow-lg">
                   <div className="flex items-center justify-between gap-2 mb-2">
                     <div className="flex items-center gap-2">
                       {activeStrip.scene_number && (

@@ -8,6 +8,7 @@ export {
   useProject,
   useProjectBySlug,
   useProjectPermission,
+  useWorkspaceInit,
 } from './useProjects';
 
 // Project Members (from useProjectAccess - uses working backend API)
@@ -1691,6 +1692,11 @@ export {
   getFileTypeFilter,
   FILE_TYPE_FILTERS,
   LINK_TARGET_TYPES,
+  // Unified Files
+  useUnifiedFiles,
+  useUnifiedFileDownload,
+  UNIFIED_SOURCE_FILTERS,
+  SOURCE_COLORS,
 } from './useProjectFiles';
 export type {
   ProjectFolder,
@@ -1700,6 +1706,9 @@ export type {
   UploadProgress,
   FileTypeFilter,
   LinkTargetType,
+  UnifiedFile,
+  UnifiedFileSource,
+  UnifiedFilesFilters,
 } from './useProjectFiles';
 
 // Continuity Exports (PDF version history)

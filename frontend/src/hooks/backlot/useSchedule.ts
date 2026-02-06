@@ -2760,3 +2760,70 @@ export function useSyncHourSchedule(dayId: string | null) {
     },
   });
 }
+
+// =====================================================
+// Production Day AD Notes
+// =====================================================
+
+/**
+ * Hook for fetching AD notes for a production day
+ */
+export function useProductionDayAdNotes(dayId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-production-day-ad-notes', dayId],
+    queryFn: async () => {
+      if (!dayId) return null;
+
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/production-days/${dayId}/ad-notes`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch AD notes' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return result.notes as string | null;
+    },
+    enabled: !!dayId,
+  });
+}
+
+/**
+ * Hook for updating AD notes for a production day (optimized for auto-save)
+ */
+export function useUpdateProductionDayAdNotes() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ dayId, notes }: { dayId: string; notes: string }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/production-days/${dayId}/ad-notes`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ notes }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update AD notes' }));
+        throw new Error(error.detail);
+      }
+
+      return { dayId, notes };
+    },
+    onSuccess: ({ dayId }) => {
+      // Don't invalidate on every keystroke - notes are local
+      // Update the cached value directly
+      queryClient.setQueryData(['backlot-production-day-ad-notes', dayId], (old: string | null) => old);
+    },
+  });
+}

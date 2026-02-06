@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useProfile } from '@/hooks/useProfile';
 import { usePermissions } from '@/hooks/usePermissions';
-import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Trophy, Crown, Handshake, Wrench, Package, Building2 } from 'lucide-react';
+import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Trophy, Crown, Handshake, Wrench, Package, Building2, Home, Clapperboard, Send, Inbox } from 'lucide-react';
 import { track } from '@/utils/telemetry';
 
 interface UserNavMenuItemsProps {
@@ -26,19 +26,22 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
 
   const username = profile?.username || user.user_metadata?.username || user.email?.split('@')[0];
   const isAdmin = hasRole('admin');
+  const isSuperadmin = hasRole('superadmin');
   const isFilmmakerRole = hasRole('filmmaker');
   const isPartner = hasRole('partner');
   const isOrderMember = hasRole('order_member');
+  const isLodgeOfficer = hasRole('lodge_officer');
 
   // Check both user_metadata roles AND profile is_filmmaker flag for redundancy
   const isFilmmakerProfile = profile?.is_filmmaker === true;
   const isFilmmaker = isFilmmakerRole || isFilmmakerProfile;
   const hasOnboarded = profile?.has_completed_filmmaker_onboarding === true;
 
-  const showPartnerLink = isPartner || isAdmin;
+  const showAdminLink = isAdmin || isSuperadmin;
+  const showPartnerLink = isPartner || isAdmin || isSuperadmin;
   const showOnboardingLink = isFilmmaker && !hasOnboarded;
-  const canSubmitAndManageSubmissions = isFilmmakerRole || isAdmin;
-  const showOrderLink = isOrderMember || isAdmin;
+  const canSubmitAndManageSubmissions = isFilmmakerRole || isAdmin || isSuperadmin;
+  const showOrderLink = isOrderMember || isLodgeOfficer || isAdmin || isSuperadmin;
 
   // Full Gear House is for non-free users (filmmaker, premium, admin, etc.)
   // Free users use My Gear (lite) instead
@@ -47,7 +50,7 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
 
   return (
     <div className="flex flex-col gap-1">
-      {isAdmin && (
+      {showAdminLink && (
         <MenuItem to="/admin/dashboard" onClick={onLinkClick}>
           <Shield className="mr-3 h-5 w-5" />
           <span>Admin Panel</span>
@@ -108,6 +111,10 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
         <Film className="mr-3 h-5 w-5" />
         <span>The Backlot</span>
       </MenuItem>
+      <MenuItem to="/organizations" onClick={onLinkClick}>
+        <Building2 className="mr-3 h-5 w-5" />
+        <span>Organizations</span>
+      </MenuItem>
       {hasFullGearHouseAccess && (
         <MenuItem to="/gear" onClick={onLinkClick}>
           <Wrench className="mr-3 h-5 w-5" />
@@ -116,7 +123,7 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
       )}
       {hasFullGearHouseAccess && (
         <MenuItem to="/set-house" onClick={onLinkClick}>
-          <Building2 className="mr-3 h-5 w-5" />
+          <Home className="mr-3 h-5 w-5" />
           <span>Set House</span>
         </MenuItem>
       )}
@@ -125,8 +132,12 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
         <span>My Gear</span>
       </MenuItem>
       <MenuItem to="/greenroom" onClick={onLinkClick}>
-        <Trophy className="mr-3 h-5 w-5" />
+        <Clapperboard className="mr-3 h-5 w-5" />
         <span>Green Room</span>
+      </MenuItem>
+      <MenuItem to="/order" onClick={onLinkClick}>
+        <Crown className="mr-3 h-5 w-5" />
+        <span>The Order</span>
       </MenuItem>
       {canSubmitAndManageSubmissions && (
         <MenuItem to="/submit-project" onClick={onLinkClick}>
@@ -160,8 +171,16 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
         <Handshake className="mr-3 h-5 w-5" />
         <span>My Connections</span>
       </MenuItem>
+      <MenuItem to="/my-applications" onClick={onLinkClick}>
+        <Send className="mr-3 h-5 w-5" />
+        <span>My Applications</span>
+      </MenuItem>
+      <MenuItem to="/applications-received" onClick={onLinkClick}>
+        <Inbox className="mr-3 h-5 w-5" />
+        <span>Applications Received</span>
+      </MenuItem>
       <MenuItem
-        to="/account/membership"
+        to="/account/subscription-settings"
         onClick={() => {
           try { track("nav_subscriptions_click"); } catch {}
           onLinkClick();

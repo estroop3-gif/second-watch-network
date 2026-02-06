@@ -3854,10 +3854,10 @@ async def get_user_directory(
     client = get_client()
 
     try:
-        # Build base query for profiles with filmmaker_profiles join for location
+        # Build base query for profiles (no nested join — client doesn't support it)
         query = client.table("profiles").select(
             "id, username, full_name, display_name, avatar_url, role, "
-            "is_order_member, is_partner, filmmaker_profile:filmmaker_profiles(location)"
+            "is_order_member, is_partner"
         ).neq("id", current_user_id)  # Exclude current user
 
         # Apply search filter
@@ -3914,8 +3914,17 @@ async def get_user_directory(
                 pages=max(1, (total + limit - 1) // limit)
             )
 
-        # Get connection statuses for all returned profiles
+        # Get connection statuses and locations for all returned profiles
         profile_ids = [p["id"] for p in profiles]
+
+        # Fetch locations from filmmaker_profiles in a separate query
+        location_result = client.table("filmmaker_profiles").select(
+            "user_id, location"
+        ).in_("user_id", profile_ids).execute()
+        location_map: Dict[str, str] = {}
+        for fp in (location_result.data or []):
+            if fp.get("location"):
+                location_map[fp["user_id"]] = fp["location"]
 
         # Query connections where current user is requester
         sent_connections = client.table("connections").select(
@@ -3946,18 +3955,10 @@ async def get_user_directory(
                 if user_id not in connection_map or connection_map[user_id] != "connected":
                     connection_map[user_id] = "pending_received"
 
-        # Build response - extract location from filmmaker_profile join
+        # Build response - look up location from separate query
         users = []
         for profile in profiles:
-            # Extract location from filmmaker_profile join
-            filmmaker_profile = profile.get("filmmaker_profile")
-            profile_location = None
-            if filmmaker_profile:
-                # Could be a dict or list depending on the join
-                if isinstance(filmmaker_profile, dict):
-                    profile_location = filmmaker_profile.get("location")
-                elif isinstance(filmmaker_profile, list) and len(filmmaker_profile) > 0:
-                    profile_location = filmmaker_profile[0].get("location")
+            profile_location = location_map.get(profile["id"])
 
             # Apply location filter (post-query filtering)
             if location and location.strip():

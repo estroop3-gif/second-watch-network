@@ -423,7 +423,7 @@ export class FileUploadManager {
 
   private async getAuthHeader(): Promise<string> {
     // Get token from localStorage (matching api.ts pattern)
-    const token = localStorage.getItem('accessToken');
+    const token = localStorage.getItem('access_token');
     return token ? `Bearer ${token}` : '';
   }
 
@@ -725,3 +725,102 @@ export const LINK_TARGET_TYPES = [
   { value: 'PROJECT_DAY', label: 'Production Day' },
   { value: 'OTHER', label: 'Other' },
 ] as const;
+
+// =====================================================
+// Unified Files (All Files across tools)
+// =====================================================
+
+export type UnifiedFileSource =
+  | 'project_files'
+  | 'scripts'
+  | 'receipts'
+  | 'clearances'
+  | 'dailies'
+  | 'review_versions'
+  | 'standalone_assets'
+  | 'continuity_exports'
+  | 'moodboards'
+  | 'storyboards';
+
+export interface UnifiedFile {
+  id: string;
+  name: string;
+  source: UnifiedFileSource;
+  source_label: string;
+  file_url: string | null;
+  size_bytes: number | null;
+  mime_type: string | null;
+  created_at: string;
+  source_entity_id: string;
+}
+
+export interface UnifiedFilesFilters {
+  source?: UnifiedFileSource;
+  search?: string;
+  file_type?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export const UNIFIED_SOURCE_FILTERS = [
+  { value: '', label: 'All Sources' },
+  { value: 'project_files', label: 'Project Files' },
+  { value: 'scripts', label: 'Scripts' },
+  { value: 'receipts', label: 'Receipts' },
+  { value: 'clearances', label: 'Clearances' },
+  { value: 'dailies', label: 'Dailies' },
+  { value: 'review_versions', label: 'Review' },
+  { value: 'standalone_assets', label: 'Assets' },
+  // continuity_exports merged into 'scripts' on backend
+  { value: 'moodboards', label: 'Moodboards' },
+  { value: 'storyboards', label: 'Storyboards' },
+] as const;
+
+export const SOURCE_COLORS: Record<string, string> = {
+  project_files: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  scripts: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+  receipts: 'bg-green-500/20 text-green-400 border-green-500/30',
+  clearances: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+  dailies: 'bg-red-500/20 text-red-400 border-red-500/30',
+  review_versions: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
+  standalone_assets: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+  continuity_exports: 'bg-pink-500/20 text-pink-400 border-pink-500/30',
+  moodboards: 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30',
+  storyboards: 'bg-teal-500/20 text-teal-400 border-teal-500/30',
+};
+
+const unifiedFilesKeys = {
+  all: ['unified-files'] as const,
+  list: (projectId: string, filters: UnifiedFilesFilters) =>
+    [...unifiedFilesKeys.all, projectId, filters.source, filters.search, filters.file_type, filters.limit, filters.offset] as const,
+};
+
+export function useUnifiedFiles(projectId: string | null, filters: UnifiedFilesFilters = {}) {
+  const { source, search, file_type, limit = 200, offset = 0 } = filters;
+
+  return useQuery({
+    queryKey: unifiedFilesKeys.list(projectId || '', { source, search, file_type, limit, offset }),
+    queryFn: async (): Promise<{ files: UnifiedFile[]; total: number; limit: number; offset: number }> => {
+      if (!projectId) throw new Error('Project ID required');
+      const params = new URLSearchParams();
+      if (source) params.append('source', source);
+      if (search) params.append('search', search);
+      if (file_type) params.append('file_type', file_type);
+      params.append('limit', String(limit));
+      params.append('offset', String(offset));
+      const query = params.toString();
+      return api.get(`/api/v1/backlot/projects/${projectId}/files/all?${query}`);
+    },
+    enabled: !!projectId,
+    staleTime: 30000,
+  });
+}
+
+export function useUnifiedFileDownload(projectId: string | null) {
+  return useMutation({
+    mutationFn: async ({ source, sourceEntityId }: { source: string; sourceEntityId: string }): Promise<{ download_url: string; filename: string }> => {
+      if (!projectId) throw new Error('Project ID required');
+      return api.get(`/api/v1/backlot/projects/${projectId}/files/all/${source}/${sourceEntityId}/download`);
+    },
+  });
+}

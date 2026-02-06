@@ -5,7 +5,7 @@ Description: Second Watch Network API - FastAPI on Lambda with WebSocket - Updat
 Globals:
   Function:
     Timeout: 30
-    MemorySize: 1024
+    MemorySize: 2048
     Runtime: python3.12
     Environment:
       Variables:
@@ -61,6 +61,34 @@ Parameters:
 
 Resources:
   # ============================================================================
+  # HTTP API with CORS (ensures CORS headers on gateway-level errors like 502/503)
+  # ============================================================================
+  ServerlessHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - PATCH
+          - OPTIONS
+        AllowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - Origin
+          - X-Requested-With
+          - X-Request-ID
+        ExposeHeaders:
+          - X-Request-ID
+        MaxAge: 600
+
+  # ============================================================================
   # Main API Lambda
   # ============================================================================
   SecondWatchApi:
@@ -69,6 +97,7 @@ Resources:
       CodeUri: .
       Handler: handler.handler
       Description: Second Watch Network FastAPI Backend
+      Timeout: 60
       Architectures:
         - x86_64
       Environment:
@@ -100,7 +129,7 @@ Resources:
         KeepWarm:
           Type: Schedule
           Properties:
-            Schedule: rate(5 minutes)
+            Schedule: rate(2 minutes)
             Description: Keep Lambda warm to reduce cold start latency
             Input: '{"httpMethod": "GET", "path": "/health", "requestContext": {"http": {"method": "GET", "path": "/health"}}, "headers": {"X-Warmup-Ping": "true"}, "isBase64Encoded": false}'
       Policies:

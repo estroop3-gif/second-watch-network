@@ -8,6 +8,7 @@
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { useAuth } from '@/context/AuthContext';
 
 export type DirectoryUser = {
   id: string;
@@ -40,6 +41,7 @@ export type DirectoryResponse = {
 };
 
 export function useUserDirectory(filters: DirectoryFilters = {}) {
+  const { user } = useAuth();
   const queryClient = useQueryClient();
 
   const queryKey = ['user-directory', filters];
@@ -60,12 +62,14 @@ export function useUserDirectory(filters: DirectoryFilters = {}) {
     },
     staleTime: 30000, // 30 seconds
     refetchOnWindowFocus: false,
+    retry: 2,
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000),
   });
 
   // Mutation to send connection request
   const sendConnectionRequest = useMutation({
     mutationFn: async (recipientId: string) => {
-      const response = await api.post(`/api/v1/connections`, {
+      const response = await api.post(`/api/v1/connections/?requester_id=${user?.id}`, {
         recipient_id: recipientId,
       });
       return response;

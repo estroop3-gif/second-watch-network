@@ -15,6 +15,7 @@ export default defineConfig({
     ['json', { outputFile: 'test-results/results.json' }],
     ['list']
   ],
+  timeout: 60000,
   use: {
     baseURL: 'http://localhost:8080',
     trace: 'on-first-retry',
@@ -23,10 +24,21 @@ export default defineConfig({
   },
 
   projects: [
-    // Setup project - runs authentication first
+    // Setup project — create Cognito test accounts if needed
+    {
+      name: 'setup-accounts',
+      testMatch: /test-accounts\.setup\.ts/,
+    },
+    // Setup project — authenticate all test users
+    {
+      name: 'setup-auth',
+      testMatch: /multi-auth\.setup\.ts/,
+      dependencies: ['setup-accounts'],
+    },
+    // Legacy single-user setup (kept for existing tests)
     {
       name: 'setup',
-      testMatch: /.*\.setup\.ts/,
+      testMatch: /auth\.setup\.ts/,
     },
     // Main test projects - depend on setup for auth
     {
@@ -36,6 +48,27 @@ export default defineConfig({
         storageState: 'playwright/.auth/user.json',
       },
       dependencies: ['setup'],
+    },
+    // Multi-role tests using owner auth — serial to avoid backend overload
+    {
+      name: 'chromium-owner',
+      fullyParallel: false,
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: 'playwright/.auth/owner.json',
+      },
+      testMatch: /team-access-(?!visibility).*\.spec\.ts/,
+      dependencies: ['setup-auth'],
+    },
+    // Visibility tests run per-role (handled inside spec via fixtures)
+    {
+      name: 'chromium-multi-role',
+      fullyParallel: false,
+      use: {
+        ...devices['Desktop Chrome'],
+      },
+      testMatch: /team-access-visibility\.spec\.ts/,
+      dependencies: ['setup-auth'],
     },
     {
       name: 'chromium-no-auth',

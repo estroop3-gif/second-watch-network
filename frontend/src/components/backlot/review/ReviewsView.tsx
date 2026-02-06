@@ -1,6 +1,6 @@
 /**
  * ReviewsView - List and manage review assets (Frame.io-style)
- * With folder organization, multiple view types, and status management
+ * With multiple view types and status management
  */
 import React, { useState, useRef, useCallback } from 'react';
 import { cn } from '@/lib/utils';
@@ -10,7 +10,6 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Progress } from '@/components/ui/progress';
 import {
   Dialog,
@@ -40,7 +39,6 @@ import {
   Upload,
   Layers,
   Play,
-  Link2,
   CloudUpload,
   FileVideo,
   X,
@@ -50,23 +48,25 @@ import {
   List,
   Columns,
   Calendar,
-  PanelLeftClose,
-  PanelLeft,
-  FolderPlus,
   Share2,
+  Globe,
+  Link as LinkIcon,
+  ExternalLink,
+  Search,
 } from 'lucide-react';
-import { useReviewAssets, useReviewFolders, useReviewFolder } from '@/hooks/backlot/useReview';
+import { useReviewAssets } from '@/hooks/backlot/useReview';
+import { useStandaloneAssets } from '@/hooks/backlot';
 import {
   ReviewAsset,
   ReviewAssetInput,
   ReviewAssetEnhanced,
-  ReviewFolder,
-  ReviewFolderInput,
   ReviewAssetStatus,
+  StandaloneAsset,
   formatTimecode,
 } from '@/types/backlot';
 import { formatDistanceToNow } from 'date-fns';
-import { FolderTree, FolderBreadcrumbs, CreateFolderModal } from './folders';
+import { useQueryClient } from '@tanstack/react-query';
+import { api } from '@/lib/api';
 import { ReviewKanbanView, ReviewTimelineView } from './views';
 import { ExternalLinkModal } from './external';
 
@@ -256,45 +256,51 @@ interface UploadState {
   progress: number;
   file: File | null;
   error: string | null;
-  vimeoId: string | null;
 }
 
-// Create asset modal with Upload + Link tabs
+// Add Asset modal — uploads directly to S3 via standalone assets
 const CreateAssetModal: React.FC<{
   open: boolean;
   onClose: () => void;
-  onSubmit: (data: ReviewAssetInput) => Promise<void>;
+  onSubmit: (data: ReviewAssetInput) => Promise<ReviewAsset>;
   isLoading: boolean;
-}> = ({ open, onClose, onSubmit, isLoading }) => {
-  const [activeTab, setActiveTab] = useState<'upload' | 'link'>('upload');
+  projectId: string;
+}> = ({ open, onClose, onSubmit, isLoading, projectId }) => {
+  const [mode, setMode] = useState<'upload' | 'link'>('upload');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [videoUrl, setVideoUrl] = useState('');
-  const [vimeoUrl, setVimeoUrl] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Upload state
+  // Link from Assets state
+  const [assetSearchQuery, setAssetSearchQuery] = useState('');
+  const [selectedAsset, setSelectedAsset] = useState<StandaloneAsset | null>(null);
+  const [isLinking, setIsLinking] = useState(false);
+
+  const { assets: standaloneAssets = [], isLoading: assetsLoading } = useStandaloneAssets({
+    projectId: (open && mode === 'link') ? projectId : null,
+  });
+
+  const filteredStandaloneAssets = standaloneAssets.filter((a) => {
+    if (!assetSearchQuery) return true;
+    const q = assetSearchQuery.toLowerCase();
+    return a.name.toLowerCase().includes(q) || a.source_url?.toLowerCase().includes(q);
+  });
+
   const [uploadState, setUploadState] = useState<UploadState>({
     status: 'idle',
     progress: 0,
     file: null,
     error: null,
-    vimeoId: null,
   });
 
-  // Reset form
   const resetForm = () => {
     setName('');
     setDescription('');
-    setVideoUrl('');
-    setVimeoUrl('');
-    setUploadState({
-      status: 'idle',
-      progress: 0,
-      file: null,
-      error: null,
-      vimeoId: null,
-    });
+    setMode('upload');
+    setAssetSearchQuery('');
+    setSelectedAsset(null);
+    setIsLinking(false);
+    setUploadState({ status: 'idle', progress: 0, file: null, error: null });
   };
 
   const handleClose = () => {
@@ -302,440 +308,403 @@ const CreateAssetModal: React.FC<{
     onClose();
   };
 
-  // Handle file selection
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Validate file type
     const validTypes = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/webm', 'video/x-matroska'];
     if (!validTypes.includes(file.type)) {
-      setUploadState({
-        status: 'error',
-        progress: 0,
-        file: null,
-        error: 'Please select a valid video file (MP4, MOV, AVI, WebM, MKV)',
-        vimeoId: null,
-      });
+      setUploadState({ status: 'error', progress: 0, file: null, error: 'Please select a valid video file (MP4, MOV, AVI, WebM, MKV)' });
       return;
     }
 
-    // Auto-fill name from filename if empty
     if (!name) {
-      const fileName = file.name.replace(/\.[^/.]+$/, ''); // Remove extension
-      setName(fileName);
+      setName(file.name.replace(/\.[^/.]+$/, ''));
     }
 
-    setUploadState({
-      status: 'selecting',
-      progress: 0,
-      file,
-      error: null,
-      vimeoId: null,
-    });
+    setUploadState({ status: 'selecting', progress: 0, file, error: null });
   };
 
-  // Handle drag and drop
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
     if (file && file.type.startsWith('video/')) {
       if (!name) {
-        const fileName = file.name.replace(/\.[^/.]+$/, '');
-        setName(fileName);
+        setName(file.name.replace(/\.[^/.]+$/, ''));
       }
-      setUploadState({
-        status: 'selecting',
-        progress: 0,
-        file,
-        error: null,
-        vimeoId: null,
-      });
+      setUploadState({ status: 'selecting', progress: 0, file, error: null });
     }
   }, [name]);
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-  };
-
-  // Clear selected file
   const clearFile = () => {
-    setUploadState({
-      status: 'idle',
-      progress: 0,
-      file: null,
-      error: null,
-      vimeoId: null,
-    });
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    setUploadState({ status: 'idle', progress: 0, file: null, error: null });
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // Simulate Vimeo upload (placeholder for real implementation)
-  const simulateVimeoUpload = async (): Promise<string> => {
-    // TODO: Replace with actual Vimeo API integration
-    // This would use the Vimeo Upload API:
-    // 1. POST to /me/videos to create upload ticket
-    // 2. Upload file using tus protocol to upload_link
-    // 3. Poll for transcode completion
-    // 4. Return the Vimeo video ID
-
+  const uploadToS3 = (url: string, file: File): Promise<void> => {
     return new Promise((resolve, reject) => {
-      let progress = 0;
-      const interval = setInterval(() => {
-        progress += Math.random() * 15;
-        if (progress >= 100) {
-          progress = 100;
-          clearInterval(interval);
-
-          // Simulate processing phase
-          setUploadState(prev => ({ ...prev, status: 'processing', progress: 100 }));
-
-          setTimeout(() => {
-            // Generate fake Vimeo ID for now
-            const fakeVimeoId = `${Date.now()}`;
-            resolve(fakeVimeoId);
-          }, 1500);
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', url, true);
+      xhr.setRequestHeader('Content-Type', file.type);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          setUploadState(prev => ({ ...prev, progress: Math.min((e.loaded / e.total) * 100, 99) }));
         }
-        setUploadState(prev => ({ ...prev, progress: Math.min(progress, 99) }));
-      }, 200);
+      };
+      xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`Upload failed with status ${xhr.status}`));
+      xhr.onerror = () => reject(new Error('Upload failed'));
+      xhr.send(file);
     });
   };
 
-  // Handle upload submission
   const handleUploadSubmit = async () => {
     if (!uploadState.file || !name) return;
 
     try {
-      setUploadState(prev => ({ ...prev, status: 'uploading' }));
+      setUploadState(prev => ({ ...prev, status: 'uploading', progress: 0 }));
 
-      // For now, we'll use a placeholder approach:
-      // In production, this would upload to Vimeo and get the video ID
-      const vimeoId = await simulateVimeoUpload();
+      // 1. Create the review asset (no video_url — version created by upload-url endpoint)
+      const asset = await onSubmit({ name, description });
 
-      setUploadState(prev => ({
-        ...prev,
-        status: 'complete',
-        vimeoId,
-      }));
+      // 2. Get presigned upload URL (creates standalone asset + review version)
+      const { upload_url, version_id } = await api.getReviewVersionUploadUrl(
+        asset.id,
+        uploadState.file.name,
+        uploadState.file.type || 'video/mp4',
+      );
 
-      // Submit with Vimeo provider (placeholder URL for now)
-      // When Vimeo is integrated, video_url would be the Vimeo player URL
-      await onSubmit({
-        name,
-        description,
-        video_url: `https://player.vimeo.com/video/${vimeoId}`, // Placeholder
-        video_provider: 'vimeo',
-        external_video_id: vimeoId,
-      });
+      // 3. Upload to S3
+      await uploadToS3(upload_url, uploadState.file);
 
+      // 4. Finalize
+      setUploadState(prev => ({ ...prev, status: 'processing', progress: 100 }));
+      await api.completeReviewVersionUpload(version_id);
+
+      setUploadState(prev => ({ ...prev, status: 'complete' }));
       handleClose();
     } catch (error) {
-      setUploadState(prev => ({
-        ...prev,
-        status: 'error',
-        error: 'Upload failed. Please try again.',
-      }));
+      setUploadState(prev => ({ ...prev, status: 'error', error: 'Upload failed. Please try again.' }));
     }
   };
 
-  // Handle link submission
-  const handleLinkSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    // Detect if it's a Vimeo URL
-    const vimeoMatch = videoUrl.match(/vimeo\.com\/(?:video\/)?(\d+)/);
-
-    if (vimeoMatch) {
-      await onSubmit({
-        name,
-        description,
-        video_url: `https://player.vimeo.com/video/${vimeoMatch[1]}`,
-        video_provider: 'vimeo',
-        external_video_id: vimeoMatch[1],
-      });
-    } else {
-      await onSubmit({
-        name,
-        description,
-        video_url: videoUrl,
-        video_provider: 'placeholder',
-      });
-    }
-
-    handleClose();
-  };
-
-  // Parse Vimeo URL for direct link option
-  const handleVimeoUrlChange = (url: string) => {
-    setVimeoUrl(url);
-    const match = url.match(/vimeo\.com\/(?:video\/)?(\d+)/);
-    if (match) {
-      setVideoUrl(`https://player.vimeo.com/video/${match[1]}`);
+  const handleLinkSubmit = async () => {
+    if (!selectedAsset) return;
+    setIsLinking(true);
+    try {
+      const assetName = name || selectedAsset.name;
+      const input: ReviewAssetInput = {
+        name: assetName,
+        description: description || selectedAsset.description || undefined,
+        video_url: selectedAsset.source_url || undefined,
+        video_provider: (selectedAsset.video_provider as any) || 'placeholder',
+        external_video_id: selectedAsset.external_video_id || undefined,
+        thumbnail_url: selectedAsset.thumbnail_url || undefined,
+      };
+      await onSubmit(input);
+      handleClose();
+    } catch (error) {
+      console.error('Error linking asset:', error);
+    } finally {
+      setIsLinking(false);
     }
   };
 
-  // Format file size
   const formatFileSize = (bytes: number) => {
-    if (bytes < 1024 * 1024) {
-      return `${(bytes / 1024).toFixed(1)} KB`;
-    }
-    if (bytes < 1024 * 1024 * 1024) {
-      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    }
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   };
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
-      <DialogContent className="bg-charcoal-black border-muted-gray/30 max-w-lg">
+      <DialogContent className="bg-charcoal-black border-muted-gray/30 max-w-lg max-h-[85vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="text-bone-white">Add Review Asset</DialogTitle>
+          <DialogTitle className="text-bone-white">Add Asset</DialogTitle>
           <DialogDescription>
-            Upload a video or paste a link for review
+            Upload a video file or link an existing asset for review
           </DialogDescription>
         </DialogHeader>
 
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'upload' | 'link')}>
-          <TabsList className="grid w-full grid-cols-2 bg-charcoal-black/50">
-            <TabsTrigger value="upload" className="flex items-center gap-2">
-              <CloudUpload className="w-4 h-4" />
-              Upload
-            </TabsTrigger>
-            <TabsTrigger value="link" className="flex items-center gap-2">
-              <Link2 className="w-4 h-4" />
-              Link
-            </TabsTrigger>
-          </TabsList>
+        {/* Mode Toggle */}
+        <div className="flex gap-2 mb-2">
+          <Button
+            variant={mode === 'upload' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setMode('upload')}
+            className={mode === 'upload' ? 'bg-accent-yellow text-charcoal-black' : ''}
+          >
+            <Upload className="w-4 h-4 mr-2" />
+            Upload File
+          </Button>
+          <Button
+            variant={mode === 'link' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setMode('link')}
+            className={mode === 'link' ? 'bg-accent-yellow text-charcoal-black' : ''}
+          >
+            <LinkIcon className="w-4 h-4 mr-2" />
+            Link from Assets
+          </Button>
+        </div>
 
-          {/* Upload Tab */}
-          <TabsContent value="upload" className="space-y-4 mt-4">
-            {/* Name field */}
-            <div className="space-y-2">
-              <Label htmlFor="upload-name">Name</Label>
-              <Input
-                id="upload-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g., Scene 1 - Rough Cut"
-                className="bg-charcoal-black border-muted-gray/30"
+        {mode === 'upload' ? (
+        <div className="space-y-4 mt-2">
+          {/* Name */}
+          <div className="space-y-2">
+            <Label htmlFor="upload-name">Name</Label>
+            <Input
+              id="upload-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g., Scene 1 - Rough Cut"
+              className="bg-charcoal-black border-muted-gray/30"
+            />
+          </div>
+
+          {/* Drop zone */}
+          {uploadState.status === 'idle' && (
+            <div
+              className="border-2 border-dashed border-muted-gray/30 rounded-lg p-8 text-center hover:border-accent-yellow/50 transition-colors cursor-pointer"
+              onDrop={handleDrop}
+              onDragOver={(e) => e.preventDefault()}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="video/*"
+                className="hidden"
+                onChange={handleFileSelect}
               />
-            </div>
-
-            {/* Drop zone */}
-            {uploadState.status === 'idle' && (
-              <div
-                className="border-2 border-dashed border-muted-gray/30 rounded-lg p-8 text-center hover:border-accent-yellow/50 transition-colors cursor-pointer"
-                onDrop={handleDrop}
-                onDragOver={handleDragOver}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="video/*"
-                  className="hidden"
-                  onChange={handleFileSelect}
-                />
-                <CloudUpload className="w-12 h-12 text-muted-gray/50 mx-auto mb-3" />
-                <p className="text-bone-white font-medium mb-1">
-                  Drag & drop your video here
-                </p>
-                <p className="text-sm text-muted-gray mb-3">
-                  or click to browse
-                </p>
-                <p className="text-xs text-muted-gray">
-                  MP4, MOV, AVI, WebM up to 10GB
-                </p>
-              </div>
-            )}
-
-            {/* Selected file */}
-            {uploadState.status === 'selecting' && uploadState.file && (
-              <div className="border border-muted-gray/30 rounded-lg p-4">
-                <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 rounded bg-accent-yellow/10 flex items-center justify-center shrink-0">
-                    <FileVideo className="w-5 h-5 text-accent-yellow" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-bone-white truncate">
-                      {uploadState.file.name}
-                    </p>
-                    <p className="text-sm text-muted-gray">
-                      {formatFileSize(uploadState.file.size)}
-                    </p>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="shrink-0"
-                    onClick={clearFile}
-                  >
-                    <X className="w-4 h-4" />
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {/* Uploading state */}
-            {(uploadState.status === 'uploading' || uploadState.status === 'processing') && (
-              <div className="border border-muted-gray/30 rounded-lg p-4 space-y-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded bg-accent-yellow/10 flex items-center justify-center shrink-0">
-                    {uploadState.status === 'uploading' ? (
-                      <Loader2 className="w-5 h-5 text-accent-yellow animate-spin" />
-                    ) : (
-                      <Loader2 className="w-5 h-5 text-accent-yellow animate-spin" />
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <p className="font-medium text-bone-white">
-                      {uploadState.status === 'uploading' ? 'Uploading to Vimeo...' : 'Processing...'}
-                    </p>
-                    <p className="text-sm text-muted-gray">
-                      {uploadState.status === 'uploading'
-                        ? `${Math.round(uploadState.progress)}% complete`
-                        : 'Preparing video for playback'}
-                    </p>
-                  </div>
-                </div>
-                <Progress value={uploadState.progress} className="h-2" />
-              </div>
-            )}
-
-            {/* Complete state */}
-            {uploadState.status === 'complete' && (
-              <div className="border border-green-500/30 bg-green-500/5 rounded-lg p-4">
-                <div className="flex items-center gap-3">
-                  <CheckCircle2 className="w-5 h-5 text-green-500" />
-                  <p className="text-green-400">Upload complete!</p>
-                </div>
-              </div>
-            )}
-
-            {/* Error state */}
-            {uploadState.status === 'error' && (
-              <div className="border border-red-500/30 bg-red-500/5 rounded-lg p-4">
-                <div className="flex items-center gap-3">
-                  <AlertCircle className="w-5 h-5 text-red-500" />
-                  <p className="text-red-400">{uploadState.error}</p>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="mt-3"
-                  onClick={clearFile}
-                >
-                  Try Again
-                </Button>
-              </div>
-            )}
-
-            {/* Description */}
-            <div className="space-y-2">
-              <Label htmlFor="upload-description">Description (optional)</Label>
-              <Textarea
-                id="upload-description"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Add context about this review asset..."
-                className="bg-charcoal-black border-muted-gray/30"
-                rows={2}
-              />
-            </div>
-
-            {/* Vimeo notice */}
-            <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-3 text-sm">
-              <p className="text-blue-400">
-                Videos are hosted on Vimeo for reliable streaming and review.
+              <CloudUpload className="w-12 h-12 text-muted-gray/50 mx-auto mb-3" />
+              <p className="text-bone-white font-medium mb-1">
+                Drag & drop your video here
+              </p>
+              <p className="text-sm text-muted-gray mb-3">
+                or click to browse
+              </p>
+              <p className="text-xs text-muted-gray">
+                MP4, MOV, AVI, WebM up to 10GB
               </p>
             </div>
+          )}
 
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={handleClose} disabled={isLoading || uploadState.status === 'uploading'}>
-                Cancel
-              </Button>
-              <Button
-                onClick={handleUploadSubmit}
-                disabled={
-                  isLoading ||
-                  !name ||
-                  !uploadState.file ||
-                  uploadState.status === 'uploading' ||
-                  uploadState.status === 'processing'
-                }
-              >
-                {(uploadState.status === 'uploading' || uploadState.status === 'processing') ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Uploading...
-                  </>
-                ) : (
-                  <>
-                    <Upload className="w-4 h-4 mr-2" />
-                    Upload & Add
-                  </>
-                )}
-              </Button>
-            </DialogFooter>
-          </TabsContent>
-
-          {/* Link Tab */}
-          <TabsContent value="link" className="mt-4">
-            <form onSubmit={handleLinkSubmit} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="link-name">Name</Label>
-                <Input
-                  id="link-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g., Scene 1 - Rough Cut"
-                  className="bg-charcoal-black border-muted-gray/30"
-                  required
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="video_url">Video URL</Label>
-                <Input
-                  id="video_url"
-                  type="url"
-                  value={videoUrl}
-                  onChange={(e) => setVideoUrl(e.target.value)}
-                  placeholder="https://vimeo.com/123456789 or direct MP4 link"
-                  className="bg-charcoal-black border-muted-gray/30"
-                  required
-                />
-                <p className="text-xs text-muted-gray">
-                  Paste a Vimeo URL, YouTube URL, or direct video link (MP4, WebM)
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="link-description">Description (optional)</Label>
-                <Textarea
-                  id="link-description"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Add context about this review asset..."
-                  className="bg-charcoal-black border-muted-gray/30"
-                  rows={2}
-                />
-              </div>
-
-              <DialogFooter>
-                <Button type="button" variant="outline" onClick={handleClose} disabled={isLoading}>
-                  Cancel
+          {/* Selected file */}
+          {uploadState.status === 'selecting' && uploadState.file && (
+            <div className="border border-muted-gray/30 rounded-lg p-4">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded bg-accent-yellow/10 flex items-center justify-center shrink-0">
+                  <FileVideo className="w-5 h-5 text-accent-yellow" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-bone-white truncate">{uploadState.file.name}</p>
+                  <p className="text-sm text-muted-gray">{formatFileSize(uploadState.file.size)}</p>
+                </div>
+                <Button variant="ghost" size="icon" className="shrink-0" onClick={clearFile}>
+                  <X className="w-4 h-4" />
                 </Button>
-                <Button type="submit" disabled={isLoading || !name || !videoUrl}>
-                  {isLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                  Add Asset
-                </Button>
-              </DialogFooter>
-            </form>
-          </TabsContent>
-        </Tabs>
+              </div>
+            </div>
+          )}
+
+          {/* Uploading / Processing */}
+          {(uploadState.status === 'uploading' || uploadState.status === 'processing') && (
+            <div className="border border-muted-gray/30 rounded-lg p-4 space-y-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded bg-accent-yellow/10 flex items-center justify-center shrink-0">
+                  <Loader2 className="w-5 h-5 text-accent-yellow animate-spin" />
+                </div>
+                <div className="flex-1">
+                  <p className="font-medium text-bone-white">
+                    {uploadState.status === 'uploading' ? 'Uploading...' : 'Processing...'}
+                  </p>
+                  <p className="text-sm text-muted-gray">
+                    {uploadState.status === 'uploading'
+                      ? `${Math.round(uploadState.progress)}% complete`
+                      : 'Preparing video for playback'}
+                  </p>
+                </div>
+              </div>
+              <Progress value={uploadState.progress} className="h-2" />
+            </div>
+          )}
+
+          {/* Complete */}
+          {uploadState.status === 'complete' && (
+            <div className="border border-green-500/30 bg-green-500/5 rounded-lg p-4">
+              <div className="flex items-center gap-3">
+                <CheckCircle2 className="w-5 h-5 text-green-500" />
+                <p className="text-green-400">Upload complete!</p>
+              </div>
+            </div>
+          )}
+
+          {/* Error */}
+          {uploadState.status === 'error' && (
+            <div className="border border-red-500/30 bg-red-500/5 rounded-lg p-4">
+              <div className="flex items-center gap-3">
+                <AlertCircle className="w-5 h-5 text-red-500" />
+                <p className="text-red-400">{uploadState.error}</p>
+              </div>
+              <Button variant="outline" size="sm" className="mt-3" onClick={clearFile}>
+                Try Again
+              </Button>
+            </div>
+          )}
+
+          {/* Description */}
+          <div className="space-y-2">
+            <Label htmlFor="upload-description">Description (optional)</Label>
+            <Textarea
+              id="upload-description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Add notes about this asset..."
+              className="bg-charcoal-black border-muted-gray/30"
+              rows={2}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={handleClose} disabled={isLoading || uploadState.status === 'uploading'}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleUploadSubmit}
+              disabled={isLoading || !name || !uploadState.file || uploadState.status === 'uploading' || uploadState.status === 'processing'}
+            >
+              {(uploadState.status === 'uploading' || uploadState.status === 'processing') ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Uploading...
+                </>
+              ) : (
+                <>
+                  <Upload className="w-4 h-4 mr-2" />
+                  Upload
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </div>
+        ) : (
+        /* Link from Assets mode */
+        <div className="space-y-4 mt-2">
+          {/* Search */}
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-gray" />
+            <Input
+              value={assetSearchQuery}
+              onChange={(e) => setAssetSearchQuery(e.target.value)}
+              placeholder="Search assets..."
+              className="pl-10 bg-charcoal-black border-muted-gray/30"
+            />
+          </div>
+
+          {/* Asset list */}
+          <div className="max-h-[300px] overflow-y-auto space-y-2 border border-muted-gray/20 rounded-lg p-2">
+            {assetsLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-5 h-5 text-accent-yellow animate-spin" />
+              </div>
+            ) : filteredStandaloneAssets.length === 0 ? (
+              <div className="text-center py-8 text-muted-gray text-sm">
+                No assets found. Add link assets in the Assets tab first.
+              </div>
+            ) : (
+              filteredStandaloneAssets.map((asset) => (
+                <div
+                  key={asset.id}
+                  className={cn(
+                    'flex items-center gap-3 p-2 rounded-lg cursor-pointer transition-colors',
+                    selectedAsset?.id === asset.id
+                      ? 'bg-accent-yellow/10 border border-accent-yellow/50'
+                      : 'hover:bg-charcoal-black/50 border border-transparent'
+                  )}
+                  onClick={() => {
+                    setSelectedAsset(asset);
+                    if (!name) setName(asset.name);
+                  }}
+                >
+                  <div className="w-10 h-10 rounded bg-charcoal-black flex items-center justify-center shrink-0">
+                    {asset.source_url ? (
+                      <Globe className="w-5 h-5 text-accent-yellow" />
+                    ) : asset.thumbnail_url ? (
+                      <img src={asset.thumbnail_url} alt="" className="w-full h-full object-cover rounded" />
+                    ) : (
+                      <Film className="w-5 h-5 text-muted-gray" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-bone-white truncate">{asset.name}</p>
+                    <p className="text-xs text-muted-gray truncate">
+                      {asset.source_url ? (
+                        <span className="flex items-center gap-1">
+                          <ExternalLink className="w-3 h-3" />
+                          {asset.video_provider || 'Link'}
+                        </span>
+                      ) : (
+                        asset.file_name || asset.asset_type
+                      )}
+                    </p>
+                  </div>
+                  {selectedAsset?.id === asset.id && (
+                    <CheckCircle2 className="w-5 h-5 text-accent-yellow shrink-0" />
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Name override */}
+          <div className="space-y-2">
+            <Label htmlFor="link-name">Name</Label>
+            <Input
+              id="link-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Override asset name..."
+              className="bg-charcoal-black border-muted-gray/30"
+            />
+          </div>
+
+          {/* Description */}
+          <div className="space-y-2">
+            <Label htmlFor="link-description">Description (optional)</Label>
+            <Textarea
+              id="link-description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Add notes..."
+              className="bg-charcoal-black border-muted-gray/30"
+              rows={2}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={handleClose}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleLinkSubmit}
+              disabled={!selectedAsset || isLinking}
+              className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+            >
+              {isLinking ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Linking...
+                </>
+              ) : (
+                <>
+                  <LinkIcon className="w-4 h-4 mr-2" />
+                  Link Asset
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </div>
+        )}
       </DialogContent>
     </Dialog>
   );
@@ -846,18 +815,13 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
   canEdit,
   onSelectAsset,
 }) => {
+  const queryClient = useQueryClient();
+
   // UI state
-  const [showSidebar, setShowSidebar] = useState(true);
   const [viewType, setViewType] = useState<ViewType>('grid');
-  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingAsset, setEditingAsset] = useState<ReviewAsset | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-
-  // Folder modal state
-  const [showFolderModal, setShowFolderModal] = useState(false);
-  const [editingFolder, setEditingFolder] = useState<ReviewFolder | null>(null);
-  const [parentFolderIdForCreate, setParentFolderIdForCreate] = useState<string | null>(null);
 
   // Share link modal state
   const [showShareModal, setShowShareModal] = useState(false);
@@ -865,42 +829,17 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
   // Data hooks
   const {
     assets,
-    isLoading: assetsLoading,
+    isLoading,
     error: assetsError,
     createAsset,
     updateAsset,
     deleteAsset,
   } = useReviewAssets({ projectId });
 
-  const {
-    folders,
-    rootAssets,
-    isLoading: foldersLoading,
-    createFolder,
-    updateFolder,
-    deleteFolder,
-    updateAssetStatus,
-  } = useReviewFolders({ projectId });
-
-  const {
-    folder: currentFolder,
-    subfolders,
-    assets: folderAssets,
-    breadcrumbs,
-    isLoading: folderLoading,
-  } = useReviewFolder({ folderId: selectedFolderId });
-
-  const isLoading = assetsLoading || foldersLoading;
-
-  // Get current assets based on folder selection
-  const displayAssets: (ReviewAsset | ReviewAssetEnhanced)[] = selectedFolderId
-    ? folderAssets
-    : rootAssets.length > 0 ? rootAssets : assets;
-
   // Handlers
-  const handleCreateAsset = async (data: ReviewAssetInput) => {
-    await createAsset.mutateAsync(data);
-    setShowCreateModal(false);
+  const handleCreateAsset = async (data: ReviewAssetInput): Promise<ReviewAsset> => {
+    const asset = await createAsset.mutateAsync(data);
+    return asset;
   };
 
   const handleUpdateAsset = async (data: { name: string; description: string }) => {
@@ -924,36 +863,8 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
   };
 
   const handleStatusChange = async (assetId: string, status: ReviewAssetStatus) => {
-    await updateAssetStatus.mutateAsync({ assetId, status });
-  };
-
-  // Folder handlers
-  const handleCreateFolder = (parentId: string | null) => {
-    setParentFolderIdForCreate(parentId);
-    setEditingFolder(null);
-    setShowFolderModal(true);
-  };
-
-  const handleEditFolder = (folder: ReviewFolder) => {
-    setEditingFolder(folder);
-    setParentFolderIdForCreate(null);
-    setShowFolderModal(true);
-  };
-
-  const handleDeleteFolder = async (folder: ReviewFolder) => {
-    if (!confirm(`Delete folder "${folder.name}"? Contents will be moved to the parent folder.`)) return;
-    await deleteFolder.mutateAsync(folder.id);
-    if (selectedFolderId === folder.id) {
-      setSelectedFolderId(folder.parent_folder_id);
-    }
-  };
-
-  const handleFolderSubmit = async (data: ReviewFolderInput) => {
-    if (editingFolder) {
-      await updateFolder.mutateAsync({ id: editingFolder.id, ...data });
-    } else {
-      await createFolder.mutateAsync(data);
-    }
+    await api.updateReviewAssetStatus(assetId, status);
+    queryClient.invalidateQueries({ queryKey: ['backlot-review-assets'] });
   };
 
   if (assetsError) {
@@ -968,54 +879,15 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
 
   return (
     <div className="flex h-full">
-      {/* Folder Sidebar */}
-      {showSidebar && (
-        <div className="w-64 border-r border-white/10 flex-shrink-0">
-          <FolderTree
-            folders={folders}
-            rootAssets={rootAssets}
-            selectedFolderId={selectedFolderId}
-            onSelectFolder={setSelectedFolderId}
-            onCreateFolder={handleCreateFolder}
-            onEditFolder={handleEditFolder}
-            onDeleteFolder={handleDeleteFolder}
-            isLoading={foldersLoading}
-          />
-        </div>
-      )}
-
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
-          <div className="flex items-center gap-3">
-            {/* Toggle sidebar */}
-            <button
-              onClick={() => setShowSidebar(!showSidebar)}
-              className="p-2 rounded hover:bg-white/5 text-muted-gray hover:text-bone-white transition-colors"
-              title={showSidebar ? 'Hide sidebar' : 'Show sidebar'}
-            >
-              {showSidebar ? (
-                <PanelLeftClose className="w-5 h-5" />
-              ) : (
-                <PanelLeft className="w-5 h-5" />
-              )}
-            </button>
-
-            {/* Breadcrumbs or Title */}
-            {selectedFolderId && breadcrumbs.length > 0 ? (
-              <FolderBreadcrumbs
-                breadcrumbs={breadcrumbs}
-                onNavigate={setSelectedFolderId}
-              />
-            ) : (
-              <div>
-                <h2 className="text-lg font-semibold text-bone-white flex items-center gap-2">
-                  <Film className="w-5 h-5 text-accent-yellow" />
-                  Review
-                </h2>
-              </div>
-            )}
+          <div>
+            <h2 className="text-lg font-semibold text-bone-white flex items-center gap-2">
+              <Film className="w-5 h-5 text-accent-yellow" />
+              Review
+            </h2>
           </div>
 
           <div className="flex items-center gap-3">
@@ -1040,20 +912,10 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
               )}
 
               {canEdit && (
-                <>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleCreateFolder(selectedFolderId)}
-                  >
-                    <FolderPlus className="w-4 h-4 mr-2" />
-                    New Folder
-                  </Button>
-                  <Button size="sm" onClick={() => setShowCreateModal(true)}>
-                    <Plus className="w-4 h-4 mr-2" />
-                    Add Asset
-                  </Button>
-                </>
+                <Button size="sm" onClick={() => setShowCreateModal(true)}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add Asset
+                </Button>
               )}
             </div>
           </div>
@@ -1062,7 +924,7 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
         {/* Content Area */}
         <div className="flex-1 overflow-y-auto p-6">
           {/* Loading state */}
-          {(isLoading || folderLoading) && (
+          {isLoading && (
             <div className={cn(
               "gap-4",
               viewType === 'grid'
@@ -1084,36 +946,28 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
           )}
 
           {/* Empty state */}
-          {!isLoading && !folderLoading && displayAssets.length === 0 && (
+          {!isLoading && assets.length === 0 && (
             <div className="text-center py-12">
               <Film className="w-12 h-12 text-muted-gray/50 mx-auto mb-4" />
               <h3 className="text-lg font-medium text-bone-white mb-2">
-                {selectedFolderId ? 'This folder is empty' : 'No review assets yet'}
+                No review assets yet
               </h3>
               <p className="text-sm text-muted-gray mb-4">
-                {selectedFolderId
-                  ? 'Add assets to this folder or create subfolders'
-                  : 'Add video cuts and clips to gather feedback with time-coded notes'}
+                Add video cuts and clips to gather feedback with time-coded notes
               </p>
               {canEdit && (
-                <div className="flex items-center justify-center gap-3">
-                  <Button variant="outline" onClick={() => handleCreateFolder(selectedFolderId)}>
-                    <FolderPlus className="w-4 h-4 mr-2" />
-                    New Folder
-                  </Button>
-                  <Button onClick={() => setShowCreateModal(true)}>
-                    <Upload className="w-4 h-4 mr-2" />
-                    Add Asset
-                  </Button>
-                </div>
+                <Button onClick={() => setShowCreateModal(true)}>
+                  <Upload className="w-4 h-4 mr-2" />
+                  Add Asset
+                </Button>
               )}
             </div>
           )}
 
           {/* Grid View */}
-          {!isLoading && !folderLoading && displayAssets.length > 0 && viewType === 'grid' && (
+          {!isLoading && assets.length > 0 && viewType === 'grid' && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {displayAssets.map((asset) => (
+              {assets.map((asset) => (
                 <ReviewAssetCard
                   key={asset.id}
                   asset={asset}
@@ -1128,9 +982,9 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
           )}
 
           {/* List View */}
-          {!isLoading && !folderLoading && displayAssets.length > 0 && viewType === 'list' && (
+          {!isLoading && assets.length > 0 && viewType === 'list' && (
             <div className="flex flex-col gap-2">
-              {displayAssets.map((asset) => (
+              {assets.map((asset) => (
                 <ReviewAssetCard
                   key={asset.id}
                   asset={asset}
@@ -1146,9 +1000,9 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
           )}
 
           {/* Kanban View */}
-          {!isLoading && !folderLoading && displayAssets.length > 0 && viewType === 'kanban' && (
+          {!isLoading && assets.length > 0 && viewType === 'kanban' && (
             <ReviewKanbanView
-              assets={displayAssets}
+              assets={assets}
               canEdit={canEdit}
               onView={handleViewAsset}
               onEdit={setEditingAsset}
@@ -1158,9 +1012,9 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
           )}
 
           {/* Timeline View */}
-          {!isLoading && !folderLoading && displayAssets.length > 0 && viewType === 'timeline' && (
+          {!isLoading && assets.length > 0 && viewType === 'timeline' && (
             <ReviewTimelineView
-              assets={displayAssets}
+              assets={assets}
               canEdit={canEdit}
               onView={handleViewAsset}
               onStatusChange={handleStatusChange}
@@ -1175,6 +1029,7 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
         onClose={() => setShowCreateModal(false)}
         onSubmit={handleCreateAsset}
         isLoading={createAsset.isPending}
+        projectId={projectId}
       />
 
       <EditAssetModal
@@ -1184,22 +1039,8 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
         isLoading={updateAsset.isPending}
       />
 
-      <CreateFolderModal
-        isOpen={showFolderModal}
-        onClose={() => {
-          setShowFolderModal(false);
-          setEditingFolder(null);
-          setParentFolderIdForCreate(null);
-        }}
-        onSubmit={handleFolderSubmit}
-        folder={editingFolder}
-        parentFolderId={parentFolderIdForCreate}
-        isLoading={createFolder.isPending || updateFolder.isPending}
-      />
-
       <ExternalLinkModal
         projectId={projectId}
-        folder={currentFolder}
         isOpen={showShareModal}
         onClose={() => setShowShareModal(false)}
       />

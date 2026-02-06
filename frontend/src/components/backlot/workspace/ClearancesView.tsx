@@ -844,12 +844,12 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({
 
       {/* Clearance Form Modal */}
       <Dialog open={showForm} onOpenChange={setShowForm}>
-        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle>{editingItem ? 'Edit Clearance' : 'Add Clearance'}</DialogTitle>
           </DialogHeader>
 
-          <form onSubmit={handleSubmit} className="space-y-4 mt-4">
+          <form onSubmit={handleSubmit} className="space-y-4 mt-4 overflow-y-auto flex-1 min-h-0 pr-1">
             {/* Template Selection (only for new items) */}
             {!editingItem && templates && templates.length > 0 && (
               <div className="space-y-2">
@@ -1183,6 +1183,7 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({
         onOpenChange={setShowRecipientPicker}
         onAdd={(recipient) => {
           setPendingRecipients((prev) => [...prev, recipient]);
+          setSendAfterSave(true);
         }}
         excludeContactIds={pendingRecipients
           .filter((r) => r.project_contact_id)
@@ -1193,19 +1194,18 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({
       />
 
       {/* Send Modal (after creation) */}
-      {newClearanceForSend && (
-        <ClearanceSendModal
-          open={showSendModal}
-          onOpenChange={(open) => {
-            setShowSendModal(open);
-            if (!open) {
-              setNewClearanceForSend(null);
-            }
-          }}
-          clearanceId={newClearanceForSend.id}
-          clearanceTitle={newClearanceForSend.title}
-        />
-      )}
+      <ClearanceSendModal
+        open={showSendModal}
+        onOpenChange={(open) => {
+          setShowSendModal(open);
+          if (!open) {
+            // Delay unmount data clear so Radix Dialog can clean up its overlay
+            setTimeout(() => setNewClearanceForSend(null), 150);
+          }
+        }}
+        clearanceId={newClearanceForSend?.id || ''}
+        clearanceTitle={newClearanceForSend?.title || ''}
+      />
     </div>
   );
 };

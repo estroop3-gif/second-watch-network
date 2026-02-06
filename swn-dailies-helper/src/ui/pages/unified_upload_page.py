@@ -2112,9 +2112,10 @@ class DestinationSettingsPanel(QWidget):
                 self._dailies_config["camera"] = dialog.camera.currentText()
                 self._dailies_config["generate_proxy"] = dialog.proxy.isChecked()
 
-                # Find the dailies_day_id that corresponds to the selected production day
+                # Find or create the dailies_day_id for the selected production day
                 prod_day_id = dialog.day_combo.currentData()
                 if prod_day_id:
+                    # First check if we already have a dailies day for this production day
                     dailies_day = next(
                         (d for d in self._dailies_days
                          if d.get("production_day_id") == prod_day_id),
@@ -2123,8 +2124,25 @@ class DestinationSettingsPanel(QWidget):
                     if dailies_day:
                         self._dailies_config["dailies_day_id"] = dailies_day.get("id")
                     else:
-                        # Need to create one - will be handled during upload
-                        self._dailies_config["dailies_day_id"] = None
+                        # Create one on-demand using ensure_dailies_day
+                        project_id = self._dailies_config.get("project_id")
+                        if project_id and self._project_api:
+                            result = self._project_api.ensure_dailies_day(project_id, prod_day_id)
+                            if result:
+                                self._dailies_config["dailies_day_id"] = result.get("id")
+                                # Add to local cache so we don't create again
+                                self._dailies_days.append({
+                                    "id": result.get("id"),
+                                    "production_day_id": prod_day_id,
+                                    "label": result.get("label"),
+                                    "shoot_date": result.get("shoot_date"),
+                                })
+                                logger.info(f"Created dailies day on-demand: {result.get('id')}")
+                            else:
+                                # Fall back to None, will be created during upload
+                                self._dailies_config["dailies_day_id"] = None
+                        else:
+                            self._dailies_config["dailies_day_id"] = None
 
             elif dest_type == "review":
                 self._review_config["folder_id"] = dialog.folder.currentData()

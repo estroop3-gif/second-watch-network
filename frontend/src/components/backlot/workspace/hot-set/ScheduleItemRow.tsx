@@ -129,8 +129,8 @@ export const ScheduleItemRow: React.FC<ScheduleItemRowProps> = ({
     : null;
 
   // Determine if projected time differs from planned
-  const projectedDiffers = showProjected &&
-    item.projected_start_time &&
+  const hasProjectedTime = showProjected && item.projected_start_time;
+  const projectedDiffers = hasProjectedTime &&
     item.projected_start_time !== item.planned_start_time;
 
   // Can this item be started?
@@ -141,7 +141,7 @@ export const ScheduleItemRow: React.FC<ScheduleItemRowProps> = ({
   return (
     <div
       className={cn(
-        'flex items-center gap-3 px-3 py-2 rounded-lg border transition-colors',
+        'flex items-center gap-2 sm:gap-3 px-2 sm:px-3 py-2 rounded-lg border transition-colors',
         getStatusBgColor(item.status, isCurrent),
         isScene && onClickScene && 'cursor-pointer hover:bg-soft-black/50',
         isSkipped && 'opacity-50'
@@ -162,22 +162,38 @@ export const ScheduleItemRow: React.FC<ScheduleItemRowProps> = ({
       </div>
 
       {/* Time */}
-      <div className="flex-shrink-0 w-20 text-right">
+      <div className="flex-shrink-0 w-14 sm:w-20 text-right">
         {showActualTimes && isCompleted && item.actual_start_time ? (
           <div className="space-y-0.5">
-            <div className="text-sm text-green-400">
+            <div className="text-xs sm:text-sm text-green-400">
               {formatScheduleTime(item.actual_start_time, timezone)}
             </div>
-            <div className="text-xs text-muted-gray line-through">
+            <div className="text-xs text-muted-gray line-through hidden sm:block">
               {formatScheduleTime(item.planned_start_time, timezone)}
             </div>
           </div>
         ) : isCompleted && item.projected_start_time ? (
-          <span className="text-sm text-muted-gray">
+          <span className="text-xs sm:text-sm text-muted-gray">
             {formatScheduleTime(item.projected_start_time, timezone)}
           </span>
+        ) : hasProjectedTime ? (
+          <div className="space-y-0.5">
+            <div className={cn(
+              'text-xs sm:text-sm',
+              isCurrent ? 'text-accent-yellow font-medium'
+                : projectedDiffers ? 'text-bone-white'
+                : 'text-muted-gray'
+            )}>
+              {formatScheduleTime(item.projected_start_time!, timezone)}
+            </div>
+            {projectedDiffers && (
+              <div className="text-xs text-muted-gray line-through hidden sm:block">
+                {formatScheduleTime(item.planned_start_time, timezone)}
+              </div>
+            )}
+          </div>
         ) : (
-          <span className={cn('text-sm', isCurrent ? 'text-accent-yellow font-medium' : 'text-muted-gray')}>
+          <span className={cn('text-xs sm:text-sm', isCurrent ? 'text-accent-yellow font-medium' : 'text-muted-gray')}>
             {formatScheduleTime(item.planned_start_time, timezone)}
           </span>
         )}
@@ -207,7 +223,7 @@ export const ScheduleItemRow: React.FC<ScheduleItemRowProps> = ({
       </div>
 
       {/* Duration/Time Info */}
-      <div className="flex-shrink-0 flex items-center gap-2 text-sm">
+      <div className="flex-shrink-0 flex items-center gap-1 sm:gap-2 text-xs sm:text-sm">
         {isCompleted && item.actual_duration_minutes !== undefined ? (
           <>
             <span className="text-muted-gray">
@@ -217,7 +233,7 @@ export const ScheduleItemRow: React.FC<ScheduleItemRowProps> = ({
               <Badge
                 variant="outline"
                 className={cn(
-                  'text-xs',
+                  'text-xs hidden sm:inline-flex',
                   isAhead ? 'text-green-400 border-green-500/30' : 'text-red-400 border-red-500/30'
                 )}
               >
@@ -226,17 +242,30 @@ export const ScheduleItemRow: React.FC<ScheduleItemRowProps> = ({
             )}
           </>
         ) : isCurrent ? (
-          <Badge variant="outline" className="text-accent-yellow border-accent-yellow/30">
-            IN PROGRESS
+          <Badge variant="outline" className="text-accent-yellow border-accent-yellow/30 text-xs">
+            <span className="hidden sm:inline">IN PROGRESS</span>
+            <span className="sm:hidden">LIVE</span>
           </Badge>
-        ) : isPending && projectedDiffers ? (
-          <span className={cn(
-            'text-xs',
-            !isAhead ? 'text-red-400' : 'text-green-400'
-          )}>
-            proj: {formatScheduleTime(item.projected_start_time!, timezone)}
-            {varianceText && ` (${varianceText})`}
-          </span>
+        ) : isPending && hasProjectedTime ? (
+          <div className="flex items-center gap-1">
+            <span className="text-muted-gray">
+              {item.planned_duration_minutes}m
+            </span>
+            {hasVariance && (
+              <Badge
+                variant="outline"
+                className={cn(
+                  'text-xs hidden sm:inline-flex',
+                  isAhead ? 'text-green-400 border-green-500/30' : 'text-red-400 border-red-500/30'
+                )}
+              >
+                {varianceText}
+              </Badge>
+            )}
+            {!hasVariance && (
+              <span className="text-xs text-muted-gray/50 hidden sm:inline">on time</span>
+            )}
+          </div>
         ) : (
           <span className="text-muted-gray">
             {item.planned_duration_minutes}m

@@ -86,6 +86,39 @@ class ProjectAPIService:
             logger.error(f"Error creating dailies day: {e}")
             return None
 
+    def ensure_dailies_day(
+        self,
+        project_id: str,
+        production_day_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Ensure a dailies day exists for a production day.
+
+        If a dailies day already exists for the given production day, returns the existing one.
+        Otherwise, creates a new dailies day linked to the production day.
+        Auto-populates label from production day info.
+
+        Returns:
+            Dict with 'id', 'label', 'shoot_date', 'production_day_id', 'status', 'created'
+            or None on failure.
+        """
+        try:
+            url = f"{self.API_BASE}/api/v1/backlot/desktop-keys/projects/{project_id}/dailies/ensure-day"
+            payload = {
+                "production_day_id": production_day_id,
+            }
+
+            with httpx.Client(timeout=self.TIMEOUT) as client:
+                response = client.post(url, headers=self._get_headers(), json=payload)
+                response.raise_for_status()
+                data = response.json()
+                logger.info(f"Ensured dailies day for production day {production_day_id}: "
+                           f"id={data.get('id')}, created={data.get('created')}")
+                return data
+        except Exception as e:
+            logger.error(f"Error ensuring dailies day: {e}")
+            return None
+
     def get_review_folders(self, project_id: str) -> List[Dict[str, Any]]:
         """
         Get review folders for a project.

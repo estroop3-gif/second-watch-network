@@ -250,6 +250,13 @@ export function useProjectMembers(projectId: string | null) {
       const response = await apiClient.get<ProjectMemberWithRoles[]>(
         `/api/v1/backlot/projects/${projectId}/access/members`
       );
+      // Debug: log the API response
+      console.log('[useProjectMembers] API response:', response?.slice(0, 3).map(m => ({
+        user_id: m.user_id,
+        user_name: m.user_name,
+        user_username: m.user_username,
+        email: m.email,
+      })));
       return response;
     },
     enabled: !!projectId,

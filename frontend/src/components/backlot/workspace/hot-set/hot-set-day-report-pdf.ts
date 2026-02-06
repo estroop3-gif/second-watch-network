@@ -580,4 +580,151 @@ export async function generateHotSetDayReportPdf(options: HotSetDayReportPdfOpti
   }
 }
 
+// =====================================================
+// AD NOTES ONLY PDF EXPORT
+// =====================================================
+
+export interface AdNotesPdfOptions {
+  notes: string;
+  dayNumber: number;
+  date: string;
+  projectName?: string;
+}
+
+/**
+ * Generate and download a PDF with just AD notes
+ */
+export async function generateAdNotesPdf(options: AdNotesPdfOptions): Promise<void> {
+  const { notes, dayNumber, date, projectName } = options;
+
+  // Validate required data
+  if (!notes || notes.trim().length === 0) {
+    throw new Error('No notes to export');
+  }
+
+  // Dynamically import jsPDF
+  let jsPDF;
+  try {
+    const jsPDFModule = await import('jspdf');
+    jsPDF = jsPDFModule.default;
+  } catch (importError) {
+    console.error('[AD Notes PDF] Failed to load PDF library:', importError);
+    throw new Error('PDF library failed to load. Please refresh and try again.');
+  }
+
+  let doc;
+  try {
+    doc = new jsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'letter',
+    });
+  } catch (docError) {
+    console.error('[AD Notes PDF] Failed to create PDF document:', docError);
+    throw new Error('Failed to create PDF document');
+  }
+
+  const pageWidth = doc.internal.pageSize.width;
+  const pageHeight = doc.internal.pageSize.height;
+  const margin = 20;
+  const contentWidth = pageWidth - (margin * 2);
+  let y = margin;
+
+  // ============================================
+  // HEADER
+  // ============================================
+
+  // Title
+  doc.setFontSize(24);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(40, 40, 40);
+  doc.text('AD NOTES', margin, y + 8);
+
+  // Day number (right side)
+  doc.setFontSize(32);
+  doc.setTextColor(255, 60, 60); // Primary red
+  doc.text(`Day ${dayNumber}`, pageWidth - margin, y + 8, { align: 'right' });
+
+  y += 18;
+
+  // Subtitle line
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(100, 100, 100);
+
+  const subtitleParts = [];
+  if (projectName) subtitleParts.push(projectName);
+  if (date) subtitleParts.push(formatDate(date));
+  doc.text(subtitleParts.join('  |  '), margin, y);
+
+  y += 8;
+
+  // Horizontal line
+  doc.setDrawColor(200, 200, 200);
+  doc.setLineWidth(0.5);
+  doc.line(margin, y, pageWidth - margin, y);
+  y += 12;
+
+  // ============================================
+  // NOTES CONTENT
+  // ============================================
+
+  doc.setFontSize(11);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(40, 40, 40);
+
+  // Split notes into lines that fit the content width
+  const notesLines = doc.splitTextToSize(notes, contentWidth);
+
+  // Handle notes that might span multiple pages
+  for (let i = 0; i < notesLines.length; i++) {
+    if (y > pageHeight - 25) {
+      doc.addPage();
+      y = margin;
+    }
+    doc.text(notesLines[i], margin, y);
+    y += 5;
+  }
+
+  // ============================================
+  // FOOTER ON ALL PAGES
+  // ============================================
+
+  const totalPages = doc.getNumberOfPages();
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(150, 150, 150);
+    doc.text(
+      `Generated from Second Watch Network  |  ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}`,
+      pageWidth / 2,
+      pageHeight - 10,
+      { align: 'center' }
+    );
+    // Page numbers
+    doc.text(
+      `Page ${i} of ${totalPages}`,
+      pageWidth - margin,
+      pageHeight - 10,
+      { align: 'right' }
+    );
+  }
+
+  // ============================================
+  // SAVE PDF
+  // ============================================
+
+  try {
+    const dateStr = date
+      ? new Date(date + 'T00:00:00').toISOString().split('T')[0]
+      : new Date().toISOString().split('T')[0];
+    const filename = `Day-${dayNumber}-AD-Notes-${dateStr}.pdf`;
+    doc.save(filename);
+  } catch (saveError) {
+    console.error('[AD Notes PDF] Failed to save PDF:', saveError);
+    throw new Error('Failed to save PDF file');
+  }
+}
+
 export default generateHotSetDayReportPdf;

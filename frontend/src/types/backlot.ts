@@ -4376,6 +4376,7 @@ export interface ClearanceSendResult {
   emails_sent: number;
   emails_failed: number;
   message: string;
+  error_details?: { email: string; error: string }[];
 }
 
 // Person clearance with recipients (for Casting & Crew integration)

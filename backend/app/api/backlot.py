@@ -1170,6 +1170,159 @@ async def get_project(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/projects/{project_id}/workspace-init")
+async def get_workspace_init(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Combined endpoint for workspace initialization.
+    Returns project, permission, view-config, can-manage-roles, my-roles, and production-days
+    in a single request to reduce concurrent Lambda invocations.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        user_id = str(user["id"])
+        cognito_user_id = user.get("user_id") or user.get("id")
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id) or cognito_user_id
+
+        # --- Project ---
+        project_response = client.table("backlot_projects").select("*").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+        project = project_response.data[0]
+
+        # Fetch owner profile
+        owner_result = client.table("profiles").select(
+            "id, username, full_name, display_name, avatar_url, role, is_order_member"
+        ).eq("id", project["owner_id"]).execute()
+        project["owner"] = owner_result.data[0] if owner_result.data else None
+
+        is_owner = str(project["owner_id"]) == str(profile_id)
+
+        # --- Permission (my-role) ---
+        if is_owner:
+            permission = {
+                "role": "owner", "is_owner": True, "can_edit": True,
+                "can_view": True, "is_admin": True
+            }
+        else:
+            member_response = client.table("backlot_project_members").select(
+                "role, production_role"
+            ).eq("project_id", project_id).eq("user_id", profile_id).execute()
+
+            if member_response.data:
+                member = member_response.data[0]
+                role = member.get("role", "viewer")
+                permission = {
+                    "role": role,
+                    "production_role": member.get("production_role"),
+                    "is_owner": False,
+                    "can_edit": role in ["owner", "admin", "editor"],
+                    "can_view": True,
+                    "is_admin": role in ["owner", "admin"]
+                }
+            elif project.get("visibility") == "public":
+                permission = {
+                    "role": "public_viewer", "is_owner": False,
+                    "can_edit": False, "can_view": True, "is_admin": False
+                }
+            else:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        # --- Profile role (needed for view-config and can-manage-roles) ---
+        profile_result = client.table("profiles").select("role, is_admin, is_superadmin").eq("id", user_id).execute()
+        profile = profile_result.data[0] if profile_result.data else {}
+        profile_role = profile.get("role")
+        is_site_admin = profile_role in ["admin", "superadmin"] or profile.get("is_admin") or profile.get("is_superadmin")
+
+        # --- Backlot roles (my-roles) ---
+        roles_result = client.table("backlot_project_roles").select("*").eq(
+            "project_id", project_id
+        ).eq("user_id", user_id).execute()
+        my_roles = []
+        for r in (roles_result.data or []):
+            rd = dict(r)
+            rd["id"] = str(rd["id"])
+            rd["project_id"] = str(rd["project_id"])
+            rd["user_id"] = str(rd["user_id"]) if rd.get("user_id") else None
+            my_roles.append(rd)
+
+        # --- View config ---
+        default_configs = {
+            "showrunner": {
+                "tabs": {
+                    "overview": True, "script": True, "shot-lists": True, "coverage": True,
+                    "schedule": True, "call-sheets": True, "casting": True, "locations": True,
+                    "gear": True, "dailies": True, "review": True, "assets": True,
+                    "budget": True, "daily-budget": True, "receipts": True, "analytics": True,
+                    "tasks": True, "updates": True, "contacts": True,
+                    "clearances": True, "credits": True, "roles": True, "settings": True,
+                },
+                "sections": {"budget_numbers": True, "admin_tools": True},
+            },
+            "crew": {
+                "tabs": {
+                    "overview": True, "script": True, "shot-lists": False, "coverage": False,
+                    "schedule": True, "call-sheets": True, "casting": False, "locations": False,
+                    "gear": False, "dailies": False, "review": False, "assets": False,
+                    "budget": False, "daily-budget": False, "receipts": False, "analytics": False,
+                    "tasks": True, "updates": True, "contacts": False,
+                    "clearances": False, "credits": False, "roles": False, "settings": False,
+                },
+                "sections": {"budget_numbers": False, "admin_tools": False},
+            },
+        }
+
+        if is_owner or is_site_admin:
+            view_config = {"role": "owner" if is_owner else "admin", **default_configs["showrunner"]}
+        else:
+            primary_role_data = next((r for r in my_roles if r.get("is_primary")), my_roles[0] if my_roles else None)
+            primary_role = primary_role_data["backlot_role"] if primary_role_data else "crew"
+
+            view_result = client.table("backlot_project_view_profiles").select("config").eq(
+                "project_id", project_id
+            ).eq("backlot_role", primary_role).eq("is_default", True).execute()
+
+            if view_result.data and view_result.data[0].get("config"):
+                view_config = {"role": primary_role, "config": view_result.data[0]["config"]}
+            else:
+                config = default_configs.get(primary_role, default_configs["crew"])
+                view_config = {"role": primary_role, **config}
+
+        # --- Can manage roles ---
+        can_manage_roles = False
+        if is_site_admin or is_owner:
+            can_manage_roles = True
+        else:
+            showrunner_result = client.table("backlot_project_roles").select("backlot_role").eq(
+                "project_id", project_id
+            ).eq("user_id", user_id).eq("backlot_role", "showrunner").execute()
+            can_manage_roles = len(showrunner_result.data or []) > 0
+
+        # --- Production days ---
+        days_result = client.table("backlot_production_days").select("*").eq(
+            "project_id", project_id
+        ).order("day_number").execute()
+
+        return {
+            "project": serialize_project(project),
+            "permission": permission,
+            "view_config": view_config,
+            "can_manage_roles": can_manage_roles,
+            "my_roles": my_roles,
+            "production_days": days_result.data or [],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in workspace-init: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/projects/{project_id}/my-role")
 async def get_my_project_role(
     project_id: str,
@@ -23141,15 +23294,17 @@ async def send_clearance_email(
                     }]
 
                 # Send email
-                success = await email_service.send_email(
-                    to_email=recipient["email"],
+                result = await email_service.send_email(
+                    to_emails=[recipient["email"]],
                     subject=subject,
                     html_content=html_content,
                     text_content=text_content,
-                    attachments=attachments
+                    source_service="backlot",
+                    source_action="clearance_send",
+                    source_reference_id=clearance_id,
                 )
 
-                if success:
+                if result.get("success"):
                     emails_sent += 1
                     email_addresses.append(recipient["email"])
 
@@ -23164,7 +23319,7 @@ async def send_clearance_email(
                     }).eq("id", recipient["recipient_id"]).execute()
                 else:
                     emails_failed += 1
-                    error_details.append({"email": recipient["email"], "error": "Send failed"})
+                    error_details.append({"email": recipient["email"], "error": result.get("error", "Send failed")})
 
             except Exception as e:
                 emails_failed += 1
@@ -23187,10 +23342,11 @@ async def send_clearance_email(
         }).execute()
 
         return {
-            "success": True,
+            "success": emails_failed == 0,
             "emails_sent": emails_sent,
             "emails_failed": emails_failed,
-            "message": f"Sent to {emails_sent} recipient(s)" + (f", {emails_failed} failed" if emails_failed else "")
+            "message": f"Sent to {emails_sent} recipient(s)" + (f", {emails_failed} failed" if emails_failed else ""),
+            "error_details": error_details if error_details else None
         }
 
     except HTTPException:
@@ -25378,7 +25534,7 @@ async def get_cost_by_department_analytics(
 
         # Get categories with their line items aggregated
         categories_result = client.table("backlot_budget_categories").select(
-            "id, name, category_type, account_code_prefix, estimated_total, actual_total"
+            "id, name, category_type, account_code_prefix, estimated_subtotal, actual_subtotal"
         ).eq("budget_id", budget_id).order("sort_order").execute()
 
         departments = []
@@ -25400,8 +25556,8 @@ async def get_cost_by_department_analytics(
             # If no items, use category totals
             if not dept_totals:
                 dept_totals[cat["name"]] = {
-                    "budgeted": float(cat.get("estimated_total") or 0),
-                    "actual": float(cat.get("actual_total") or 0)
+                    "budgeted": float(cat.get("estimated_subtotal") or 0),
+                    "actual": float(cat.get("actual_subtotal") or 0)
                 }
 
             for dept_name, totals in dept_totals.items():

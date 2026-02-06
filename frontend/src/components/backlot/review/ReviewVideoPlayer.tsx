@@ -2,7 +2,7 @@
  * ReviewVideoPlayer - Adapter component that maps Review assets to the Dailies video player
  * Supports both external video sources (Vimeo/YouTube) and S3-hosted videos
  */
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import VideoPlayer from '../workspace/video-player/VideoPlayer';
 import {
@@ -15,6 +15,7 @@ import { BacklotDailiesClip, BacklotDailiesClipNote } from '@/types/backlot';
 import { api } from '@/lib/api';
 import { Loader2, ExternalLink, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useEmbeddedPlayer } from '@/hooks/backlot/useEmbeddedPlayer';
 
 type QualityValue = 'auto' | '4k' | '1080p' | '720p' | '480p' | 'original';
 
@@ -80,6 +81,7 @@ export const ReviewVideoPlayer: React.FC<ReviewVideoPlayerProps> = ({
   canEdit = false,
   className,
 }) => {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -157,11 +159,30 @@ export const ReviewVideoPlayer: React.FC<ReviewVideoPlayerProps> = ({
     setQuality(newQuality);
   };
 
-  // Render external video embed (Vimeo/YouTube) if applicable
+  // Detect external video embed (Vimeo/YouTube)
   const isVimeo = version.video_url?.includes('vimeo.com') ||
                   version.video_url?.includes('player.vimeo.com');
   const isYouTube = version.video_url?.includes('youtube.com') ||
                    version.video_url?.includes('youtu.be');
+
+  const ytMatch = version.video_url?.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/);
+  const vimeoMatch = version.video_url?.match(/(?:vimeo\.com\/)(\d+)/);
+  const embedUrl = ytMatch
+    ? `https://www.youtube.com/embed/${ytMatch[1]}?autoplay=0&rel=0&enablejsapi=1&origin=${window.location.origin}`
+    : vimeoMatch
+    ? `https://player.vimeo.com/video/${vimeoMatch[1]}`
+    : null;
+  const isExternalEmbed = !isS3Storage && !!embedUrl;
+
+  // Embedded player hook for YouTube/Vimeo timecode tracking
+  const embeddedProvider = ytMatch ? 'youtube' : 'vimeo';
+  const embeddedVideoId = ytMatch ? ytMatch[1] : vimeoMatch ? vimeoMatch[1] : '';
+  const embeddedPlayer = useEmbeddedPlayer({
+    provider: embeddedProvider as 'youtube' | 'vimeo',
+    videoId: embeddedVideoId,
+    iframeRef,
+    onTimeUpdate: isExternalEmbed ? onTimeUpdate : undefined,
+  });
 
   if (error && !streamUrl) {
     return (
@@ -196,9 +217,25 @@ export const ReviewVideoPlayer: React.FC<ReviewVideoPlayerProps> = ({
     );
   }
 
-  // For Vimeo videos, we could embed the Vimeo player directly
-  // For now, we'll try to use our player for all sources
-  // (Vimeo private videos would need the Vimeo SDK)
+  if (isExternalEmbed && embedUrl) {
+    return (
+      <div className={cn('relative', className)}>
+        <div className="aspect-video bg-black rounded-lg overflow-hidden">
+          <iframe
+            ref={iframeRef}
+            src={embedUrl}
+            className="w-full h-full"
+            allow="autoplay; fullscreen; picture-in-picture"
+            allowFullScreen
+            frameBorder="0"
+          />
+        </div>
+        <div className="absolute top-4 right-4 bg-black/60 px-2 py-1 rounded text-xs text-white/60">
+          {isVimeo ? 'Vimeo' : isYouTube ? 'YouTube' : 'External'}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={cn('relative', className)}>

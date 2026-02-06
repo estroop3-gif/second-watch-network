@@ -3,3 +3,4 @@
  */
 export { default as AssetFolderTree } from './AssetFolderTree';
 export { default as CreateAssetFolderModal } from './CreateAssetFolderModal';
+export { FileUploadModal } from './FileUploadModal';

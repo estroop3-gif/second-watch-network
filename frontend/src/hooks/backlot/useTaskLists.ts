@@ -431,6 +431,7 @@ export function useTaskDetail(taskId: string | null) {
         queryClient.invalidateQueries({ queryKey: ['backlot-task-list', updatedTask.task_list_id] });
       }
       queryClient.invalidateQueries({ queryKey: ['backlot-task-lists'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-source-tasks'] });
     },
   });
 
@@ -441,6 +442,84 @@ export function useTaskDetail(taskId: string | null) {
     refetch,
     updateTask,
   };
+}
+
+// =====================================================
+// TASK ASSIGNEES HOOKS
+// =====================================================
+
+/**
+ * Manage assignees on a task
+ */
+export function useTaskAssignees(taskId: string | null) {
+  const queryClient = useQueryClient();
+
+  const addAssignee = useMutation({
+    mutationFn: async (userId: string) => {
+      if (!taskId) throw new Error('No task ID');
+      const result = await api.post<{ success: boolean; assignee: any }>(
+        `/api/v1/backlot/tasks/${taskId}/assignees`,
+        { user_id: userId }
+      );
+      return result.assignee;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-task', taskId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-source-tasks'] });
+    },
+  });
+
+  const removeAssignee = useMutation({
+    mutationFn: async (assigneeId: string) => {
+      if (!taskId) throw new Error('No task ID');
+      await api.delete(`/api/v1/backlot/tasks/${taskId}/assignees/${assigneeId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-task', taskId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-source-tasks'] });
+    },
+  });
+
+  return { addAssignee, removeAssignee };
+}
+
+// =====================================================
+// TASK LABEL LINKS HOOKS
+// =====================================================
+
+/**
+ * Manage labels on a task
+ */
+export function useTaskLabelLinks(taskId: string | null) {
+  const queryClient = useQueryClient();
+
+  const addLabel = useMutation({
+    mutationFn: async (labelId: string) => {
+      if (!taskId) throw new Error('No task ID');
+      const result = await api.post<{ success: boolean; label_link: any }>(
+        `/api/v1/backlot/tasks/${taskId}/labels`,
+        { label_id: labelId }
+      );
+      return result.label_link;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-task', taskId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-source-tasks'] });
+    },
+  });
+
+  const removeLabel = useMutation({
+    mutationFn: async (labelLinkId: string) => {
+      if (!taskId) throw new Error('No task ID');
+      await api.delete(`/api/v1/backlot/tasks/${taskId}/labels/${labelLinkId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-task', taskId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-source-tasks'] });
+    },
+  });
+
+  return { addLabel, removeLabel };
 }
 
 // =====================================================
@@ -709,7 +788,12 @@ export function useCreateTaskFromSource(projectId: string | null, taskListId: st
       if (!projectId || !taskListId) throw new Error('Project ID and Task List ID required');
 
       // Map source type to the correct field
-      const sourceField = `source_${sourceType}_id`;
+      // Handle special cases where column name doesn't match simple pattern
+      const sourceFieldMap: Record<string, string> = {
+        hot_set: 'source_hot_set_session_id',
+        continuity: 'source_continuity_note_id',
+      };
+      const sourceField = sourceFieldMap[sourceType] || `source_${sourceType}_id`;
 
       const taskInput: TaskInput = {
         title,

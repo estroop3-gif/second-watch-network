@@ -523,13 +523,17 @@ async def generate_strips_from_script(
 async def generate_strips_from_scenes(
     project_id: str,
     stripboard_id: str,
+    include_wrapped: bool = Query(False, description="Include scenes from wrapped/completed days"),
     authorization: str = Header(...)
 ):
     """
-    Generate strips from ALL backlot_scenes in the project.
+    Generate strips from backlot_scenes in the project.
     Idempotent: won't duplicate strips for scenes that already have strips.
     Respects scene's scheduled_day_id - places strip under corresponding day.
     Unscheduled scenes go to bank.
+
+    By default (include_wrapped=False), only imports scenes from remaining (unwrapped) days.
+    Set include_wrapped=True to import ALL scenes including those from wrapped days.
     """
     token = authorization.replace("Bearer ", "")
     import jwt
@@ -546,13 +550,73 @@ async def generate_strips_from_scenes(
     if not stripboard:
         raise HTTPException(status_code=404, detail="Stripboard not found")
 
-    # Get all scenes from backlot_scenes WITH their scheduled_day_id
-    scenes = execute_query("""
-        SELECT id, scene_number, slugline, scheduled_day_id
+    # Get scenes from backlot_scenes WITH their scheduled day
+    # Scenes can be scheduled via:
+    # 1. backlot_production_day_scenes junction table
+    # 2. hour_schedule JSONB on production days (blocks with type='scene')
+    # Filter out scenes from wrapped days unless include_wrapped is True
+
+    # First get all scenes
+    all_scenes = execute_query("""
+        SELECT id, scene_number, slugline
         FROM backlot_scenes
         WHERE project_id = :project_id
         ORDER BY scene_number
     """, {"project_id": project_id})
+
+    # Get scene-to-day mapping from junction table
+    junction_mapping = execute_query("""
+        SELECT pds.scene_id, pds.production_day_id, pd.is_completed
+        FROM backlot_production_day_scenes pds
+        JOIN backlot_production_days pd ON pd.id = pds.production_day_id
+        WHERE pd.project_id = :project_id
+    """, {"project_id": project_id})
+
+    # Get scene-to-day mapping from hour_schedule
+    hour_schedule_mapping = execute_query("""
+        SELECT DISTINCT (block->>'scene_id')::uuid as scene_id, pd.id as production_day_id, pd.is_completed
+        FROM backlot_production_days pd
+        CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pd.hour_schedule, '[]'::jsonb)) AS block
+        WHERE pd.project_id = :project_id
+        AND block->>'type' = 'scene'
+        AND block->>'scene_id' IS NOT NULL
+    """, {"project_id": project_id})
+
+    # Build mapping: scene_id -> (day_id, is_completed)
+    # Junction table takes precedence, then hour_schedule
+    scene_day_map = {}
+    for m in hour_schedule_mapping:
+        if m['scene_id']:
+            scene_day_map[str(m['scene_id'])] = (m['production_day_id'], m.get('is_completed', False))
+    for m in junction_mapping:
+        if m['scene_id']:
+            scene_day_map[str(m['scene_id'])] = (m['production_day_id'], m.get('is_completed', False))
+
+    # Build final scenes list with scheduled_day_id
+    scenes = []
+    for scene in all_scenes:
+        scene_id = str(scene['id'])
+        day_info = scene_day_map.get(scene_id)
+
+        if day_info:
+            day_id, is_completed = day_info
+            # Filter out wrapped days unless include_wrapped
+            if not include_wrapped and is_completed:
+                continue
+            scenes.append({
+                'id': scene['id'],
+                'scene_number': scene['scene_number'],
+                'slugline': scene['slugline'],
+                'scheduled_day_id': day_id
+            })
+        else:
+            # Unscheduled scene - always include
+            scenes.append({
+                'id': scene['id'],
+                'scene_number': scene['scene_number'],
+                'slugline': scene['slugline'],
+                'scheduled_day_id': None
+            })
 
     if not scenes:
         return {"created": 0, "skipped": 0, "message": "No scenes found in project"}
@@ -1072,7 +1136,7 @@ async def sync_stripboard_with_schedule(
     to_schedule_count = 0
     from_schedule_count = 0
 
-    # TO_SCHEDULE: Update scenes to match strip assignments
+    # TO_SCHEDULE: Update production_day_scenes junction table to match strip assignments
     if direction in [SyncDirection.TO_SCHEDULE, SyncDirection.BOTH]:
         # Get all strips with scene_id
         strips = execute_query("""
@@ -1082,22 +1146,81 @@ async def sync_stripboard_with_schedule(
         """, {"stripboard_id": stripboard_id})
 
         for strip in strips:
-            # Update scene's scheduled_day_id
-            client.table("backlot_scenes").update({
-                "scheduled_day_id": strip['assigned_day_id']
-            }).eq("id", strip['scene_id']).execute()
+            scene_id = strip['scene_id']
+            new_day_id = strip['assigned_day_id']
+
+            # Remove existing assignment for this scene (if any)
+            client.table("backlot_production_day_scenes").delete().eq("scene_id", scene_id).execute()
+
+            # If strip is assigned to a day, create new assignment
+            if new_day_id:
+                # Get max sort_order for this day
+                max_order_result = client.table("backlot_production_day_scenes").select(
+                    "sort_order"
+                ).eq("production_day_id", new_day_id).order("sort_order", desc=True).limit(1).execute()
+
+                next_order = 1
+                if max_order_result.data:
+                    next_order = (max_order_result.data[0].get("sort_order") or 0) + 1
+
+                client.table("backlot_production_day_scenes").insert({
+                    "project_id": project_id,
+                    "production_day_id": new_day_id,
+                    "scene_id": scene_id,
+                    "sort_order": next_order
+                }).execute()
+
             to_schedule_count += 1
 
     # FROM_SCHEDULE: Update strips to match scene schedules
+    created_count = 0
     if direction in [SyncDirection.FROM_SCHEDULE, SyncDirection.BOTH]:
-        # Get all scenes with their schedules
-        scenes_with_strips = execute_query("""
-            SELECT s.id as strip_id, s.scene_id, s.assigned_day_id as strip_day_id,
-                   bs.scheduled_day_id as scene_day_id
+        # Build scene-to-day mapping from both sources
+        # 1. Junction table
+        junction_mapping = execute_query("""
+            SELECT pds.scene_id, pds.production_day_id
+            FROM backlot_production_day_scenes pds
+            JOIN backlot_production_days pd ON pd.id = pds.production_day_id
+            WHERE pd.project_id = :project_id
+        """, {"project_id": project_id})
+
+        # 2. Hour schedule
+        hour_schedule_mapping = execute_query("""
+            SELECT DISTINCT (block->>'scene_id')::uuid as scene_id, pd.id as production_day_id
+            FROM backlot_production_days pd
+            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pd.hour_schedule, '[]'::jsonb)) AS block
+            WHERE pd.project_id = :project_id
+            AND block->>'type' = 'scene'
+            AND block->>'scene_id' IS NOT NULL
+        """, {"project_id": project_id})
+
+        # Build mapping (hour_schedule first, junction table takes precedence)
+        scene_day_map = {}
+        for m in hour_schedule_mapping:
+            if m['scene_id']:
+                scene_day_map[str(m['scene_id'])] = m['production_day_id']
+        for m in junction_mapping:
+            if m['scene_id']:
+                scene_day_map[str(m['scene_id'])] = m['production_day_id']
+
+        # Get all strips with scene_id
+        strips_with_scenes = execute_query("""
+            SELECT s.id as strip_id, s.scene_id, s.assigned_day_id as strip_day_id
             FROM backlot_strips s
-            JOIN backlot_scenes bs ON bs.id = s.scene_id
             WHERE s.stripboard_id = :stripboard_id AND s.scene_id IS NOT NULL
         """, {"stripboard_id": stripboard_id})
+
+        # Build scenes_with_strips list with scene_day_id from our mapping
+        scenes_with_strips = []
+        for strip in strips_with_scenes:
+            scene_id = str(strip['scene_id']) if strip['scene_id'] else None
+            scene_day_id = scene_day_map.get(scene_id) if scene_id else None
+            scenes_with_strips.append({
+                'strip_id': strip['strip_id'],
+                'scene_id': strip['scene_id'],
+                'strip_day_id': strip['strip_day_id'],
+                'scene_day_id': scene_day_id
+            })
 
         for item in scenes_with_strips:
             # Only update if scene has a scheduled day and strip doesn't match
@@ -1119,11 +1242,77 @@ async def sync_stripboard_with_schedule(
 
                     from_schedule_count += 1
 
+        # NEW: Create strips for scenes that are assigned to production days but have NO strip in this stripboard
+        # Only include scenes from unwrapped (is_completed = false) days
+        # Scenes can be assigned via:
+        # 1. backlot_production_day_scenes junction table
+        # 2. hour_schedule JSONB on production days (blocks with type='scene')
+
+        # Method 1: Check backlot_production_day_scenes junction table
+        scenes_from_junction = execute_query("""
+            SELECT s.id, s.scene_number, s.slugline, pds.production_day_id as scheduled_day_id
+            FROM backlot_scenes s
+            JOIN backlot_production_day_scenes pds ON pds.scene_id = s.id
+            JOIN backlot_production_days pd ON pd.id = pds.production_day_id
+            LEFT JOIN backlot_strips st ON st.scene_id = s.id AND st.stripboard_id = :stripboard_id
+            WHERE s.project_id = :project_id
+            AND st.id IS NULL
+            AND (pd.is_completed IS NULL OR pd.is_completed = false)
+        """, {"project_id": project_id, "stripboard_id": stripboard_id})
+
+        # Method 2: Check hour_schedule JSONB on production days
+        # Extract scene_ids from hour_schedule blocks where type='scene'
+        scenes_from_hour_schedule = execute_query("""
+            SELECT DISTINCT s.id, s.scene_number, s.slugline, pd.id as scheduled_day_id
+            FROM backlot_production_days pd
+            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pd.hour_schedule, '[]'::jsonb)) AS block
+            JOIN backlot_scenes s ON s.id = (block->>'scene_id')::uuid
+            LEFT JOIN backlot_strips st ON st.scene_id = s.id AND st.stripboard_id = :stripboard_id
+            WHERE pd.project_id = :project_id
+            AND block->>'type' = 'scene'
+            AND block->>'scene_id' IS NOT NULL
+            AND st.id IS NULL
+            AND (pd.is_completed IS NULL OR pd.is_completed = false)
+        """, {"project_id": project_id, "stripboard_id": stripboard_id})
+
+        # Combine both sources (dedupe by scene_id)
+        seen_scene_ids = set()
+        scenes_without_strips = []
+        for scene in scenes_from_junction + scenes_from_hour_schedule:
+            if scene['id'] not in seen_scene_ids:
+                seen_scene_ids.add(scene['id'])
+                scenes_without_strips.append(scene)
+
+        # Track sort order per day bucket for new strips
+        sort_orders = {}
+
+        for scene in scenes_without_strips:
+            day_id = scene['scheduled_day_id']
+
+            # Get next sort order for this day bucket
+            if day_id not in sort_orders:
+                sort_orders[day_id] = await get_next_sort_order(stripboard_id, day_id)
+
+            current_order = sort_orders[day_id]
+            sort_orders[day_id] += 1
+
+            client.table("backlot_strips").insert({
+                "project_id": project_id,
+                "stripboard_id": stripboard_id,
+                "scene_id": scene['id'],
+                "assigned_day_id": day_id,
+                "unit": "A",
+                "sort_order": current_order,
+                "status": "SCHEDULED"
+            }).execute()
+            created_count += 1
+
     return {
         "success": True,
         "to_schedule": to_schedule_count,
         "from_schedule": from_schedule_count,
-        "message": f"Synced {to_schedule_count} strips → schedule, {from_schedule_count} schedule → strips"
+        "created": created_count,
+        "message": f"Synced {to_schedule_count} strips → schedule, {from_schedule_count} schedule → strips, created {created_count} new strips"
     }
 
 

@@ -4,6 +4,7 @@
  * Deliverables tab: Track platform-specific deliverables and their status
  */
 import React, { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -90,6 +91,10 @@ import {
   FileText,
   Box,
   Home,
+  ExternalLink,
+  Globe,
+  Loader2,
+  Upload,
 } from 'lucide-react';
 import { parseLocalDate } from '@/lib/dateUtils';
 import {
@@ -119,8 +124,9 @@ import {
 } from '@/types/backlot';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { AssetFolderTree, CreateAssetFolderModal } from './assets';
-import { AssetFolder, AssetFolderInput } from '@/types/backlot';
+import { api } from '@/lib/api';
+import { AssetFolderTree, CreateAssetFolderModal, FileUploadModal } from './assets';
+import { AssetFolder, AssetFolderInput, StandaloneAssetInput } from '@/types/backlot';
 
 interface AssetsViewProps {
   projectId: string;
@@ -326,6 +332,60 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
 
   // Standalone asset video player modal
   const [selectedStandaloneAsset, setSelectedStandaloneAsset] = useState<any>(null);
+
+  // Upload Files modal state
+  const [showUploadModal, setShowUploadModal] = useState(false);
+
+  // Add Link modal state
+  const [showLinkModal, setShowLinkModal] = useState(false);
+  const [linkUrl, setLinkUrl] = useState('');
+  const [linkName, setLinkName] = useState('');
+  const [linkDescription, setLinkDescription] = useState('');
+  const [isCreatingLink, setIsCreatingLink] = useState(false);
+
+  const queryClient = useQueryClient();
+
+  // Detect video provider from URL
+  const detectVideoProvider = (url: string): { provider: string | null; videoId: string | null } => {
+    // YouTube patterns
+    const ytMatch = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+    if (ytMatch) return { provider: 'youtube', videoId: ytMatch[1] };
+    // Vimeo patterns
+    const vimeoMatch = url.match(/(?:vimeo\.com\/)(\d+)/);
+    if (vimeoMatch) return { provider: 'vimeo', videoId: vimeoMatch[1] };
+    return { provider: null, videoId: null };
+  };
+
+  // Handle creating a link asset
+  const handleCreateLinkAsset = async () => {
+    if (!linkUrl.trim()) return;
+    setIsCreatingLink(true);
+    try {
+      const { provider, videoId } = detectVideoProvider(linkUrl);
+      const assetName = linkName.trim() || (provider ? `${provider.charAt(0).toUpperCase() + provider.slice(1)} Video` : 'Link Asset');
+      const input: StandaloneAssetInput = {
+        name: assetName,
+        description: linkDescription.trim() || undefined,
+        asset_type: 'video_link',
+        source_url: linkUrl.trim(),
+        video_provider: provider || undefined,
+        external_video_id: videoId || undefined,
+        folder_id: selectedFolderId,
+      };
+      await api.createStandaloneAsset(projectId, input);
+      queryClient.invalidateQueries({ queryKey: ['backlot-standalone-assets'] });
+      toast.success('Link asset added');
+      setShowLinkModal(false);
+      setLinkUrl('');
+      setLinkName('');
+      setLinkDescription('');
+    } catch (error) {
+      toast.error('Failed to create link asset');
+      console.error('Error creating link asset:', error);
+    } finally {
+      setIsCreatingLink(false);
+    }
+  };
 
   // Queries
   const { data: assets, isLoading: assetsLoading } = useAssets(projectId);
@@ -736,74 +796,129 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
 
             {/* Assets Content */}
             <div className="flex-1 space-y-6">
-              {/* Standalone Files from Folder (uploaded from desktop) */}
-              {(standaloneAssets && standaloneAssets.length > 0) && (
-                <div>
-                  <h3 className="text-sm font-medium text-bone-white mb-3 flex items-center gap-2">
+              {/* Standalone Files from Folder (uploaded from desktop or link) */}
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-medium text-bone-white flex items-center gap-2">
                     <File className="w-4 h-4 text-accent-yellow" />
-                    Files {selectedFolderId ? 'in folder' : '(all)'} ({standaloneAssets.length})
+                    Files {selectedFolderId ? 'in folder' : '(all)'} ({standaloneAssets?.length || 0})
                   </h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-                    {standaloneAssets.map((file) => (
-                      <div
-                        key={file.id}
-                        className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-3 cursor-pointer hover:border-accent-yellow/50 transition-colors group"
-                        onClick={() => {
-                          if (file.asset_type === 'video' && file.cloud_url) {
-                            // Open video player modal or navigate to detail view
-                            setSelectedStandaloneAsset(file);
-                          }
-                        }}
+                  {canEdit && (
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowUploadModal(true)}
+                        className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10 hover:border-accent-yellow/50"
                       >
-                        {/* Thumbnail area - similar to Dailies ClipCard */}
-                        <div className="aspect-video bg-charcoal-black rounded mb-2 flex items-center justify-center relative overflow-hidden">
-                          {file.asset_type === 'video' ? (
-                            <>
-                              {file.thumbnail_url ? (
-                                <img
-                                  src={file.thumbnail_url}
-                                  alt={file.name}
-                                  className="w-full h-full object-cover"
-                                />
-                              ) : (
-                                <Video className="w-8 h-8 text-muted-gray" />
-                              )}
-                              {/* Play button overlay */}
-                              <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                <div className="rounded-full bg-white/20 backdrop-blur flex items-center justify-center w-10 h-10">
-                                  <Play className="text-white fill-white ml-0.5 w-5 h-5" />
-                                </div>
+                        <Upload className="w-4 h-4 mr-2" />
+                        Upload Files
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowLinkModal(true)}
+                        className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10 hover:border-accent-yellow/50"
+                      >
+                        <Globe className="w-4 h-4 mr-2" />
+                        Add Link
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              {(standaloneAssets && standaloneAssets.length > 0) && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+                  {standaloneAssets.map((file) => (
+                    <div
+                      key={file.id}
+                      className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-3 cursor-pointer hover:border-accent-yellow/50 transition-colors group"
+                      onClick={() => {
+                        if (file.asset_type === 'video_link' && file.source_url) {
+                          window.open(file.source_url, '_blank', 'noopener,noreferrer');
+                        } else if (file.asset_type === 'video' && file.cloud_url) {
+                          setSelectedStandaloneAsset(file);
+                        }
+                      }}
+                    >
+                      {/* Thumbnail area */}
+                      <div className="aspect-video bg-charcoal-black rounded mb-2 flex items-center justify-center relative overflow-hidden">
+                        {file.asset_type === 'video_link' ? (
+                          <>
+                            {file.thumbnail_url ? (
+                              <img
+                                src={file.thumbnail_url}
+                                alt={file.name}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <Globe className="w-8 h-8 text-muted-gray" />
+                            )}
+                            {/* Link icon overlay */}
+                            <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                              <div className="rounded-full bg-white/20 backdrop-blur flex items-center justify-center w-10 h-10">
+                                <ExternalLink className="text-white w-5 h-5" />
                               </div>
-                              {/* Duration badge */}
-                              {file.duration_seconds && (
-                                <div className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-black/70 rounded text-xs text-white font-mono">
-                                  {Math.floor(file.duration_seconds / 60)}:{String(Math.floor(file.duration_seconds % 60)).padStart(2, '0')}
-                                </div>
-                              )}
-                            </>
-                          ) : (
-                            <div className="p-2 rounded bg-white/5">
-                              {file.asset_type === 'audio' ? <Music className="w-6 h-6 text-accent-yellow" /> :
-                               file.asset_type === '3d_model' ? <Box className="w-6 h-6 text-accent-yellow" /> :
-                               file.asset_type === 'image' ? <Image className="w-6 h-6 text-accent-yellow" /> :
-                               file.asset_type === 'document' ? <FileText className="w-6 h-6 text-accent-yellow" /> :
-                               <File className="w-6 h-6 text-accent-yellow" />}
                             </div>
-                          )}
-                        </div>
-                        {/* Info section */}
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-bone-white truncate">{file.name}</p>
-                          <p className="text-xs text-muted-gray truncate">{file.file_name}</p>
-                          {file.file_size_bytes && (
-                            <p className="text-xs text-muted-gray mt-1">
-                              {(file.file_size_bytes / 1024 / 1024).toFixed(1)} MB
-                            </p>
-                          )}
-                        </div>
+                            {/* Provider badge */}
+                            {file.video_provider && (
+                              <div className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-black/70 rounded text-xs text-white capitalize">
+                                {file.video_provider}
+                              </div>
+                            )}
+                          </>
+                        ) : file.asset_type === 'video' ? (
+                          <>
+                            {file.thumbnail_url ? (
+                              <img
+                                src={file.thumbnail_url}
+                                alt={file.name}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <Video className="w-8 h-8 text-muted-gray" />
+                            )}
+                            {/* Play button overlay */}
+                            <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                              <div className="rounded-full bg-white/20 backdrop-blur flex items-center justify-center w-10 h-10">
+                                <Play className="text-white fill-white ml-0.5 w-5 h-5" />
+                              </div>
+                            </div>
+                            {/* Duration badge */}
+                            {file.duration_seconds && (
+                              <div className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-black/70 rounded text-xs text-white font-mono">
+                                {Math.floor(file.duration_seconds / 60)}:{String(Math.floor(file.duration_seconds % 60)).padStart(2, '0')}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="p-2 rounded bg-white/5">
+                            {file.asset_type === 'audio' ? <Music className="w-6 h-6 text-accent-yellow" /> :
+                             file.asset_type === '3d_model' ? <Box className="w-6 h-6 text-accent-yellow" /> :
+                             file.asset_type === 'image' ? <Image className="w-6 h-6 text-accent-yellow" /> :
+                             file.asset_type === 'document' ? <FileText className="w-6 h-6 text-accent-yellow" /> :
+                             <File className="w-6 h-6 text-accent-yellow" />}
+                          </div>
+                        )}
                       </div>
-                    ))}
-                  </div>
+                      {/* Info section */}
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-bone-white truncate">{file.name}</p>
+                        {file.source_url ? (
+                          <p className="text-xs text-muted-gray truncate flex items-center gap-1">
+                            <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                            {file.video_provider || 'Link'}
+                          </p>
+                        ) : (
+                          <p className="text-xs text-muted-gray truncate">{file.file_name}</p>
+                        )}
+                        {file.file_size_bytes && (
+                          <p className="text-xs text-muted-gray mt-1">
+                            {(file.file_size_bytes / 1024 / 1024).toFixed(1)} MB
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
 
@@ -812,125 +927,8 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-accent-yellow" />
                 </div>
               )}
-
-              {/* Video Assets Grid */}
-              <div>
-                <h3 className="text-sm font-medium text-bone-white mb-3 flex items-center gap-2">
-                  <Film className="w-4 h-4 text-accent-yellow" />
-                  Video Assets ({filteredAssets.length})
-                </h3>
-              {filteredAssets.length === 0 ? (
-                <Card className="bg-charcoal-black/50 border-muted-gray/20 border-dashed">
-                  <CardContent className="flex flex-col items-center justify-center py-12">
-                    <Film className="w-12 h-12 text-muted-gray mb-4" />
-                    <h3 className="text-lg font-medium text-bone-white mb-2">No video assets yet</h3>
-                    <p className="text-muted-gray text-sm mb-4">
-                      {searchQuery || typeFilter !== 'all' || statusFilter !== 'all'
-                        ? 'No assets match your filters'
-                        : 'Add your first video asset to start tracking'}
-                    </p>
-                    {canEdit && !searchQuery && typeFilter === 'all' && statusFilter === 'all' && (
-                      <Button onClick={() => openAssetModal()} className="bg-accent-yellow text-charcoal-black hover:bg-bone-white">
-                        <Plus className="w-4 h-4 mr-2" />
-                        Add Asset
-                      </Button>
-                    )}
-                  </CardContent>
-                </Card>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                  {filteredAssets.map((asset) => (
-                <Card key={asset.id} className="bg-charcoal-black/50 border-muted-gray/20 hover:border-accent-yellow/30 transition-colors">
-                  <CardHeader className="pb-2">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-2">
-                        <Badge variant="outline" className={cn('text-xs', ASSET_TYPE_COLORS[asset.asset_type])}>
-                          <AssetTypeIcon type={asset.asset_type} className="w-3 h-3 mr-1" />
-                          {ASSET_TYPE_LABELS[asset.asset_type]}
-                        </Badge>
-                        {asset.version_label && (
-                          <Badge variant="outline" className="text-xs border-muted-gray/30 text-muted-gray">
-                            {asset.version_label}
-                          </Badge>
-                        )}
-                      </div>
-                      {canEdit && (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-8 w-8">
-                              <MoreVertical className="w-4 h-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => openAssetModal(asset)}>
-                              <Pencil className="w-4 h-4 mr-2" />
-                              Edit
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => openBulkModal(asset.id)}>
-                              <Package className="w-4 h-4 mr-2" />
-                              Add Deliverables
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              onClick={() => setDeleteTarget({ type: 'asset', id: asset.id, name: asset.title })}
-                              className="text-red-400"
-                            >
-                              <Trash2 className="w-4 h-4 mr-2" />
-                              Delete
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      )}
-                    </div>
-                    <CardTitle className="text-lg text-bone-white">{asset.title}</CardTitle>
-                    {asset.description && (
-                      <CardDescription className="text-muted-gray line-clamp-2">{asset.description}</CardDescription>
-                    )}
-                  </CardHeader>
-                  <CardContent>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4 text-sm text-muted-gray">
-                        {asset.duration_seconds && (
-                          <span className="flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            {formatDuration(asset.duration_seconds)}
-                          </span>
-                        )}
-                        {(asset.deliverables_count || 0) > 0 && (
-                          <span className="flex items-center gap-1">
-                            <Package className="w-3 h-3" />
-                            {asset.deliverables_count} deliverable{(asset.deliverables_count || 0) !== 1 ? 's' : ''}
-                          </span>
-                        )}
-                      </div>
-
-                      <Select
-                        value={asset.status}
-                        onValueChange={(v) => handleStatusChange(asset.id, 'asset', v as BacklotDeliverableStatus)}
-                        disabled={!canEdit}
-                      >
-                        <SelectTrigger className={cn('w-fit h-7 text-xs border-0', DELIVERABLE_STATUS_COLORS[asset.status])}>
-                          <StatusIcon status={asset.status} className="w-3 h-3 mr-1" />
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {DELIVERABLE_STATUSES.map((status) => (
-                            <SelectItem key={status} value={status}>
-                              {DELIVERABLE_STATUS_LABELS[status]}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </CardContent>
-
-                    {/* Source Clips Section */}
-                    <SourceClipsSection assetId={asset.id} />
-                  </Card>
-                ))}
               </div>
-            )}
-              </div>
+
             </div>
           </div>
         </TabsContent>
@@ -1393,6 +1391,87 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Add Link Modal */}
+      <Dialog open={showLinkModal} onOpenChange={(open) => { setShowLinkModal(open); if (!open) { setLinkUrl(''); setLinkName(''); setLinkDescription(''); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add Link Asset</DialogTitle>
+            <DialogDescription className="text-muted-gray">
+              Add a URL-based asset (YouTube, Vimeo, or any video link)
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>URL <span className="text-primary-red">*</span></Label>
+              <Input
+                value={linkUrl}
+                onChange={(e) => setLinkUrl(e.target.value)}
+                placeholder="https://www.youtube.com/watch?v=... or https://vimeo.com/..."
+                className="mt-1"
+              />
+              {linkUrl && (() => {
+                const { provider } = detectVideoProvider(linkUrl);
+                return provider ? (
+                  <p className="text-xs text-accent-yellow mt-1 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" />
+                    Detected: {provider.charAt(0).toUpperCase() + provider.slice(1)}
+                  </p>
+                ) : null;
+              })()}
+            </div>
+            <div>
+              <Label>Name</Label>
+              <Input
+                value={linkName}
+                onChange={(e) => setLinkName(e.target.value)}
+                placeholder="Optional — auto-generated from provider"
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Textarea
+                value={linkDescription}
+                onChange={(e) => setLinkDescription(e.target.value)}
+                placeholder="Optional description..."
+                className="mt-1"
+                rows={2}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowLinkModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateLinkAsset}
+              disabled={!linkUrl.trim() || isCreatingLink}
+              className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+            >
+              {isCreatingLink ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Adding...
+                </>
+              ) : (
+                <>
+                  <Globe className="w-4 h-4 mr-2" />
+                  Add Link
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* File Upload Modal */}
+      <FileUploadModal
+        open={showUploadModal}
+        onOpenChange={setShowUploadModal}
+        projectId={projectId}
+        folderId={selectedFolderId}
+      />
 
       {/* Standalone Asset Video Player Modal */}
       <Dialog open={!!selectedStandaloneAsset} onOpenChange={() => setSelectedStandaloneAsset(null)}>

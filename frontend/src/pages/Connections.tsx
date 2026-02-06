@@ -43,7 +43,7 @@ type TabKey = 'all' | 'pending' | 'sent';
 type Connection = {
   id: string;
   requester_id: string;
-  addressee_id: string;
+  recipient_id: string;
   status: 'pending' | 'accepted' | 'denied';
   created_at: string;
   updated_at?: string;
@@ -96,7 +96,7 @@ const Connections = () => {
     const ids = new Set<string>();
     connections.forEach((c) => {
       if (c.requester_id !== user.id) ids.add(c.requester_id);
-      if (c.addressee_id !== user.id) ids.add(c.addressee_id);
+      if (c.recipient_id !== user.id) ids.add(c.recipient_id);
     });
     return Array.from(ids);
   }, [connections, user?.id]);
@@ -165,7 +165,7 @@ const Connections = () => {
       case 'pending':
         // Incoming requests (others sent to me)
         filtered = connections.filter(
-          (c) => c.status === 'pending' && c.addressee_id === user.id
+          (c) => c.status === 'pending' && c.recipient_id === user.id
         );
         break;
       case 'sent':
@@ -185,7 +185,7 @@ const Connections = () => {
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter((c) => {
-        const partnerId = c.requester_id === user.id ? c.addressee_id : c.requester_id;
+        const partnerId = c.requester_id === user.id ? c.recipient_id : c.requester_id;
         const profile = profiles[partnerId];
         if (!profile) return false;
         return (
@@ -202,7 +202,7 @@ const Connections = () => {
   // Count pending incoming
   const pendingCount = useMemo(
     () =>
-      connections.filter((c) => c.status === 'pending' && c.addressee_id === user?.id)
+      connections.filter((c) => c.status === 'pending' && c.recipient_id === user?.id)
         .length,
     [connections, user?.id]
   );
@@ -216,12 +216,12 @@ const Connections = () => {
   );
 
   const getPartnerId = (c: Connection) =>
-    c.requester_id === user?.id ? c.addressee_id : c.requester_id;
+    c.requester_id === user?.id ? c.recipient_id : c.requester_id;
 
   const ConnectionCard = ({ connection }: { connection: Connection }) => {
     const partnerId = getPartnerId(connection);
     const profile = profiles[partnerId];
-    const isIncomingPending = connection.status === 'pending' && connection.addressee_id === user?.id;
+    const isIncomingPending = connection.status === 'pending' && connection.recipient_id === user?.id;
     const isOutgoingPending = connection.status === 'pending' && connection.requester_id === user?.id;
     const isConnected = connection.status === 'accepted';
 

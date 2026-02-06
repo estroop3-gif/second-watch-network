@@ -302,3 +302,83 @@ export function useProjectPermission(projectId: string | null) {
     enabled: !!projectId && !!user,
   });
 }
+
+// Approver roles (duplicated from useProjectRoles to avoid circular imports)
+const APPROVER_ROLES = ['showrunner', 'upm', 'line_producer', 'producer', 'executive_producer'];
+
+/**
+ * Combined workspace initialization hook.
+ * Fetches project, permission, view-config, can-manage-roles, my-roles,
+ * and production-days in a single API call to reduce concurrent Lambda invocations.
+ * Returns all workspace data directly and populates individual query caches
+ * for child components that use the individual hooks.
+ */
+export function useWorkspaceInit(projectId: string | null) {
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: ['backlot-workspace-init', projectId],
+    queryFn: async () => {
+      if (!projectId) return null;
+      const data = await api.getBacklotWorkspaceInit(projectId);
+
+      // Populate individual query caches so child components
+      // that call useProject / useProjectPermission etc. get instant cache hits
+      queryClient.setQueryData(['backlot-project', projectId], data.project);
+      queryClient.setQueryData(['backlot-project-permission', projectId], {
+        canView: data.permission.can_view ?? false,
+        canEdit: data.permission.can_edit ?? false,
+        isAdmin: data.permission.is_admin ?? false,
+        isOwner: data.permission.is_owner ?? false,
+        role: (data.permission.role as BacklotMemberRole) || null,
+      });
+      queryClient.setQueryData(['backlot-view-config', projectId, null], data.view_config);
+      queryClient.setQueryData(['backlot-can-view-as-role', projectId], data.can_manage_roles);
+      queryClient.setQueryData(['backlot-my-project-roles', projectId], data.my_roles || []);
+      queryClient.setQueryData(['backlot-production-days', projectId], data.production_days || []);
+
+      return data;
+    },
+    enabled: !!projectId && !!user,
+    staleTime: 10000,
+    refetchOnWindowFocus: true,
+    refetchInterval: 30000,
+  });
+
+  const data = query.data;
+
+  // Derive permission
+  const permission = data ? {
+    canView: data.permission?.can_view ?? false,
+    canEdit: data.permission?.can_edit ?? false,
+    isAdmin: data.permission?.is_admin ?? false,
+    isOwner: data.permission?.is_owner ?? false,
+    role: (data.permission?.role as BacklotMemberRole) || null,
+  } : undefined;
+
+  // Derive canApprove from my_roles
+  const myRoles = data?.my_roles || [];
+  const primaryRole = myRoles.find((r: any) => r.is_primary) || myRoles[0];
+  const backlotRole = primaryRole?.backlot_role;
+  const isApprover = backlotRole ? APPROVER_ROLES.includes(backlotRole) : false;
+  const isFirstAD = backlotRole === 'first_ad';
+  const isDepartmentHead = backlotRole === 'department_head';
+  const isOwnerOrAdmin = permission?.isOwner || permission?.isAdmin || false;
+
+  // Derive todayShootDay from production_days
+  const productionDays = data?.production_days || [];
+  const today = new Date().toISOString().split('T')[0];
+  const todayDay = productionDays.find((d: any) => d.date === today) || null;
+
+  return {
+    ...query,
+    project: data?.project as BacklotProject | undefined,
+    permission,
+    viewConfig: data?.view_config,
+    canViewAsRole: data?.can_manage_roles ?? false,
+    todayDay,
+    hasShootToday: !!todayDay,
+    canViewApprovalsDashboard: isApprover || isOwnerOrAdmin,
+  };
+}

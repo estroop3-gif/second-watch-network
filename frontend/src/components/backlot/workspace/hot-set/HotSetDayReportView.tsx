@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
   FileDown,
+  FileText,
   Clock,
   CheckCircle2,
   SkipForward,
@@ -34,13 +35,14 @@ import { cn } from '@/lib/utils';
 import {
   useHotSetDashboard,
   useWrapReport,
+  useProductionDayAdNotes,
   formatElapsedTime,
   formatTime,
   formatScheduleTime,
   WrapReportData,
 } from '@/hooks/backlot';
 import { HotSetSession, ProjectedScheduleItem } from '@/types/backlot';
-import { generateHotSetDayReportPdf } from './hot-set-day-report-pdf';
+import { generateHotSetDayReportPdf, generateAdNotesPdf } from './hot-set-day-report-pdf';
 
 interface HotSetDayReportViewProps {
   session: HotSetSession;
@@ -95,10 +97,12 @@ export const HotSetDayReportView: React.FC<HotSetDayReportViewProps> = ({
 }) => {
   const reportRef = useRef<HTMLDivElement>(null);
   const [isExporting, setIsExporting] = React.useState(false);
+  const [isExportingNotes, setIsExportingNotes] = React.useState(false);
 
   // Fetch data
   const { data: dashboard } = useHotSetDashboard(session.id);
   const { data: wrapReport } = useWrapReport(session.id);
+  const { data: dayAdNotes } = useProductionDayAdNotes(session.production_day_id || null);
 
   const projectedSchedule = dashboard?.projected_schedule || [];
 
@@ -133,6 +137,35 @@ export const HotSetDayReportView: React.FC<HotSetDayReportViewProps> = ({
       console.error('Failed to export PDF:', error);
     } finally {
       setIsExporting(false);
+    }
+  };
+
+  const handleExportNotesPdf = async () => {
+    const notes = dayAdNotes || wrapReport?.ad_notes;
+    if (!notes || notes.trim().length === 0) {
+      console.warn('No notes to export');
+      return;
+    }
+
+    setIsExportingNotes(true);
+    try {
+      const dayNumber = (session as any).production_day?.day_number
+        || (session as any).backlot_production_days?.day_number
+        || 1;
+      const date = (session as any).production_day?.date
+        || (session as any).backlot_production_days?.date
+        || '';
+
+      await generateAdNotesPdf({
+        notes,
+        dayNumber,
+        date,
+        projectName,
+      });
+    } catch (error) {
+      console.error('Failed to export notes PDF:', error);
+    } finally {
+      setIsExportingNotes(false);
     }
   };
 
@@ -183,8 +216,19 @@ export const HotSetDayReportView: React.FC<HotSetDayReportViewProps> = ({
           )}
           <Button onClick={handleExportPdf} disabled={isExporting} className="gap-2 bg-accent-yellow text-charcoal-black hover:bg-bone-white">
             <FileDown className="w-4 h-4" />
-            {isExporting ? 'Exporting...' : 'Export PDF'}
+            {isExporting ? 'Exporting...' : 'Export Day Report'}
           </Button>
+          {(dayAdNotes || wrapReport?.ad_notes) && (
+            <Button
+              onClick={handleExportNotesPdf}
+              disabled={isExportingNotes}
+              variant="outline"
+              className="gap-2"
+            >
+              <FileText className="w-4 h-4" />
+              {isExportingNotes ? 'Exporting...' : 'Export Notes'}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -454,14 +498,14 @@ export const HotSetDayReportView: React.FC<HotSetDayReportViewProps> = ({
         )}
 
         {/* AD Notes */}
-        {wrapReport?.ad_notes && (
+        {(dayAdNotes || wrapReport?.ad_notes) && (
           <Card className="bg-soft-black border-muted-gray/20 print:bg-white print:border-gray-300">
             <CardHeader className="border-b border-muted-gray/20 print:border-gray-300">
               <CardTitle className="text-bone-white print:text-black">AD Notes</CardTitle>
             </CardHeader>
             <CardContent className="p-4">
               <p className="text-muted-gray whitespace-pre-wrap print:text-gray-700">
-                {wrapReport.ad_notes}
+                {dayAdNotes || wrapReport?.ad_notes}
               </p>
             </CardContent>
           </Card>

@@ -1,83 +1,110 @@
 /**
- * ADNotesPanel - Auto-saving notes textarea for 1st AD
+ * ADNotesPanel - Auto-saving notes textarea for 1st AD with publish workflow
  *
  * Features:
- * - Debounced auto-save (1 second delay)
- * - Visual save status indicator
- * - Persists notes to session
+ * - Debounced auto-save to draft (1 second delay)
+ * - Manual "Save Note" button to publish
+ * - Visual draft/save status indicators
+ * - Version history support
  */
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, Check, StickyNote, AlertCircle } from 'lucide-react';
+import { Loader2, Check, StickyNote, AlertCircle, Save, FileEdit } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useUpdateSessionNotes } from '@/hooks/backlot';
+import {
+  useAdNoteDraft,
+  useSaveAdNoteDraft,
+  usePublishAdNote,
+} from '@/hooks/backlot/useAdNotes';
+import { toast } from 'sonner';
 
-type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'publishing' | 'published';
 
 interface ADNotesPanelProps {
-  sessionId: string;
+  dayId: string;
   initialNotes: string | null;
   canEdit: boolean;
   className?: string;
 }
 
 export const ADNotesPanel: React.FC<ADNotesPanelProps> = ({
-  sessionId,
+  dayId,
   initialNotes,
   canEdit,
   className,
 }) => {
   const [notes, setNotes] = useState(initialNotes || '');
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const [hasDraftChanges, setHasDraftChanges] = useState(false);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const savedTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const lastSavedNotes = useRef(initialNotes || '');
+  const lastSavedDraft = useRef(initialNotes || '');
+  const initialLoadRef = useRef(true);
 
-  const updateNotes = useUpdateSessionNotes();
+  // Hooks for draft and publish
+  const { data: draft, isLoading: isDraftLoading } = useAdNoteDraft(dayId);
+  const saveDraft = useSaveAdNoteDraft();
+  const publishNote = usePublishAdNote();
 
-  // Sync initial notes when they change externally
+  // Initialize with draft content if available
   useEffect(() => {
-    if (initialNotes !== null && initialNotes !== lastSavedNotes.current) {
+    if (initialLoadRef.current && draft?.content) {
+      setNotes(draft.content);
+      lastSavedDraft.current = draft.content;
+      setHasDraftChanges(true);
+      initialLoadRef.current = false;
+    } else if (initialLoadRef.current && initialNotes) {
       setNotes(initialNotes);
-      lastSavedNotes.current = initialNotes;
+      lastSavedDraft.current = initialNotes;
+      initialLoadRef.current = false;
     }
-  }, [initialNotes]);
+  }, [draft, initialNotes]);
 
-  // Debounced save function
-  const saveNotes = useCallback(async (value: string) => {
-    if (value === lastSavedNotes.current) {
-      return; // No change to save
-    }
+  // Reset initial load flag when dayId changes
+  useEffect(() => {
+    initialLoadRef.current = true;
+    setHasDraftChanges(false);
+    setSaveStatus('idle');
+  }, [dayId]);
 
-    setSaveStatus('saving');
-    try {
-      await updateNotes.mutateAsync({ sessionId, notes: value });
-      lastSavedNotes.current = value;
-      setSaveStatus('saved');
+  // Debounced save draft function
+  const saveDraftContent = useCallback(
+    async (value: string) => {
+      if (value === lastSavedDraft.current) {
+        return;
+      }
 
-      // Reset to idle after showing "saved" for 2 seconds
-      savedTimeoutRef.current = setTimeout(() => {
-        setSaveStatus('idle');
-      }, 2000);
-    } catch (error) {
-      console.error('Failed to save notes:', error);
-      setSaveStatus('error');
+      setSaveStatus('saving');
+      try {
+        await saveDraft.mutateAsync({ dayId, content: value });
+        lastSavedDraft.current = value;
+        setHasDraftChanges(true);
+        setSaveStatus('saved');
 
-      // Reset to idle after showing error for 3 seconds
-      savedTimeoutRef.current = setTimeout(() => {
-        setSaveStatus('idle');
-      }, 3000);
-    }
-  }, [sessionId, updateNotes]);
+        savedTimeoutRef.current = setTimeout(() => {
+          setSaveStatus('idle');
+        }, 2000);
+      } catch (error) {
+        console.error('Failed to save draft:', error);
+        setSaveStatus('error');
 
-  // Handle text change with debounced save
+        savedTimeoutRef.current = setTimeout(() => {
+          setSaveStatus('idle');
+        }, 3000);
+      }
+    },
+    [dayId, saveDraft]
+  );
+
+  // Handle text change with debounced draft save
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     setNotes(value);
 
-    // Clear existing timeout
+    // Clear existing timeouts
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
     }
@@ -85,10 +112,44 @@ export const ADNotesPanel: React.FC<ADNotesPanelProps> = ({
       clearTimeout(savedTimeoutRef.current);
     }
 
-    // Set new timeout for auto-save (1 second delay)
+    // Set new timeout for auto-save draft (1 second delay)
     saveTimeoutRef.current = setTimeout(() => {
-      saveNotes(value);
+      saveDraftContent(value);
     }, 1000);
+  };
+
+  // Publish note
+  const handlePublish = async () => {
+    if (!notes.trim()) {
+      toast.error('Cannot save empty note');
+      return;
+    }
+
+    // Clear any pending draft save
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    setSaveStatus('publishing');
+    try {
+      await publishNote.mutateAsync({ dayId, content: notes });
+      setHasDraftChanges(false);
+      lastSavedDraft.current = notes;
+      setSaveStatus('published');
+      toast.success('Note saved to history');
+
+      savedTimeoutRef.current = setTimeout(() => {
+        setSaveStatus('idle');
+      }, 3000);
+    } catch (error) {
+      console.error('Failed to publish note:', error);
+      setSaveStatus('error');
+      toast.error('Failed to save note');
+
+      savedTimeoutRef.current = setTimeout(() => {
+        setSaveStatus('idle');
+      }, 3000);
+    }
   };
 
   // Cleanup timeouts on unmount
@@ -107,26 +168,66 @@ export const ADNotesPanel: React.FC<ADNotesPanelProps> = ({
     switch (saveStatus) {
       case 'saving':
         return (
-          <Badge variant="outline" className="text-xs bg-blue-500/10 border-blue-500/30 text-blue-400">
+          <Badge
+            variant="outline"
+            className="text-xs bg-blue-500/10 border-blue-500/30 text-blue-400"
+          >
             <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-            Saving...
+            Saving draft...
           </Badge>
         );
       case 'saved':
         return (
-          <Badge variant="outline" className="text-xs bg-green-500/10 border-green-500/30 text-green-400">
+          <Badge
+            variant="outline"
+            className="text-xs bg-blue-500/10 border-blue-500/30 text-blue-400"
+          >
+            <Check className="w-3 h-3 mr-1" />
+            Draft saved
+          </Badge>
+        );
+      case 'publishing':
+        return (
+          <Badge
+            variant="outline"
+            className="text-xs bg-accent-yellow/10 border-accent-yellow/30 text-accent-yellow"
+          >
+            <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+            Saving...
+          </Badge>
+        );
+      case 'published':
+        return (
+          <Badge
+            variant="outline"
+            className="text-xs bg-green-500/10 border-green-500/30 text-green-400"
+          >
             <Check className="w-3 h-3 mr-1" />
             Saved
           </Badge>
         );
       case 'error':
         return (
-          <Badge variant="outline" className="text-xs bg-red-500/10 border-red-500/30 text-red-400">
+          <Badge
+            variant="outline"
+            className="text-xs bg-red-500/10 border-red-500/30 text-red-400"
+          >
             <AlertCircle className="w-3 h-3 mr-1" />
-            Error saving
+            Error
           </Badge>
         );
       default:
+        if (hasDraftChanges) {
+          return (
+            <Badge
+              variant="outline"
+              className="text-xs bg-orange-500/10 border-orange-500/30 text-orange-400"
+            >
+              <FileEdit className="w-3 h-3 mr-1" />
+              Draft
+            </Badge>
+          );
+        }
         return null;
     }
   };
@@ -146,17 +247,38 @@ export const ADNotesPanel: React.FC<ADNotesPanelProps> = ({
         <Textarea
           value={notes}
           onChange={handleChange}
-          placeholder={canEdit ? "Add notes for this production day..." : "No notes yet"}
-          disabled={!canEdit}
+          placeholder={canEdit ? 'Add notes for this production day...' : 'No notes yet'}
+          disabled={!canEdit || isDraftLoading}
           className={cn(
             'min-h-[120px] bg-charcoal-black border-muted-gray/30 resize-none',
             'placeholder:text-muted-gray/50',
             !canEdit && 'opacity-60 cursor-not-allowed'
           )}
         />
-        <p className="text-xs text-muted-gray mt-2">
-          Notes auto-save as you type
-        </p>
+        <div className="flex items-center justify-between mt-3">
+          <p className="text-xs text-muted-gray">
+            {hasDraftChanges ? 'Draft auto-saves as you type' : 'Notes auto-save as you type'}
+          </p>
+          {canEdit && (
+            <Button
+              size="sm"
+              onClick={handlePublish}
+              disabled={
+                publishNote.isPending ||
+                saveStatus === 'publishing' ||
+                !notes.trim()
+              }
+              className="h-8"
+            >
+              {publishNote.isPending ? (
+                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+              ) : (
+                <Save className="w-4 h-4 mr-1" />
+              )}
+              Save Note
+            </Button>
+          )}
+        </div>
       </CardContent>
     </Card>
   );

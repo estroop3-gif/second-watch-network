@@ -258,16 +258,25 @@ export function useGenerateStripsFromScript(projectId: string | null) {
 }
 
 /**
- * Generate strips from all project scenes (schedule)
+ * Generate strips from project scenes (schedule)
+ * By default only imports scenes from remaining (unwrapped) days.
+ * Set includeWrapped=true to import ALL scenes including wrapped days.
  */
 export function useGenerateStripsFromScenes(projectId: string | null) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (stripboardId: string): Promise<GenerateResult> => {
+    mutationFn: async ({
+      stripboardId,
+      includeWrapped = false,
+    }: {
+      stripboardId: string;
+      includeWrapped?: boolean;
+    }): Promise<GenerateResult> => {
       if (!projectId) throw new Error('Project ID required');
+      const params = includeWrapped ? '?include_wrapped=true' : '';
       return api.post(
-        `/api/v1/backlot/projects/${projectId}/stripboard/${stripboardId}/generate-from-scenes`
+        `/api/v1/backlot/projects/${projectId}/stripboard/${stripboardId}/generate-from-scenes${params}`
       );
     },
     onSuccess: () => {
@@ -454,9 +463,10 @@ export function useReorderStrip(projectId: string | null) {
 export type SyncDirection = 'to_schedule' | 'from_schedule' | 'both';
 
 export interface SyncResult {
-  direction: SyncDirection;
-  to_schedule_synced: number;
-  from_schedule_synced: number;
+  success: boolean;
+  to_schedule: number;
+  from_schedule: number;
+  created: number;
   message: string;
 }
 

@@ -762,7 +762,7 @@ export function useReorderSchedule() {
       items,
     }: {
       sessionId: string;
-      items: Array<{ id: string; type: 'scene' | 'block' }>;
+      items: Array<{ id: string; type: 'scene' | 'block'; duration_minutes?: number }>;
     }) => {
       const token = getAuthToken();
       const response = await fetch(

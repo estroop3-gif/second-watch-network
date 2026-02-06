@@ -673,14 +673,28 @@ async def can_manage_access(project_id: str, user_id: str) -> bool:
     """
     Check if user can manage team access (add/remove members, modify permissions).
     Returns True for project owners, showrunners, and admins.
+    Uses a single query instead of up to 3 sequential checks.
     """
-    if await is_project_owner(project_id, user_id):
-        return True
-    if await is_project_showrunner(project_id, user_id):
-        return True
-    if await is_project_admin(project_id, user_id):
-        return True
-    return False
+    from app.core.database import execute_single
+
+    row = execute_single(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM backlot_projects
+            WHERE id = :project_id AND owner_id = :user_id
+            UNION ALL
+            SELECT 1 FROM backlot_project_roles
+            WHERE project_id = :project_id AND user_id = :user_id
+            AND backlot_role = 'showrunner'
+            UNION ALL
+            SELECT 1 FROM backlot_project_members
+            WHERE project_id = :project_id AND user_id = :user_id
+            AND role = 'admin'
+        ) AS has_access
+        """,
+        {"project_id": project_id, "user_id": user_id}
+    )
+    return row is not None and row.get("has_access", False)
 
 
 async def get_effective_view_config(project_id: str, user_id: str) -> Dict[str, Any]:

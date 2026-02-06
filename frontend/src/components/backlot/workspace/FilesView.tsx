@@ -1,8 +1,8 @@
 /**
- * FilesView - Project file management with folder hierarchy
+ * FilesView - Project file management with unified folder tree
  *
  * Features:
- * - Folder tree navigation
+ * - Unified folder tree: All Files, virtual source folders, Project Files
  * - File list with search and filters
  * - S3 upload with presigned URLs (single + multipart)
  * - Download via presigned GET
@@ -88,6 +88,10 @@ import {
   RefreshCw,
   ExternalLink,
   Home,
+  Layers,
+  FolderTree,
+  ChevronLeft,
+  Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -108,12 +112,38 @@ import {
   ProjectFolder,
   ProjectFile,
   UploadProgress,
+  // Unified Files
+  useUnifiedFiles,
+  useUnifiedFileDownload,
+  UNIFIED_SOURCE_FILTERS,
+  SOURCE_COLORS,
+  UnifiedFile,
+  UnifiedFileSource,
 } from '@/hooks/backlot';
 
 interface FilesViewProps {
   projectId: string;
   canEdit: boolean;
 }
+
+// Tree selection type
+type TreeSelection =
+  | { type: 'all' }
+  | { type: 'source'; source: UnifiedFileSource }
+  | { type: 'upload'; folderId: string | null };
+
+// Virtual source folder definitions
+const VIRTUAL_SOURCE_FOLDERS: { source: UnifiedFileSource; label: string; iconColor: string }[] = [
+  { source: 'scripts', label: 'Scripts', iconColor: 'text-purple-400' },
+  { source: 'receipts', label: 'Receipts', iconColor: 'text-green-400' },
+  { source: 'clearances', label: 'Clearances', iconColor: 'text-orange-400' },
+  { source: 'dailies', label: 'Dailies', iconColor: 'text-red-400' },
+  { source: 'review_versions', label: 'Review', iconColor: 'text-cyan-400' },
+  { source: 'standalone_assets', label: 'Assets', iconColor: 'text-yellow-400' },
+  // continuity_exports merged into 'scripts' source on backend
+  { source: 'moodboards', label: 'Moodboards', iconColor: 'text-indigo-400' },
+  { source: 'storyboards', label: 'Storyboards', iconColor: 'text-teal-400' },
+];
 
 // File Icon Component
 function FileIcon({ extension, mimeType, className }: { extension?: string; mimeType?: string; className?: string }) {
@@ -132,7 +162,7 @@ function FileIcon({ extension, mimeType, className }: { extension?: string; mime
   return <IconComponent className={className} />;
 }
 
-// Folder Tree Item Component
+// Folder Tree Item Component (for Project Files real folders)
 function FolderTreeItem({
   folder,
   allFolders,
@@ -312,7 +342,7 @@ function Breadcrumb({
         onClick={() => onNavigate(null)}
       >
         <Home className="w-4 h-4" />
-        <span>All Files</span>
+        <span>Root</span>
       </button>
       {path.map((folder, index) => (
         <React.Fragment key={folder.id}>
@@ -357,10 +387,365 @@ function UploadProgressItem({ progress }: { progress: UploadProgress }) {
   );
 }
 
+// Unified File Row Component
+function UnifiedFileRow({
+  file,
+  onDownload,
+  showSourceBadge = true,
+}: {
+  file: UnifiedFile;
+  onDownload: (file: UnifiedFile) => void;
+  showSourceBadge?: boolean;
+}) {
+  const colorClass = SOURCE_COLORS[file.source] || 'bg-white/10 text-muted-gray border-white/20';
+
+  return (
+    <div className="flex items-center gap-3 p-3 border-b border-white/5 hover:bg-white/5 transition-colors">
+      <FileIcon mimeType={file.mime_type} className="w-5 h-5 text-muted-gray flex-shrink-0" />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-bone-white truncate">{file.name}</span>
+          {showSourceBadge && (
+            <Badge variant="outline" className={cn('text-[10px] py-0 px-1.5 flex-shrink-0', colorClass)}>
+              {file.source_label}
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-2 mt-0.5">
+          <span className="text-xs text-muted-gray">{formatFileSize(file.size_bytes)}</span>
+        </div>
+      </div>
+      <div className="text-xs text-muted-gray flex-shrink-0">
+        {new Date(file.created_at).toLocaleDateString()}
+      </div>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7 flex-shrink-0"
+        onClick={() => onDownload(file)}
+      >
+        <Download className="w-4 h-4" />
+      </Button>
+    </div>
+  );
+}
+
+// Source Files Panel — shows files filtered by a specific source
+function SourceFilesPanel({ projectId, source }: { projectId: string; source: UnifiedFileSource }) {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState<string>('');
+  const [offset, setOffset] = useState(0);
+  const limit = 200;
+
+  const sourceLabel = VIRTUAL_SOURCE_FOLDERS.find((f) => f.source === source)?.label || source;
+
+  useEffect(() => {
+    setOffset(0);
+  }, [searchQuery, typeFilter]);
+
+  // Reset filters when source changes
+  useEffect(() => {
+    setSearchQuery('');
+    setTypeFilter('');
+    setOffset(0);
+  }, [source]);
+
+  const { data, isLoading, refetch } = useUnifiedFiles(projectId, {
+    source,
+    search: searchQuery || undefined,
+    file_type: typeFilter || undefined,
+    limit,
+    offset,
+  });
+
+  const { mutateAsync: getDownloadUrl } = useUnifiedFileDownload(projectId);
+
+  const files = data?.files || [];
+
+  const handleDownload = async (file: UnifiedFile) => {
+    try {
+      const result = await getDownloadUrl({
+        source: file.source,
+        sourceEntityId: file.source_entity_id,
+      });
+      window.open(result.download_url, '_blank');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to download file');
+    }
+  };
+
+  return (
+    <Card className="flex-1 bg-charcoal-black/50 border-white/10 flex flex-col min-h-0">
+      <CardHeader className="p-3 border-b border-white/5 space-y-3 flex-shrink-0">
+        <div className="flex items-center justify-between">
+          <div className="text-sm text-bone-white font-medium">{sourceLabel}</div>
+          <Button variant="outline" size="icon" className="h-7 w-7" onClick={() => refetch()}>
+            <RefreshCw className="w-4 h-4" />
+          </Button>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1 max-w-sm">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-gray" />
+            <Input
+              placeholder={`Search ${sourceLabel.toLowerCase()}...`}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-8 h-8 bg-white/5 border-white/10"
+            />
+            {searchQuery && (
+              <button
+                className="absolute right-2 top-1/2 -translate-y-1/2"
+                onClick={() => setSearchQuery('')}
+              >
+                <X className="w-4 h-4 text-muted-gray" />
+              </button>
+            )}
+          </div>
+          <Select value={typeFilter || '__all__'} onValueChange={(v) => setTypeFilter(v === '__all__' ? '' : v)}>
+            <SelectTrigger className="w-[140px] h-8 bg-white/5 border-white/10">
+              <Filter className="w-4 h-4 mr-1 text-muted-gray" />
+              <SelectValue placeholder="All types" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">All types</SelectItem>
+              {FILE_TYPE_FILTERS.filter((f) => f.value).map((filter) => (
+                <SelectItem key={filter.value} value={filter.value}>
+                  {filter.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </CardHeader>
+
+      <ScrollArea className="flex-1">
+        {isLoading ? (
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="w-6 h-6 text-muted-gray animate-spin" />
+          </div>
+        ) : files.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-center">
+            <FileText className="w-12 h-12 text-muted-gray mb-4" />
+            <h3 className="text-lg font-medium text-bone-white mb-1">No {sourceLabel.toLowerCase()} found</h3>
+            <p className="text-sm text-muted-gray max-w-xs">
+              {searchQuery || typeFilter
+                ? 'No files match your search criteria'
+                : `No ${sourceLabel.toLowerCase()} have been added to this project yet`}
+            </p>
+          </div>
+        ) : (
+          <div>
+            <div className="flex items-center gap-3 p-3 border-b border-white/10 bg-white/5">
+              <span className="w-5" />
+              <span className="text-xs text-muted-gray uppercase font-medium flex-1">Name</span>
+              <span className="text-xs text-muted-gray uppercase font-medium w-24">Date</span>
+              <span className="w-7" />
+            </div>
+            {files.map((file) => (
+              <UnifiedFileRow key={`${file.source}-${file.id}`} file={file} onDownload={handleDownload} showSourceBadge={false} />
+            ))}
+          </div>
+        )}
+      </ScrollArea>
+
+      {files.length > 0 && (
+        <div className="flex items-center justify-between p-3 border-t border-white/10">
+          <span className="text-xs text-muted-gray">
+            Showing {offset + 1}–{offset + files.length} files
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={offset === 0}
+              onClick={() => setOffset(Math.max(0, offset - limit))}
+            >
+              <ChevronLeft className="w-4 h-4 mr-1" />
+              Previous
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={files.length < limit}
+              onClick={() => setOffset(offset + limit)}
+            >
+              Next
+              <ChevronRight className="w-4 h-4 ml-1" />
+            </Button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// All Files Panel — unified view with source dropdown
+function AllFilesPanel({ projectId }: { projectId: string }) {
+  const [sourceFilter, setSourceFilter] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState<string>('');
+  const [offset, setOffset] = useState(0);
+  const limit = 200;
+
+  useEffect(() => {
+    setOffset(0);
+  }, [sourceFilter, searchQuery, typeFilter]);
+
+  const { data, isLoading, refetch } = useUnifiedFiles(projectId, {
+    source: (sourceFilter || undefined) as UnifiedFileSource | undefined,
+    search: searchQuery || undefined,
+    file_type: typeFilter || undefined,
+    limit,
+    offset,
+  });
+
+  const { mutateAsync: getDownloadUrl } = useUnifiedFileDownload(projectId);
+
+  const files = data?.files || [];
+
+  const handleDownload = async (file: UnifiedFile) => {
+    try {
+      const result = await getDownloadUrl({
+        source: file.source,
+        sourceEntityId: file.source_entity_id,
+      });
+      window.open(result.download_url, '_blank');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to download file');
+    }
+  };
+
+  return (
+    <Card className="flex-1 bg-charcoal-black/50 border-white/10 flex flex-col min-h-0">
+      <CardHeader className="p-3 border-b border-white/5 space-y-3 flex-shrink-0">
+        <div className="flex items-center justify-between">
+          <div className="text-sm text-bone-white font-medium">
+            All files across project tools
+          </div>
+          <Button variant="outline" size="icon" className="h-7 w-7" onClick={() => refetch()}>
+            <RefreshCw className="w-4 h-4" />
+          </Button>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1 max-w-sm">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-gray" />
+            <Input
+              placeholder="Search all files..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-8 h-8 bg-white/5 border-white/10"
+            />
+            {searchQuery && (
+              <button
+                className="absolute right-2 top-1/2 -translate-y-1/2"
+                onClick={() => setSearchQuery('')}
+              >
+                <X className="w-4 h-4 text-muted-gray" />
+              </button>
+            )}
+          </div>
+          <Select value={sourceFilter || '__all__'} onValueChange={(v) => setSourceFilter(v === '__all__' ? '' : v)}>
+            <SelectTrigger className="w-[150px] h-8 bg-white/5 border-white/10">
+              <Layers className="w-4 h-4 mr-1 text-muted-gray" />
+              <SelectValue placeholder="All Sources" />
+            </SelectTrigger>
+            <SelectContent>
+              {UNIFIED_SOURCE_FILTERS.map((f) => (
+                <SelectItem key={f.value || '__all__'} value={f.value || '__all__'}>
+                  {f.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={typeFilter || '__all__'} onValueChange={(v) => setTypeFilter(v === '__all__' ? '' : v)}>
+            <SelectTrigger className="w-[140px] h-8 bg-white/5 border-white/10">
+              <Filter className="w-4 h-4 mr-1 text-muted-gray" />
+              <SelectValue placeholder="All types" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">All types</SelectItem>
+              {FILE_TYPE_FILTERS.filter((f) => f.value).map((filter) => (
+                <SelectItem key={filter.value} value={filter.value}>
+                  {filter.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </CardHeader>
+
+      <ScrollArea className="flex-1">
+        {isLoading ? (
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="w-6 h-6 text-muted-gray animate-spin" />
+          </div>
+        ) : files.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-center">
+            <Layers className="w-12 h-12 text-muted-gray mb-4" />
+            <h3 className="text-lg font-medium text-bone-white mb-1">No files found</h3>
+            <p className="text-sm text-muted-gray max-w-xs">
+              {searchQuery || sourceFilter || typeFilter
+                ? 'No files match your search criteria'
+                : 'No files have been added to this project yet'}
+            </p>
+          </div>
+        ) : (
+          <div>
+            <div className="flex items-center gap-3 p-3 border-b border-white/10 bg-white/5">
+              <span className="w-5" />
+              <span className="text-xs text-muted-gray uppercase font-medium flex-1">Name</span>
+              <span className="text-xs text-muted-gray uppercase font-medium w-24">Date</span>
+              <span className="w-7" />
+            </div>
+            {files.map((file) => (
+              <UnifiedFileRow key={`${file.source}-${file.id}`} file={file} onDownload={handleDownload} />
+            ))}
+          </div>
+        )}
+      </ScrollArea>
+
+      {files.length > 0 && (
+        <div className="flex items-center justify-between p-3 border-t border-white/10">
+          <span className="text-xs text-muted-gray">
+            Showing {offset + 1}–{offset + files.length} files
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={offset === 0}
+              onClick={() => setOffset(Math.max(0, offset - limit))}
+            >
+              <ChevronLeft className="w-4 h-4 mr-1" />
+              Previous
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={files.length < limit}
+              onClick={() => setOffset(offset + limit)}
+            >
+              Next
+              <ChevronRight className="w-4 h-4 ml-1" />
+            </Button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // Main FilesView Component
 export function FilesView({ projectId, canEdit }: FilesViewProps) {
+  // Tree selection replaces old viewMode
+  const [treeSelection, setTreeSelection] = useState<TreeSelection>({ type: 'all' });
+  const [projectFilesExpanded, setProjectFilesExpanded] = useState(true);
+
+  // Derive active folder ID for upload operations
+  const activeFolderId = treeSelection.type === 'upload' ? treeSelection.folderId : null;
+
   // State
-  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());
   const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
@@ -391,15 +776,15 @@ export function FilesView({ projectId, canEdit }: FilesViewProps) {
   // API hooks
   const { data: foldersData, isLoading: foldersLoading, refetch: refetchFolders } = useProjectFolders(projectId);
   const { data: filesData, isLoading: filesLoading, refetch: refetchFiles } = useProjectFilesList(projectId, {
-    folder_id: selectedFolderId || undefined,
-    search: searchQuery || undefined,
-    type: typeFilter || undefined,
-    tag: tagFilter || undefined,
+    folderId: activeFolderId || undefined,
+    search: treeSelection.type === 'upload' ? searchQuery || undefined : undefined,
+    fileType: treeSelection.type === 'upload' ? typeFilter || undefined : undefined,
+    tag: treeSelection.type === 'upload' ? tagFilter || undefined : undefined,
   });
   const { data: tagsData } = useFileTags(projectId);
-  const { mutateAsync: createFolder, isPending: creatingFolder } = useCreateFolder();
-  const { mutateAsync: updateFolder } = useUpdateFolder();
-  const { mutateAsync: deleteFolder, isPending: deletingFolder } = useDeleteFolder();
+  const { mutateAsync: createFolder, isPending: creatingFolder } = useCreateFolder(projectId);
+  const { mutateAsync: updateFolder } = useUpdateFolder(projectId);
+  const { mutateAsync: deleteFolder, isPending: deletingFolder } = useDeleteFolder(projectId);
   const { mutateAsync: updateFile } = useUpdateFile();
   const { mutateAsync: deleteFile, isPending: deletingFile } = useDeleteFile();
   const { mutateAsync: getDownloadUrl } = useFileDownloadUrl();
@@ -416,12 +801,24 @@ export function FilesView({ projectId, canEdit }: FilesViewProps) {
     };
   }, [projectId]);
 
-  // Get root folders
+  // Get root folders — skip the hidden "Root" folder and show its children
+  const rootFolderRecord = useMemo(() => folders.find((f) => !f.parent_id), [folders]);
   const rootFolders = useMemo(() => {
+    if (!rootFolderRecord) return [];
     return folders
-      .filter((f) => !f.parent_id)
+      .filter((f) => f.parent_id === rootFolderRecord.id)
       .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || a.name.localeCompare(b.name));
-  }, [folders]);
+  }, [folders, rootFolderRecord]);
+
+  // Get subfolders of the currently selected folder
+  const currentSubfolders = useMemo(() => {
+    if (treeSelection.type !== 'upload') return [];
+    const parentId = activeFolderId || rootFolderRecord?.id || null;
+    if (!parentId) return [];
+    return folders
+      .filter((f) => f.parent_id === parentId)
+      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || a.name.localeCompare(b.name));
+  }, [folders, treeSelection, activeFolderId, rootFolderRecord]);
 
   // Toggle folder expansion
   const toggleFolderExpand = useCallback((folderId: string) => {
@@ -460,11 +857,8 @@ export function FilesView({ projectId, canEdit }: FilesViewProps) {
     if (!newFolderName.trim()) return;
     try {
       await createFolder({
-        projectId,
-        data: {
-          name: newFolderName.trim(),
-          parent_id: selectedFolderId,
-        },
+        name: newFolderName.trim(),
+        ...(activeFolderId ? { parent_id: activeFolderId } : {}),
       });
       toast.success('Folder created');
       setShowCreateFolderDialog(false);
@@ -480,7 +874,6 @@ export function FilesView({ projectId, canEdit }: FilesViewProps) {
     if (!editingFolder || !newFolderName.trim()) return;
     try {
       await updateFolder({
-        projectId,
         folderId: editingFolder.id,
         data: { name: newFolderName.trim() },
       });
@@ -498,11 +891,11 @@ export function FilesView({ projectId, canEdit }: FilesViewProps) {
   const handleDeleteFolder = async () => {
     if (!editingFolder) return;
     try {
-      await deleteFolder({ projectId, folderId: editingFolder.id });
+      await deleteFolder(editingFolder.id);
       toast.success('Folder deleted');
       setShowDeleteFolderDialog(false);
-      if (selectedFolderId === editingFolder.id) {
-        setSelectedFolderId(null);
+      if (treeSelection.type === 'upload' && treeSelection.folderId === editingFolder.id) {
+        setTreeSelection({ type: 'upload', folderId: null });
       }
       setEditingFolder(null);
       refetchFolders();
@@ -582,7 +975,7 @@ export function FilesView({ projectId, canEdit }: FilesViewProps) {
       setUploadProgress((prev) => new Map(prev).set(progress.fileId, progress));
 
       try {
-        await uploadManagerRef.current.uploadFile(file, selectedFolderId || undefined, (p) => {
+        await uploadManagerRef.current.uploadFile(file, activeFolderId || undefined, (p) => {
           setUploadProgress((prev) => new Map(prev).set(p.fileId, p));
         });
       } catch (err: any) {
@@ -596,7 +989,6 @@ export function FilesView({ projectId, canEdit }: FilesViewProps) {
 
     setFilesToUpload([]);
     refetchFiles();
-    // Clear completed uploads after a delay
     setTimeout(() => {
       setUploadProgress((prev) => {
         const next = new Map(prev);
@@ -633,7 +1025,25 @@ export function FilesView({ projectId, canEdit }: FilesViewProps) {
     setSelectedFileIds(new Set());
   }, []);
 
-  if (foldersLoading || filesLoading) {
+  // Helper to check if a tree item is selected
+  const isTreeItemSelected = (sel: TreeSelection) => {
+    if (treeSelection.type !== sel.type) return false;
+    if (sel.type === 'source' && treeSelection.type === 'source') return sel.source === treeSelection.source;
+    if (sel.type === 'upload' && treeSelection.type === 'upload') return sel.folderId === treeSelection.folderId;
+    return true;
+  };
+
+  // Subtitle logic
+  const subtitle = useMemo(() => {
+    if (treeSelection.type === 'all') return 'All files across project tools';
+    if (treeSelection.type === 'source') {
+      return VIRTUAL_SOURCE_FOLDERS.find((f) => f.source === treeSelection.source)?.label || treeSelection.source;
+    }
+    return `${files.length} file${files.length !== 1 ? 's' : ''} \u00b7 ${folders.length} folder${folders.length !== 1 ? 's' : ''}`;
+  }, [treeSelection, files.length, folders.length]);
+
+  // Loading state for upload mode
+  if (treeSelection.type === 'upload' && (foldersLoading || filesLoading)) {
     return (
       <div className="space-y-6">
         <div>
@@ -649,254 +1059,341 @@ export function FilesView({ projectId, canEdit }: FilesViewProps) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col h-[calc(100vh-184px)]">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-shrink-0">
         <div>
           <h2 className="text-2xl font-heading text-bone-white">Files</h2>
-          <p className="text-sm text-muted-gray">
-            {files.length} file{files.length !== 1 ? 's' : ''} • {folders.length} folder
-            {folders.length !== 1 ? 's' : ''}
-          </p>
+          <p className="text-sm text-muted-gray">{subtitle}</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="icon" onClick={() => { refetchFolders(); refetchFiles(); }}>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => {
+              refetchFolders();
+              refetchFiles();
+            }}
+          >
             <RefreshCw className="w-4 h-4" />
           </Button>
         </div>
       </div>
 
-      {/* Main Layout */}
-      <div className="flex gap-4 h-[calc(100vh-280px)]">
-        {/* Folder Tree */}
-        <Card className="w-64 flex-shrink-0 bg-charcoal-black/50 border-white/10">
-          <CardHeader className="p-3 pb-2 border-b border-white/5">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm text-bone-white">Folders</CardTitle>
-              {canEdit && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() => {
-                    setNewFolderName('');
-                    setShowCreateFolderDialog(true);
-                  }}
-                >
-                  <FolderPlus className="w-4 h-4" />
-                </Button>
-              )}
-            </div>
+      <div className="flex gap-4 flex-1 min-h-0 mt-4">
+        {/* Unified Folder Tree */}
+        <Card className="w-64 flex-shrink-0 bg-charcoal-black/50 border-white/10 flex flex-col min-h-0">
+          <CardHeader className="p-3 pb-2 border-b border-white/5 flex-shrink-0">
+            <CardTitle className="text-sm text-bone-white">Browse</CardTitle>
           </CardHeader>
           <ScrollArea className="flex-1">
             <div className="p-2">
-              {/* Root "All Files" option */}
+              {/* All Files root */}
               <div
                 className={cn(
                   'flex items-center gap-2 py-1.5 px-2 cursor-pointer rounded hover:bg-white/5 transition-colors',
-                  selectedFolderId === null && 'bg-white/10'
+                  isTreeItemSelected({ type: 'all' }) && 'bg-white/10'
                 )}
-                onClick={() => setSelectedFolderId(null)}
+                onClick={() => setTreeSelection({ type: 'all' })}
               >
-                <FolderOpen className={cn('w-4 h-4', selectedFolderId === null ? 'text-accent-yellow' : 'text-muted-gray')} />
-                <span className={cn('text-sm', selectedFolderId === null ? 'text-bone-white' : 'text-muted-gray')}>
+                <Layers className={cn('w-4 h-4', isTreeItemSelected({ type: 'all' }) ? 'text-accent-yellow' : 'text-muted-gray')} />
+                <span className={cn('text-sm', isTreeItemSelected({ type: 'all' }) ? 'text-bone-white' : 'text-muted-gray')}>
                   All Files
                 </span>
               </div>
-              {/* Folder tree */}
-              {rootFolders.map((folder) => (
-                <FolderTreeItem
-                  key={folder.id}
-                  folder={folder}
-                  allFolders={folders}
-                  selectedFolderId={selectedFolderId}
-                  expandedFolderIds={expandedFolderIds}
-                  depth={0}
-                  onSelect={setSelectedFolderId}
-                  onToggleExpand={toggleFolderExpand}
-                  onContextMenu={handleFolderContextMenu}
-                />
-              ))}
+
+              {/* Virtual source folders */}
+              {VIRTUAL_SOURCE_FOLDERS.map((sf) => {
+                const sel: TreeSelection = { type: 'source', source: sf.source };
+                const selected = isTreeItemSelected(sel);
+                return (
+                  <div
+                    key={sf.source}
+                    className={cn(
+                      'flex items-center gap-2 py-1.5 px-2 cursor-pointer rounded hover:bg-white/5 transition-colors ml-2',
+                      selected && 'bg-white/10'
+                    )}
+                    onClick={() => setTreeSelection(sel)}
+                  >
+                    <FileText className={cn('w-4 h-4', selected ? 'text-accent-yellow' : sf.iconColor)} />
+                    <span className={cn('text-sm', selected ? 'text-bone-white' : 'text-muted-gray')}>
+                      {sf.label}
+                    </span>
+                  </div>
+                );
+              })}
+
+              {/* Separator */}
+              <div className="my-2 border-t border-white/10" />
+
+              {/* Project Files section */}
+              <div
+                className={cn(
+                  'flex items-center gap-1 py-1.5 px-2 cursor-pointer rounded hover:bg-white/5 transition-colors',
+                  treeSelection.type === 'upload' && treeSelection.folderId === null && 'bg-white/10'
+                )}
+                onClick={() => setTreeSelection({ type: 'upload', folderId: null })}
+              >
+                <button
+                  className="p-0.5 hover:bg-white/10 rounded"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setProjectFilesExpanded((prev) => !prev);
+                  }}
+                >
+                  {projectFilesExpanded ? (
+                    <ChevronDown className="w-4 h-4 text-muted-gray" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4 text-muted-gray" />
+                  )}
+                </button>
+                <FolderOpen className={cn('w-4 h-4', treeSelection.type === 'upload' && treeSelection.folderId === null ? 'text-accent-yellow' : 'text-muted-gray')} />
+                <span className={cn('text-sm', treeSelection.type === 'upload' && treeSelection.folderId === null ? 'text-bone-white' : 'text-muted-gray')}>
+                  Project Files
+                </span>
+                {canEdit && (
+                  <button
+                    className="ml-auto p-0.5 hover:bg-white/10 rounded"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setNewFolderName('');
+                      setShowCreateFolderDialog(true);
+                      if (treeSelection.type !== 'upload') {
+                        setTreeSelection({ type: 'upload', folderId: null });
+                      }
+                    }}
+                  >
+                    <FolderPlus className="w-3.5 h-3.5 text-muted-gray hover:text-bone-white" />
+                  </button>
+                )}
+              </div>
+
+              {/* Project Files folder tree */}
+              {projectFilesExpanded && (
+                <div className="ml-2">
+                  {rootFolders.map((folder) => (
+                    <FolderTreeItem
+                      key={folder.id}
+                      folder={folder}
+                      allFolders={folders}
+                      selectedFolderId={treeSelection.type === 'upload' ? treeSelection.folderId : null}
+                      expandedFolderIds={expandedFolderIds}
+                      depth={1}
+                      onSelect={(folderId) => setTreeSelection({ type: 'upload', folderId })}
+                      onToggleExpand={toggleFolderExpand}
+                      onContextMenu={handleFolderContextMenu}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           </ScrollArea>
         </Card>
 
-        {/* File List */}
-        <Card className="flex-1 bg-charcoal-black/50 border-white/10 flex flex-col">
-          {/* Toolbar */}
-          <CardHeader className="p-3 border-b border-white/5 space-y-3">
-            {/* Top row: breadcrumb + actions */}
-            <div className="flex items-center justify-between">
-              <Breadcrumb
-                folders={folders}
-                currentFolderId={selectedFolderId}
-                onNavigate={setSelectedFolderId}
-              />
-              <div className="flex items-center gap-2">
-                {canEdit && (
-                  <>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      multiple
-                      className="hidden"
-                      onChange={handleFileSelect}
-                    />
-                    <Button
-                      size="sm"
-                      onClick={() => fileInputRef.current?.click()}
-                    >
-                      <Upload className="w-4 h-4 mr-1" />
-                      Upload
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setNewFolderName('');
-                        setShowCreateFolderDialog(true);
-                      }}
-                    >
-                      <FolderPlus className="w-4 h-4 mr-1" />
-                      New Folder
-                    </Button>
-                  </>
-                )}
-              </div>
-            </div>
+        {/* Right Panel — conditional rendering */}
+        {treeSelection.type === 'all' && (
+          <AllFilesPanel projectId={projectId} />
+        )}
 
-            {/* Second row: search + filters */}
-            <div className="flex items-center gap-2">
-              <div className="relative flex-1 max-w-sm">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-gray" />
-                <Input
-                  placeholder="Search files..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-8 h-8 bg-white/5 border-white/10"
+        {treeSelection.type === 'source' && (
+          <SourceFilesPanel projectId={projectId} source={treeSelection.source} />
+        )}
+
+        {treeSelection.type === 'upload' && (
+          <Card className="flex-1 bg-charcoal-black/50 border-white/10 flex flex-col min-h-0">
+            {/* Toolbar */}
+            <CardHeader className="p-3 border-b border-white/5 space-y-3 flex-shrink-0">
+              {/* Top row: breadcrumb + actions */}
+              <div className="flex items-center justify-between">
+                <Breadcrumb
+                  folders={folders}
+                  currentFolderId={activeFolderId}
+                  onNavigate={(folderId) => setTreeSelection({ type: 'upload', folderId })}
                 />
-                {searchQuery && (
-                  <button
-                    className="absolute right-2 top-1/2 -translate-y-1/2"
-                    onClick={() => setSearchQuery('')}
-                  >
-                    <X className="w-4 h-4 text-muted-gray" />
-                  </button>
-                )}
+                <div className="flex items-center gap-2">
+                  {canEdit && (
+                    <>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        multiple
+                        className="hidden"
+                        onChange={handleFileSelect}
+                      />
+                      <Button
+                        size="sm"
+                        onClick={() => fileInputRef.current?.click()}
+                      >
+                        <Upload className="w-4 h-4 mr-1" />
+                        Upload
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setNewFolderName('');
+                          setShowCreateFolderDialog(true);
+                        }}
+                      >
+                        <FolderPlus className="w-4 h-4 mr-1" />
+                        New Folder
+                      </Button>
+                    </>
+                  )}
+                </div>
               </div>
-              <Select value={typeFilter || '__all__'} onValueChange={(v) => setTypeFilter(v === '__all__' ? '' : v)}>
-                <SelectTrigger className="w-[140px] h-8 bg-white/5 border-white/10">
-                  <Filter className="w-4 h-4 mr-1 text-muted-gray" />
-                  <SelectValue placeholder="All types" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__all__">All types</SelectItem>
-                  {FILE_TYPE_FILTERS.filter((f) => f.value).map((filter) => (
-                    <SelectItem key={filter.value} value={filter.value}>
-                      {filter.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {tags.length > 0 && (
-                <Select value={tagFilter || '__all__'} onValueChange={(v) => setTagFilter(v === '__all__' ? '' : v)}>
+
+              {/* Second row: search + filters */}
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1 max-w-sm">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-gray" />
+                  <Input
+                    placeholder="Search files..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-8 h-8 bg-white/5 border-white/10"
+                  />
+                  {searchQuery && (
+                    <button
+                      className="absolute right-2 top-1/2 -translate-y-1/2"
+                      onClick={() => setSearchQuery('')}
+                    >
+                      <X className="w-4 h-4 text-muted-gray" />
+                    </button>
+                  )}
+                </div>
+                <Select value={typeFilter || '__all__'} onValueChange={(v) => setTypeFilter(v === '__all__' ? '' : v)}>
                   <SelectTrigger className="w-[140px] h-8 bg-white/5 border-white/10">
-                    <Tag className="w-4 h-4 mr-1 text-muted-gray" />
-                    <SelectValue placeholder="All tags" />
+                    <Filter className="w-4 h-4 mr-1 text-muted-gray" />
+                    <SelectValue placeholder="All types" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__all__">All tags</SelectItem>
-                    {tags.filter(Boolean).map((tag) => (
-                      <SelectItem key={tag} value={tag}>
-                        {tag}
+                    <SelectItem value="__all__">All types</SelectItem>
+                    {FILE_TYPE_FILTERS.filter((f) => f.value).map((filter) => (
+                      <SelectItem key={filter.value} value={filter.value}>
+                        {filter.label}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              )}
-            </div>
-
-            {/* Selection bar */}
-            {selectedFileIds.size > 0 && (
-              <div className="flex items-center gap-2 p-2 bg-white/5 rounded">
-                <span className="text-sm text-bone-white">
-                  {selectedFileIds.size} selected
-                </span>
-                <Button variant="ghost" size="sm" onClick={clearSelection}>
-                  Clear
-                </Button>
-                <div className="flex-1" />
-                {canEdit && (
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => setShowDeleteFileDialog(true)}
-                  >
-                    <Trash2 className="w-4 h-4 mr-1" />
-                    Delete
-                  </Button>
+                {tags.length > 0 && (
+                  <Select value={tagFilter || '__all__'} onValueChange={(v) => setTagFilter(v === '__all__' ? '' : v)}>
+                    <SelectTrigger className="w-[140px] h-8 bg-white/5 border-white/10">
+                      <Tag className="w-4 h-4 mr-1 text-muted-gray" />
+                      <SelectValue placeholder="All tags" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__">All tags</SelectItem>
+                      {tags.filter(Boolean).map((tag) => (
+                        <SelectItem key={tag} value={tag}>
+                          {tag}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 )}
               </div>
-            )}
-          </CardHeader>
 
-          {/* File list content */}
-          <ScrollArea className="flex-1">
-            {files.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 text-center">
-                <FolderOpen className="w-12 h-12 text-muted-gray mb-4" />
-                <h3 className="text-lg font-medium text-bone-white mb-1">No files</h3>
-                <p className="text-sm text-muted-gray max-w-xs">
-                  {searchQuery || typeFilter || tagFilter
-                    ? 'No files match your search criteria'
-                    : 'Upload files to get started'}
-                </p>
-                {canEdit && !searchQuery && !typeFilter && !tagFilter && (
-                  <Button className="mt-4" onClick={() => fileInputRef.current?.click()}>
-                    <Upload className="w-4 h-4 mr-1" />
-                    Upload Files
+              {/* Selection bar */}
+              {selectedFileIds.size > 0 && (
+                <div className="flex items-center gap-2 p-2 bg-white/5 rounded">
+                  <span className="text-sm text-bone-white">
+                    {selectedFileIds.size} selected
+                  </span>
+                  <Button variant="ghost" size="sm" onClick={clearSelection}>
+                    Clear
                   </Button>
-                )}
-              </div>
-            ) : (
-              <div>
-                {/* Select all header */}
-                <div className="flex items-center gap-3 p-3 border-b border-white/10 bg-white/5">
-                  <Checkbox
-                    checked={selectedFileIds.size === files.length && files.length > 0}
-                    onCheckedChange={(checked) => (checked ? selectAllFiles() : clearSelection())}
-                  />
-                  <span className="text-xs text-muted-gray uppercase font-medium flex-1">Name</span>
-                  <span className="text-xs text-muted-gray uppercase font-medium w-24">Date</span>
+                  <div className="flex-1" />
+                  {canEdit && (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => setShowDeleteFileDialog(true)}
+                    >
+                      <Trash2 className="w-4 h-4 mr-1" />
+                      Delete
+                    </Button>
+                  )}
                 </div>
-                {files.map((file) => (
-                  <FileRow
-                    key={file.id}
-                    file={file}
-                    isSelected={selectedFileIds.has(file.id)}
-                    onSelect={(selected) => toggleFileSelection(file.id, selected)}
-                    onClick={() => setPreviewFile(file)}
-                    onContextMenu={(e) => handleFileContextMenu(file, e)}
-                  />
+              )}
+            </CardHeader>
+
+            {/* File list content */}
+            <ScrollArea className="flex-1">
+              {currentSubfolders.map((subfolder) => (
+                <div
+                  key={subfolder.id}
+                  className="flex items-center gap-3 p-3 border-b border-white/10 cursor-pointer hover:bg-white/5 transition-colors"
+                  onClick={() => {
+                    setTreeSelection({ type: 'upload', folderId: subfolder.id });
+                    setExpandedFolderIds((prev) => {
+                      const next = new Set(prev);
+                      if (activeFolderId) next.add(activeFolderId);
+                      return next;
+                    });
+                  }}
+                >
+                  <Folder className="w-5 h-5 text-accent-yellow" />
+                  <span className="text-sm text-bone-white flex-1 truncate">{subfolder.name}</span>
+                  <ChevronRight className="w-4 h-4 text-muted-gray" />
+                </div>
+              ))}
+              {files.length === 0 && currentSubfolders.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-center">
+                  <FolderOpen className="w-12 h-12 text-muted-gray mb-4" />
+                  <h3 className="text-lg font-medium text-bone-white mb-1">No files</h3>
+                  <p className="text-sm text-muted-gray max-w-xs">
+                    {searchQuery || typeFilter || tagFilter
+                      ? 'No files match your search criteria'
+                      : 'Upload files to get started'}
+                  </p>
+                  {canEdit && !searchQuery && !typeFilter && !tagFilter && (
+                    <Button className="mt-4" onClick={() => fileInputRef.current?.click()}>
+                      <Upload className="w-4 h-4 mr-1" />
+                      Upload Files
+                    </Button>
+                  )}
+                </div>
+              ) : files.length > 0 ? (
+                <div>
+                  {/* Select all header */}
+                  <div className="flex items-center gap-3 p-3 border-b border-white/10 bg-white/5">
+                    <Checkbox
+                      checked={selectedFileIds.size === files.length && files.length > 0}
+                      onCheckedChange={(checked) => (checked ? selectAllFiles() : clearSelection())}
+                    />
+                    <span className="text-xs text-muted-gray uppercase font-medium flex-1">Name</span>
+                    <span className="text-xs text-muted-gray uppercase font-medium w-24">Date</span>
+                  </div>
+                  {files.map((file) => (
+                    <FileRow
+                      key={file.id}
+                      file={file}
+                      isSelected={selectedFileIds.has(file.id)}
+                      onSelect={(selected) => toggleFileSelection(file.id, selected)}
+                      onClick={() => setPreviewFile(file)}
+                      onContextMenu={(e) => handleFileContextMenu(file, e)}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </ScrollArea>
+
+            {/* Upload progress bar */}
+            {uploadProgress.size > 0 && (
+              <div className="border-t border-white/10 max-h-48 overflow-auto">
+                <div className="p-2 bg-white/5 border-b border-white/5">
+                  <span className="text-xs text-muted-gray font-medium">
+                    Uploads ({uploadProgress.size})
+                  </span>
+                </div>
+                {Array.from(uploadProgress.values()).map((progress) => (
+                  <UploadProgressItem key={progress.fileId} progress={progress} />
                 ))}
               </div>
             )}
-          </ScrollArea>
-
-          {/* Upload progress bar */}
-          {uploadProgress.size > 0 && (
-            <div className="border-t border-white/10 max-h-48 overflow-auto">
-              <div className="p-2 bg-white/5 border-b border-white/5">
-                <span className="text-xs text-muted-gray font-medium">
-                  Uploads ({uploadProgress.size})
-                </span>
-              </div>
-              {Array.from(uploadProgress.values()).map((progress) => (
-                <UploadProgressItem key={progress.fileId} progress={progress} />
-              ))}
-            </div>
-          )}
-        </Card>
+          </Card>
+        )}
       </div>
 
       {/* File Preview Drawer */}
@@ -915,12 +1412,11 @@ export function FilesView({ projectId, canEdit }: FilesViewProps) {
                 </SheetTitle>
                 <SheetDescription className="text-muted-gray">
                   {formatFileSize(previewFile.size_bytes)}
-                  {previewFile.extension && ` • .${previewFile.extension.toUpperCase()}`}
+                  {previewFile.extension && ` \u00b7 .${previewFile.extension.toUpperCase()}`}
                 </SheetDescription>
               </SheetHeader>
 
               <div className="mt-6 space-y-4">
-                {/* Preview area for images/videos */}
                 {previewFile.mime_type?.startsWith('image/') && previewFile.upload_status === 'COMPLETE' && (
                   <div className="aspect-video bg-white/5 rounded overflow-hidden">
                     <img
@@ -934,7 +1430,6 @@ export function FilesView({ projectId, canEdit }: FilesViewProps) {
                   </div>
                 )}
 
-                {/* File details */}
                 <div className="space-y-3">
                   <div>
                     <Label className="text-xs text-muted-gray">Original name</Label>
@@ -976,7 +1471,6 @@ export function FilesView({ projectId, canEdit }: FilesViewProps) {
                   )}
                 </div>
 
-                {/* Actions */}
                 <div className="flex flex-col gap-2 pt-4 border-t border-white/10">
                   <Button
                     className="w-full"
@@ -1030,7 +1524,7 @@ export function FilesView({ projectId, canEdit }: FilesViewProps) {
           <DialogHeader>
             <DialogTitle className="text-bone-white">Create Folder</DialogTitle>
             <DialogDescription className="text-muted-gray">
-              {selectedFolderId
+              {activeFolderId
                 ? 'Create a new subfolder in the current folder'
                 : 'Create a new folder at the root level'}
             </DialogDescription>
@@ -1223,8 +1717,8 @@ export function FilesView({ projectId, canEdit }: FilesViewProps) {
             <DialogTitle className="text-bone-white">Upload Files</DialogTitle>
             <DialogDescription className="text-muted-gray">
               {filesToUpload.length} file{filesToUpload.length !== 1 ? 's' : ''} selected
-              {selectedFolderId && folders.find((f) => f.id === selectedFolderId)
-                ? ` to "${folders.find((f) => f.id === selectedFolderId)?.name}"`
+              {activeFolderId && folders.find((f) => f.id === activeFolderId)
+                ? ` to "${folders.find((f) => f.id === activeFolderId)?.name}"`
                 : ' to root'}
             </DialogDescription>
           </DialogHeader>
