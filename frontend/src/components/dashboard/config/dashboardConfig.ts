@@ -35,11 +35,12 @@ export type DashboardSectionId =
   | 'order-dashboard'
   | 'order-jobs'
   | 'order-mentorship'
+  | 'crm-overview'
   | 'admin-stats'
   | 'admin-pending';
 
 // Section categories for grouping
-export type SectionCategory = 'streaming' | 'creator' | 'community' | 'order' | 'admin';
+export type SectionCategory = 'streaming' | 'creator' | 'community' | 'order' | 'crm' | 'admin';
 
 // Configuration for each dashboard section
 export interface DashboardSectionConfig {
@@ -66,13 +67,15 @@ export interface QuickAction {
 // Role groups for easier configuration
 const ALL_ROLES: RoleType[] = [
   'superadmin', 'admin', 'moderator', 'lodge_officer',
-  'order_member', 'partner', 'filmmaker', 'premium', 'free'
+  'order_member', 'sales_agent', 'partner', 'filmmaker', 'premium', 'free'
 ];
 
 const AUTHENTICATED_ROLES: RoleType[] = [
   'superadmin', 'admin', 'moderator', 'lodge_officer',
-  'order_member', 'partner', 'filmmaker', 'premium'
+  'order_member', 'sales_agent', 'partner', 'filmmaker', 'premium'
 ];
+
+const CRM_ROLES: RoleType[] = ['superadmin', 'admin', 'sales_agent'];
 
 const STAFF_ROLES: RoleType[] = ['superadmin', 'admin', 'moderator'];
 
@@ -379,6 +382,18 @@ export const DASHBOARD_SECTIONS: DashboardSectionConfig[] = [
     description: 'CraftHouse progression and mentorship',
   },
 
+  // CRM SECTION (sales agents)
+  {
+    id: 'crm-overview',
+    title: 'CRM Overview',
+    priority: 9,
+    requiresAuth: true,
+    requiresData: false,
+    roles: CRM_ROLES,
+    category: 'crm',
+    description: "Today's interaction counts and upcoming follow-ups",
+  },
+
   // ADMIN SECTIONS (widgets only, full admin at /admin)
   {
     id: 'admin-stats',
@@ -494,6 +509,16 @@ export const QUICK_ACTIONS: QuickAction[] = [
     roles: ORDER_ROLES,
   },
 
+  // Sales agents
+  {
+    id: 'crm',
+    label: 'CRM',
+    icon: 'Users',
+    href: '/crm',
+    roles: CRM_ROLES,
+    variant: 'outline',
+  },
+
   // Staff
   {
     id: 'admin-panel',
@@ -540,10 +565,11 @@ export function getHighestRole(roles: RoleType[]): RoleType {
     moderator: 3,
     lodge_officer: 4,
     order_member: 5,
-    partner: 6,
-    filmmaker: 7,
-    premium: 8,
-    free: 9,
+    sales_agent: 6,
+    partner: 7,
+    filmmaker: 8,
+    premium: 9,
+    free: 10,
   };
 
   return roles.reduce((highest, current) => {

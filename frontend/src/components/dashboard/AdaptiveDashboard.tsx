@@ -102,6 +102,7 @@ export function AdaptiveDashboard({ className = '' }: AdaptiveDashboardProps) {
       'order-dashboard': true,
       'order-jobs': true,
       'order-mentorship': true, // Fetches own data, hides if empty
+      'crm-overview': true, // Fetches own data, hides if empty
       'admin-stats': true,
       'admin-pending': true,
     };
@@ -133,6 +134,7 @@ export function AdaptiveDashboard({ className = '' }: AdaptiveDashboardProps) {
   const groupedSections = useMemo(() => {
     const groups: Record<string, DashboardSectionConfig[]> = {
       admin: [],
+      crm: [],
       order: [],
       creator: [],
       streaming: [],
@@ -140,12 +142,15 @@ export function AdaptiveDashboard({ className = '' }: AdaptiveDashboardProps) {
     };
 
     roleSpecificSections.forEach(section => {
-      groups[section.category].push(section);
+      if (groups[section.category]) {
+        groups[section.category].push(section);
+      }
     });
 
-    // Return in display order: admin > order > creator > streaming > community
+    // Return in display order: admin > crm > order > creator > streaming > community
     return [
       ...groups.admin,
+      ...groups.crm,
       ...groups.order,
       ...groups.creator,
       ...groups.streaming,

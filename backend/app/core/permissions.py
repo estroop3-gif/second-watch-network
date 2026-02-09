@@ -111,6 +111,16 @@ class Permission(str, Enum):
     EVENT_MANAGE = "event:manage"        # Manage all events
 
     # ============================================================================
+    # CRM (Sales & Customer Relationships)
+    # ============================================================================
+    CRM_VIEW = "crm:view"               # View CRM contacts and activities
+    CRM_CREATE = "crm:create"           # Create/edit contacts and log activities
+    CRM_MANAGE = "crm:manage"           # Manage all reps, assign contacts, bulk ops
+    CRM_ADMIN = "crm:admin"             # Full CRM administration
+    CRM_REPORTS = "crm:reports"         # View CRM reports and KPIs
+    CRM_EMAIL_ADMIN = "crm:email_admin" # Manage rep email accounts
+
+    # ============================================================================
     # System Administration
     # ============================================================================
     ADMIN_DASHBOARD = "admin:dashboard"  # Access admin dashboard
@@ -181,6 +191,13 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         Permission.EVENT_CREATE,
         Permission.EVENT_HOST,
         Permission.EVENT_MANAGE,
+        # CRM
+        Permission.CRM_VIEW,
+        Permission.CRM_CREATE,
+        Permission.CRM_MANAGE,
+        Permission.CRM_ADMIN,
+        Permission.CRM_REPORTS,
+        Permission.CRM_EMAIL_ADMIN,
         # Admin
         Permission.ADMIN_DASHBOARD,
         Permission.ADMIN_USERS,
@@ -254,6 +271,20 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         Permission.MESSAGE_SEND,
         Permission.CONNECTION_MANAGE,
         Permission.EVENT_VIEW,
+    },
+
+    RoleType.SALES_AGENT: {
+        Permission.USER_VIEW,
+        Permission.USER_EDIT,
+        Permission.CONTENT_VIEW,
+        Permission.WORLD_VIEW,
+        Permission.FORUM_VIEW,
+        Permission.FORUM_POST,
+        Permission.MESSAGE_SEND,
+        Permission.CONNECTION_MANAGE,
+        Permission.EVENT_VIEW,
+        Permission.CRM_VIEW,
+        Permission.CRM_CREATE,
     },
 
     RoleType.PARTNER: {

@@ -1,0 +1,3594 @@
+"""
+CRM API — Sales Rep Endpoints
+Contacts, activities, interaction counts, and follow-ups.
+"""
+import json
+from psycopg2.extras import Json as PgJson
+from fastapi import APIRouter, HTTPException, Depends, Query, Response
+from pydantic import BaseModel, EmailStr
+from typing import Optional, List, Dict, Any
+from datetime import date, datetime
+
+from app.core.database import get_client, execute_query, execute_single, execute_insert
+from app.core.deps import get_user_profile
+from app.core.permissions import Permission, require_permissions, has_permission
+
+router = APIRouter()
+
+
+# ============================================================================
+# Pydantic Schemas
+# ============================================================================
+
+class ContactCreate(BaseModel):
+    first_name: str
+    last_name: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    phone_secondary: Optional[str] = None
+    company: Optional[str] = None
+    job_title: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    zip: Optional[str] = None
+    country: Optional[str] = "US"
+    temperature: Optional[str] = "cold"
+    source: Optional[str] = "outbound"
+    source_detail: Optional[str] = None
+    tags: Optional[List[str]] = []
+    custom_fields: Optional[Dict[str, Any]] = {}
+    notes: Optional[str] = None
+
+
+class ContactUpdate(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    phone_secondary: Optional[str] = None
+    company: Optional[str] = None
+    job_title: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    zip: Optional[str] = None
+    country: Optional[str] = None
+    temperature: Optional[str] = None
+    source: Optional[str] = None
+    source_detail: Optional[str] = None
+    status: Optional[str] = None
+    do_not_email: Optional[bool] = None
+    do_not_call: Optional[bool] = None
+    do_not_text: Optional[bool] = None
+    tags: Optional[List[str]] = None
+    custom_fields: Optional[Dict[str, Any]] = None
+    notes: Optional[str] = None
+
+
+class ActivityCreate(BaseModel):
+    contact_id: str
+    deal_id: Optional[str] = None
+    activity_type: str
+    subject: Optional[str] = None
+    description: Optional[str] = None
+    outcome: Optional[str] = None
+    activity_date: Optional[str] = None
+    duration_minutes: Optional[int] = None
+    follow_up_date: Optional[str] = None
+    follow_up_notes: Optional[str] = None
+
+
+class ActivityUpdate(BaseModel):
+    subject: Optional[str] = None
+    description: Optional[str] = None
+    outcome: Optional[str] = None
+    activity_date: Optional[str] = None
+    duration_minutes: Optional[int] = None
+    follow_up_date: Optional[str] = None
+    follow_up_notes: Optional[str] = None
+
+
+class InteractionIncrement(BaseModel):
+    interaction_type: str  # calls, emails, texts, meetings, demos, other_interactions
+
+
+class LinkProfileRequest(BaseModel):
+    profile_id: str
+
+
+class DealCreate(BaseModel):
+    contact_id: str
+    title: str
+    description: Optional[str] = None
+    product_type: Optional[str] = "backlot_membership"
+    product_detail: Optional[Dict[str, Any]] = {}
+    stage: Optional[str] = "lead"
+    amount_cents: Optional[int] = 0
+    currency: Optional[str] = "USD"
+    probability: Optional[int] = None  # Auto-set from stage if None
+    expected_close_date: Optional[str] = None
+    competitor: Optional[str] = None
+
+
+class DealUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    product_type: Optional[str] = None
+    product_detail: Optional[Dict[str, Any]] = None
+    amount_cents: Optional[int] = None
+    currency: Optional[str] = None
+    probability: Optional[int] = None
+    expected_close_date: Optional[str] = None
+    close_reason: Optional[str] = None
+    competitor: Optional[str] = None
+
+
+class StageChangeRequest(BaseModel):
+    stage: str
+    notes: Optional[str] = None
+    close_reason: Optional[str] = None
+
+
+# ============================================================================
+# Contacts
+# ============================================================================
+
+@router.get("/contacts")
+async def list_contacts(
+    search: Optional[str] = Query(None),
+    temperature: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    tag: Optional[str] = Query(None),
+    assigned_rep_id: Optional[str] = Query(None),
+    sort_by: Optional[str] = Query("created_at"),
+    sort_order: Optional[str] = Query("desc"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """List contacts. Reps see only their own, admins see all."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    conditions = ["c.status != 'inactive'"]
+    params = {}
+
+    if not is_admin:
+        conditions.append("c.assigned_rep_id = :rep_id")
+        params["rep_id"] = profile["id"]
+
+    if search:
+        conditions.append(
+            "(c.first_name ILIKE :search OR c.last_name ILIKE :search "
+            "OR c.email ILIKE :search OR c.company ILIKE :search "
+            "OR c.phone ILIKE :search)"
+        )
+        params["search"] = f"%{search}%"
+
+    if temperature:
+        conditions.append("c.temperature = :temperature")
+        params["temperature"] = temperature
+
+    if status:
+        conditions.append("c.status = :status")
+        params["status"] = status
+
+    if tag:
+        conditions.append(":tag = ANY(c.tags)")
+        params["tag"] = tag
+
+    if assigned_rep_id and is_admin:
+        conditions.append("c.assigned_rep_id = :assigned_rep_id")
+        params["assigned_rep_id"] = assigned_rep_id
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+
+    # Validate sort column
+    allowed_sorts = {"created_at", "updated_at", "last_name", "first_name", "temperature", "company"}
+    if sort_by not in allowed_sorts:
+        sort_by = "created_at"
+    order_dir = "DESC" if sort_order == "desc" else "ASC"
+
+    # Get total count
+    count_row = execute_single(
+        f"SELECT COUNT(*) as total FROM crm_contacts c WHERE {where}",
+        params,
+    )
+    total = count_row["total"] if count_row else 0
+
+    # Get contacts with rep name
+    rows = execute_query(
+        f"""
+        SELECT c.*,
+               p.full_name as assigned_rep_name,
+               (SELECT COUNT(*) FROM crm_activities a WHERE a.contact_id = c.id) as activity_count,
+               (SELECT MAX(a.activity_date) FROM crm_activities a WHERE a.contact_id = c.id) as last_activity_date,
+               (SELECT COUNT(*) FROM crm_email_threads et WHERE et.contact_id = c.id) as email_thread_count
+        FROM crm_contacts c
+        LEFT JOIN profiles p ON p.id = c.assigned_rep_id
+        WHERE {where}
+        ORDER BY c.{sort_by} {order_dir}
+        LIMIT :limit OFFSET :offset
+        """,
+        {**params, "limit": limit, "offset": offset},
+    )
+
+    return {"contacts": rows, "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/contacts/{contact_id}")
+async def get_contact(
+    contact_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get a single contact with recent activity history."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    contact = execute_single(
+        """
+        SELECT c.*, p.full_name as assigned_rep_name,
+               lp.full_name as linked_profile_name,
+               lp.email as linked_profile_email
+        FROM crm_contacts c
+        LEFT JOIN profiles p ON p.id = c.assigned_rep_id
+        LEFT JOIN profiles lp ON lp.id = c.profile_id
+        WHERE c.id = :id
+        """,
+        {"id": contact_id},
+    )
+    if not contact:
+        raise HTTPException(404, "Contact not found")
+
+    if not is_admin and contact["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized to view this contact")
+
+    # Get recent activities
+    activities = execute_query(
+        """
+        SELECT a.*, p.full_name as rep_name
+        FROM crm_activities a
+        LEFT JOIN profiles p ON p.id = a.rep_id
+        WHERE a.contact_id = :contact_id
+        ORDER BY a.activity_date DESC
+        LIMIT 50
+        """,
+        {"contact_id": contact_id},
+    )
+
+    contact["activities"] = activities
+    return contact
+
+
+@router.post("/contacts")
+async def create_contact(
+    data: ContactCreate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Create a new contact, auto-assigned to current rep."""
+    contact_data = data.dict(exclude_none=True)
+    contact_data["assigned_rep_id"] = profile["id"]
+    contact_data["created_by"] = profile["id"]
+
+    # Wrap JSONB fields for psycopg2
+    if "custom_fields" in contact_data:
+        contact_data["custom_fields"] = PgJson(contact_data["custom_fields"])
+
+    # Build insert
+    columns = ", ".join(contact_data.keys())
+    placeholders = ", ".join(f":{k}" for k in contact_data.keys())
+
+    result = execute_insert(
+        f"INSERT INTO crm_contacts ({columns}) VALUES ({placeholders}) RETURNING *",
+        contact_data,
+    )
+    return result
+
+
+@router.put("/contacts/{contact_id}")
+async def update_contact(
+    contact_id: str,
+    data: ContactUpdate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Update a contact."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    # Check ownership
+    existing = execute_single(
+        "SELECT assigned_rep_id FROM crm_contacts WHERE id = :id",
+        {"id": contact_id},
+    )
+    if not existing:
+        raise HTTPException(404, "Contact not found")
+    if not is_admin and existing["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized to edit this contact")
+
+    update_data = data.dict(exclude_none=True)
+    if not update_data:
+        raise HTTPException(400, "No fields to update")
+
+    # Wrap JSONB fields for psycopg2
+    if "custom_fields" in update_data:
+        update_data["custom_fields"] = PgJson(update_data["custom_fields"])
+
+    update_data["updated_at"] = "NOW()"
+    set_clauses = []
+    params = {"id": contact_id}
+
+    for key, value in update_data.items():
+        if value == "NOW()":
+            set_clauses.append(f"{key} = NOW()")
+        else:
+            set_clauses.append(f"{key} = :{key}")
+            params[key] = value
+
+    result = execute_single(
+        f"UPDATE crm_contacts SET {', '.join(set_clauses)} WHERE id = :id RETURNING *",
+        params,
+    )
+    return result
+
+
+@router.delete("/contacts/{contact_id}")
+async def delete_contact(
+    contact_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Soft-delete a contact (set status=inactive)."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    existing = execute_single(
+        "SELECT assigned_rep_id FROM crm_contacts WHERE id = :id",
+        {"id": contact_id},
+    )
+    if not existing:
+        raise HTTPException(404, "Contact not found")
+    if not is_admin and existing["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized to delete this contact")
+
+    execute_single(
+        "UPDATE crm_contacts SET status = 'inactive', updated_at = NOW() WHERE id = :id RETURNING id",
+        {"id": contact_id},
+    )
+    return {"message": "Contact deactivated"}
+
+
+@router.post("/contacts/{contact_id}/link-profile")
+async def link_contact_to_profile(
+    contact_id: str,
+    data: LinkProfileRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Link a CRM contact to an existing SWN user profile."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    existing = execute_single(
+        "SELECT assigned_rep_id FROM crm_contacts WHERE id = :id",
+        {"id": contact_id},
+    )
+    if not existing:
+        raise HTTPException(404, "Contact not found")
+    if not is_admin and existing["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized")
+
+    # Verify the target profile exists
+    target = execute_single(
+        "SELECT id, full_name, email FROM profiles WHERE id = :pid",
+        {"pid": data.profile_id},
+    )
+    if not target:
+        raise HTTPException(404, "Profile not found")
+
+    result = execute_single(
+        "UPDATE crm_contacts SET profile_id = :profile_id, updated_at = NOW() WHERE id = :id RETURNING *",
+        {"profile_id": data.profile_id, "id": contact_id},
+    )
+    return result
+
+
+# ============================================================================
+# Activities
+# ============================================================================
+
+# Map activity types to interaction count columns
+ACTIVITY_TO_COUNTER = {
+    "call": "calls",
+    "email": "emails",
+    "email_received": "emails_received",
+    "email_campaign": "campaign_emails",
+    "email_sequence": "emails",
+    "text": "texts",
+    "meeting": "meetings",
+    "demo": "demos",
+    "follow_up": "other_interactions",
+    "proposal_sent": "other_interactions",
+    "note": None,  # Notes don't count as interactions
+    "sequence_enrolled": None,
+    "sequence_unenrolled": None,
+    "other": "other_interactions",
+}
+
+
+@router.get("/activities")
+async def list_activities(
+    contact_id: Optional[str] = Query(None),
+    rep_id: Optional[str] = Query(None),
+    activity_type: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """List activities. Filter by contact, rep, date range, type."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    conditions = []
+    params = {}
+
+    if not is_admin:
+        conditions.append("a.rep_id = :my_rep_id")
+        params["my_rep_id"] = profile["id"]
+
+    if contact_id:
+        conditions.append("a.contact_id = :contact_id")
+        params["contact_id"] = contact_id
+
+    if rep_id and is_admin:
+        conditions.append("a.rep_id = :rep_id")
+        params["rep_id"] = rep_id
+
+    if activity_type:
+        conditions.append("a.activity_type = :activity_type")
+        params["activity_type"] = activity_type
+
+    if date_from:
+        conditions.append("a.activity_date >= :date_from")
+        params["date_from"] = date_from
+
+    if date_to:
+        conditions.append("a.activity_date <= :date_to")
+        params["date_to"] = date_to
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+
+    rows = execute_query(
+        f"""
+        SELECT a.*,
+               p.full_name as rep_name,
+               c.first_name as contact_first_name,
+               c.last_name as contact_last_name
+        FROM crm_activities a
+        LEFT JOIN profiles p ON p.id = a.rep_id
+        LEFT JOIN crm_contacts c ON c.id = a.contact_id
+        WHERE {where}
+        ORDER BY a.activity_date DESC
+        LIMIT :limit OFFSET :offset
+        """,
+        {**params, "limit": limit, "offset": offset},
+    )
+    return {"activities": rows}
+
+
+@router.post("/activities")
+async def create_activity(
+    data: ActivityCreate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Log a new activity and auto-increment interaction counts."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    # Verify contact exists and rep has access
+    contact = execute_single(
+        "SELECT id, assigned_rep_id FROM crm_contacts WHERE id = :id",
+        {"id": data.contact_id},
+    )
+    if not contact:
+        raise HTTPException(404, "Contact not found")
+    if not is_admin and contact["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized to log activity for this contact")
+
+    activity_data = {
+        "contact_id": data.contact_id,
+        "rep_id": profile["id"],
+        "activity_type": data.activity_type,
+        "subject": data.subject,
+        "description": data.description,
+        "outcome": data.outcome,
+        "duration_minutes": data.duration_minutes,
+        "follow_up_date": data.follow_up_date,
+        "follow_up_notes": data.follow_up_notes,
+    }
+
+    if data.activity_date:
+        activity_data["activity_date"] = data.activity_date
+
+    if data.deal_id:
+        activity_data["deal_id"] = data.deal_id
+
+    # Remove None values
+    activity_data = {k: v for k, v in activity_data.items() if v is not None}
+
+    columns = ", ".join(activity_data.keys())
+    placeholders = ", ".join(f":{k}" for k in activity_data.keys())
+
+    result = execute_insert(
+        f"INSERT INTO crm_activities ({columns}) VALUES ({placeholders}) RETURNING *",
+        activity_data,
+    )
+
+    # Auto-increment interaction count
+    counter_col = ACTIVITY_TO_COUNTER.get(data.activity_type)
+    if counter_col:
+        _increment_interaction(profile["id"], counter_col)
+
+    return result
+
+
+@router.put("/activities/{activity_id}")
+async def update_activity(
+    activity_id: str,
+    data: ActivityUpdate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Update an activity."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    existing = execute_single(
+        "SELECT rep_id FROM crm_activities WHERE id = :id",
+        {"id": activity_id},
+    )
+    if not existing:
+        raise HTTPException(404, "Activity not found")
+    if not is_admin and existing["rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized to edit this activity")
+
+    update_data = data.dict(exclude_none=True)
+    if not update_data:
+        raise HTTPException(400, "No fields to update")
+
+    set_clauses = []
+    params = {"id": activity_id}
+    for key, value in update_data.items():
+        set_clauses.append(f"{key} = :{key}")
+        params[key] = value
+
+    set_clauses.append("updated_at = NOW()")
+
+    result = execute_single(
+        f"UPDATE crm_activities SET {', '.join(set_clauses)} WHERE id = :id RETURNING *",
+        params,
+    )
+    return result
+
+
+@router.delete("/activities/{activity_id}")
+async def delete_activity(
+    activity_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Delete an activity."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    existing = execute_single(
+        "SELECT rep_id FROM crm_activities WHERE id = :id",
+        {"id": activity_id},
+    )
+    if not existing:
+        raise HTTPException(404, "Activity not found")
+    if not is_admin and existing["rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized to delete this activity")
+
+    execute_single(
+        "DELETE FROM crm_activities WHERE id = :id RETURNING id",
+        {"id": activity_id},
+    )
+    return {"message": "Activity deleted"}
+
+
+@router.get("/activities/calendar")
+async def get_activity_calendar(
+    month: Optional[int] = Query(None),
+    year: Optional[int] = Query(None),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get activities grouped by date for calendar view."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+    now = datetime.utcnow()
+    target_month = month or now.month
+    target_year = year or now.year
+
+    conditions = [
+        "EXTRACT(MONTH FROM a.activity_date) = :month",
+        "EXTRACT(YEAR FROM a.activity_date) = :year",
+    ]
+    params = {"month": target_month, "year": target_year}
+
+    if not is_admin:
+        conditions.append("a.rep_id = :rep_id")
+        params["rep_id"] = profile["id"]
+
+    where = " AND ".join(conditions)
+
+    rows = execute_query(
+        f"""
+        SELECT a.activity_date::date as date,
+               a.activity_type,
+               a.subject,
+               a.id,
+               a.contact_id,
+               c.first_name as contact_first_name,
+               c.last_name as contact_last_name
+        FROM crm_activities a
+        LEFT JOIN crm_contacts c ON c.id = a.contact_id
+        WHERE {where}
+        ORDER BY a.activity_date ASC
+        """,
+        params,
+    )
+
+    # Group by date
+    calendar = {}
+    for row in rows:
+        d = str(row["date"])
+        if d not in calendar:
+            calendar[d] = []
+        calendar[d].append(row)
+
+    # Also fetch follow-ups scheduled in this month
+    fu_conditions = [
+        "EXTRACT(MONTH FROM a.follow_up_date) = :month",
+        "EXTRACT(YEAR FROM a.follow_up_date) = :year",
+        "a.follow_up_date IS NOT NULL",
+    ]
+    fu_params = {"month": target_month, "year": target_year}
+
+    if not is_admin:
+        fu_conditions.append("a.rep_id = :rep_id")
+        fu_params["rep_id"] = profile["id"]
+
+    fu_where = " AND ".join(fu_conditions)
+
+    fu_rows = execute_query(
+        f"""
+        SELECT a.follow_up_date::date as date,
+               a.follow_up_notes,
+               a.subject,
+               a.id,
+               a.activity_type,
+               a.contact_id,
+               c.first_name as contact_first_name,
+               c.last_name as contact_last_name
+        FROM crm_activities a
+        LEFT JOIN crm_contacts c ON c.id = a.contact_id
+        WHERE {fu_where}
+        ORDER BY a.follow_up_date ASC
+        """,
+        fu_params,
+    )
+
+    follow_ups = {}
+    for row in fu_rows:
+        d = str(row["date"])
+        if d not in follow_ups:
+            follow_ups[d] = []
+        follow_ups[d].append(row)
+
+    return {"calendar": calendar, "follow_ups": follow_ups, "month": target_month, "year": target_year}
+
+
+@router.get("/activities/follow-ups")
+async def get_follow_ups(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get upcoming follow-ups for the current rep."""
+    rows = execute_query(
+        """
+        SELECT a.*, c.first_name as contact_first_name, c.last_name as contact_last_name,
+               c.company, c.temperature
+        FROM crm_activities a
+        LEFT JOIN crm_contacts c ON c.id = a.contact_id
+        WHERE a.rep_id = :rep_id
+          AND a.follow_up_date IS NOT NULL
+          AND a.follow_up_date >= CURRENT_DATE
+        ORDER BY a.follow_up_date ASC
+        LIMIT 50
+        """,
+        {"rep_id": profile["id"]},
+    )
+    return {"follow_ups": rows}
+
+
+# ============================================================================
+# Interaction Counts
+# ============================================================================
+
+def _increment_interaction(rep_id: str, column: str):
+    """Increment a specific interaction counter for today."""
+    allowed = {"calls", "emails", "texts", "meetings", "demos", "other_interactions", "campaign_emails", "emails_received"}
+    if column not in allowed:
+        return
+
+    execute_insert(
+        f"""
+        INSERT INTO crm_interaction_counts (rep_id, count_date, {column})
+        VALUES (:rep_id, CURRENT_DATE, 1)
+        ON CONFLICT (rep_id, count_date)
+        DO UPDATE SET {column} = crm_interaction_counts.{column} + 1,
+                      updated_at = NOW()
+        RETURNING *
+        """,
+        {"rep_id": rep_id},
+    )
+
+
+@router.get("/interactions/my-today")
+async def get_my_interactions_today(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get today's interaction counts for the current rep."""
+    row = execute_single(
+        """
+        SELECT * FROM crm_interaction_counts
+        WHERE rep_id = :rep_id AND count_date = CURRENT_DATE
+        """,
+        {"rep_id": profile["id"]},
+    )
+
+    if not row:
+        return {
+            "rep_id": profile["id"],
+            "count_date": str(date.today()),
+            "calls": 0,
+            "emails": 0,
+            "texts": 0,
+            "meetings": 0,
+            "demos": 0,
+            "other_interactions": 0,
+        }
+
+    return row
+
+
+@router.post("/interactions/increment")
+async def increment_interaction(
+    data: InteractionIncrement,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Manually increment a specific interaction type for today."""
+    allowed = {"calls", "emails", "texts", "meetings", "demos", "other_interactions"}
+    if data.interaction_type not in allowed:
+        raise HTTPException(400, f"Invalid interaction type. Must be one of: {', '.join(allowed)}")
+
+    _increment_interaction(profile["id"], data.interaction_type)
+
+    # Return updated counts
+    row = execute_single(
+        """
+        SELECT * FROM crm_interaction_counts
+        WHERE rep_id = :rep_id AND count_date = CURRENT_DATE
+        """,
+        {"rep_id": profile["id"]},
+    )
+    return row
+
+
+@router.post("/interactions/decrement")
+async def decrement_interaction(
+    data: InteractionIncrement,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Manually decrement a specific interaction type for today (floor at 0)."""
+    allowed = {"calls", "emails", "texts", "meetings", "demos", "other_interactions"}
+    if data.interaction_type not in allowed:
+        raise HTTPException(400, f"Invalid interaction type. Must be one of: {', '.join(allowed)}")
+
+    col = data.interaction_type
+    execute_single(
+        f"""
+        UPDATE crm_interaction_counts
+        SET {col} = GREATEST({col} - 1, 0),
+            updated_at = NOW()
+        WHERE rep_id = :rep_id AND count_date = CURRENT_DATE
+        RETURNING *
+        """,
+        {"rep_id": profile["id"]},
+    )
+
+    row = execute_single(
+        """
+        SELECT * FROM crm_interaction_counts
+        WHERE rep_id = :rep_id AND count_date = CURRENT_DATE
+        """,
+        {"rep_id": profile["id"]},
+    )
+    return row
+
+
+# ============================================================================
+# Deals
+# ============================================================================
+
+# Auto-probability by stage
+STAGE_PROBABILITY = {
+    "lead": 10,
+    "contacted": 20,
+    "qualified": 40,
+    "proposal": 60,
+    "negotiation": 80,
+    "closed_won": 100,
+    "closed_lost": 0,
+}
+
+VALID_STAGES = set(STAGE_PROBABILITY.keys())
+
+
+@router.get("/deals")
+async def list_deals(
+    contact_id: Optional[str] = Query(None),
+    stage: Optional[str] = Query(None),
+    product_type: Optional[str] = Query(None),
+    assigned_rep_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    sort_by: Optional[str] = Query("created_at"),
+    sort_order: Optional[str] = Query("desc"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """List deals. Reps see only their own, admins see all."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    conditions = []
+    params = {}
+
+    if not is_admin:
+        conditions.append("d.assigned_rep_id = :rep_id")
+        params["rep_id"] = profile["id"]
+
+    if contact_id:
+        conditions.append("d.contact_id = :contact_id")
+        params["contact_id"] = contact_id
+
+    if stage:
+        conditions.append("d.stage = :stage")
+        params["stage"] = stage
+
+    if product_type:
+        conditions.append("d.product_type = :product_type")
+        params["product_type"] = product_type
+
+    if assigned_rep_id and is_admin:
+        conditions.append("d.assigned_rep_id = :assigned_rep_id")
+        params["assigned_rep_id"] = assigned_rep_id
+
+    if search:
+        conditions.append("(d.title ILIKE :search OR d.description ILIKE :search)")
+        params["search"] = f"%{search}%"
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+
+    allowed_sorts = {"created_at", "updated_at", "amount_cents", "expected_close_date", "stage", "title"}
+    if sort_by not in allowed_sorts:
+        sort_by = "created_at"
+    order_dir = "DESC" if sort_order == "desc" else "ASC"
+
+    count_row = execute_single(
+        f"SELECT COUNT(*) as total FROM crm_deals d WHERE {where}",
+        params,
+    )
+    total = count_row["total"] if count_row else 0
+
+    rows = execute_query(
+        f"""
+        SELECT d.*,
+               c.first_name as contact_first_name,
+               c.last_name as contact_last_name,
+               c.company as contact_company,
+               p.full_name as assigned_rep_name
+        FROM crm_deals d
+        LEFT JOIN crm_contacts c ON c.id = d.contact_id
+        LEFT JOIN profiles p ON p.id = d.assigned_rep_id
+        WHERE {where}
+        ORDER BY d.{sort_by} {order_dir}
+        LIMIT :limit OFFSET :offset
+        """,
+        {**params, "limit": limit, "offset": offset},
+    )
+
+    return {"deals": rows, "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/deals/pipeline")
+async def get_pipeline(
+    assigned_rep_id: Optional[str] = Query(None),
+    product_type: Optional[str] = Query(None),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get deals grouped by stage for Kanban view."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    conditions = []
+    params = {}
+
+    if not is_admin:
+        conditions.append("d.assigned_rep_id = :rep_id")
+        params["rep_id"] = profile["id"]
+
+    if assigned_rep_id and is_admin:
+        conditions.append("d.assigned_rep_id = :assigned_rep_id")
+        params["assigned_rep_id"] = assigned_rep_id
+
+    if product_type:
+        conditions.append("d.product_type = :product_type")
+        params["product_type"] = product_type
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+
+    rows = execute_query(
+        f"""
+        SELECT d.*,
+               c.first_name as contact_first_name,
+               c.last_name as contact_last_name,
+               c.company as contact_company,
+               c.temperature as contact_temperature,
+               p.full_name as assigned_rep_name
+        FROM crm_deals d
+        LEFT JOIN crm_contacts c ON c.id = d.contact_id
+        LEFT JOIN profiles p ON p.id = d.assigned_rep_id
+        WHERE {where}
+        ORDER BY d.updated_at DESC
+        """,
+        params,
+    )
+
+    # Group by stage
+    pipeline = {stage: [] for stage in STAGE_PROBABILITY.keys()}
+    for row in rows:
+        stage = row.get("stage", "lead")
+        if stage in pipeline:
+            pipeline[stage].append(row)
+
+    return {"pipeline": pipeline}
+
+
+@router.get("/deals/pipeline/stats")
+async def get_pipeline_stats(
+    assigned_rep_id: Optional[str] = Query(None),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get pipeline value by stage."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    conditions = []
+    params = {}
+
+    if not is_admin:
+        conditions.append("d.assigned_rep_id = :rep_id")
+        params["rep_id"] = profile["id"]
+
+    if assigned_rep_id and is_admin:
+        conditions.append("d.assigned_rep_id = :assigned_rep_id")
+        params["assigned_rep_id"] = assigned_rep_id
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+
+    rows = execute_query(
+        f"""
+        SELECT d.stage,
+               COUNT(*) as deal_count,
+               COALESCE(SUM(d.amount_cents), 0) as total_value,
+               COALESCE(SUM(d.amount_cents * d.probability / 100), 0) as weighted_value,
+               COALESCE(AVG(d.amount_cents), 0) as avg_deal_size
+        FROM crm_deals d
+        WHERE {where}
+        GROUP BY d.stage
+        ORDER BY CASE d.stage
+            WHEN 'lead' THEN 1
+            WHEN 'contacted' THEN 2
+            WHEN 'qualified' THEN 3
+            WHEN 'proposal' THEN 4
+            WHEN 'negotiation' THEN 5
+            WHEN 'closed_won' THEN 6
+            WHEN 'closed_lost' THEN 7
+        END
+        """,
+        params,
+    )
+
+    return {"stages": rows}
+
+
+@router.get("/deals/{deal_id}")
+async def get_deal(
+    deal_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get a single deal with stage history and activities."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    deal = execute_single(
+        """
+        SELECT d.*,
+               c.first_name as contact_first_name,
+               c.last_name as contact_last_name,
+               c.company as contact_company,
+               c.email as contact_email,
+               c.phone as contact_phone,
+               c.temperature as contact_temperature,
+               p.full_name as assigned_rep_name,
+               cp.full_name as created_by_name
+        FROM crm_deals d
+        LEFT JOIN crm_contacts c ON c.id = d.contact_id
+        LEFT JOIN profiles p ON p.id = d.assigned_rep_id
+        LEFT JOIN profiles cp ON cp.id = d.created_by
+        WHERE d.id = :id
+        """,
+        {"id": deal_id},
+    )
+    if not deal:
+        raise HTTPException(404, "Deal not found")
+
+    if not is_admin and deal["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized to view this deal")
+
+    # Get stage history
+    history = execute_query(
+        """
+        SELECT h.*, p.full_name as changed_by_name
+        FROM crm_deal_stage_history h
+        LEFT JOIN profiles p ON p.id = h.changed_by
+        WHERE h.deal_id = :deal_id
+        ORDER BY h.changed_at DESC
+        """,
+        {"deal_id": deal_id},
+    )
+
+    # Get activities linked to this deal
+    activities = execute_query(
+        """
+        SELECT a.*, p.full_name as rep_name
+        FROM crm_activities a
+        LEFT JOIN profiles p ON p.id = a.rep_id
+        WHERE a.deal_id = :deal_id
+        ORDER BY a.activity_date DESC
+        LIMIT 50
+        """,
+        {"deal_id": deal_id},
+    )
+
+    deal["stage_history"] = history
+    deal["activities"] = activities
+    return deal
+
+
+@router.post("/deals")
+async def create_deal(
+    data: DealCreate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Create a new deal."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    # Verify contact exists and rep has access
+    contact = execute_single(
+        "SELECT id, assigned_rep_id FROM crm_contacts WHERE id = :id",
+        {"id": data.contact_id},
+    )
+    if not contact:
+        raise HTTPException(404, "Contact not found")
+    if not is_admin and contact["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized to create deals for this contact")
+
+    # Auto-set probability from stage if not provided
+    probability = data.probability if data.probability is not None else STAGE_PROBABILITY.get(data.stage or "lead", 10)
+
+    deal_data = {
+        "contact_id": data.contact_id,
+        "assigned_rep_id": profile["id"],
+        "title": data.title,
+        "description": data.description,
+        "product_type": data.product_type or "backlot_membership",
+        "product_detail": "{}",
+        "stage": data.stage or "lead",
+        "amount_cents": data.amount_cents or 0,
+        "currency": data.currency or "USD",
+        "probability": probability,
+        "expected_close_date": data.expected_close_date,
+        "competitor": data.competitor,
+        "created_by": profile["id"],
+    }
+
+    # Remove None values
+    deal_data = {k: v for k, v in deal_data.items() if v is not None}
+
+    columns = ", ".join(deal_data.keys())
+    placeholders = ", ".join(f":{k}" for k in deal_data.keys())
+
+    result = execute_insert(
+        f"INSERT INTO crm_deals ({columns}) VALUES ({placeholders}) RETURNING *",
+        deal_data,
+    )
+
+    # Record initial stage in history
+    execute_insert(
+        """
+        INSERT INTO crm_deal_stage_history (deal_id, from_stage, to_stage, changed_by, notes)
+        VALUES (:deal_id, NULL, :to_stage, :changed_by, 'Deal created')
+        RETURNING id
+        """,
+        {"deal_id": result["id"], "to_stage": deal_data.get("stage", "lead"), "changed_by": profile["id"]},
+    )
+
+    return result
+
+
+@router.put("/deals/{deal_id}")
+async def update_deal(
+    deal_id: str,
+    data: DealUpdate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Update a deal (not stage — use PATCH /deals/{id}/stage for that)."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    existing = execute_single(
+        "SELECT assigned_rep_id FROM crm_deals WHERE id = :id",
+        {"id": deal_id},
+    )
+    if not existing:
+        raise HTTPException(404, "Deal not found")
+    if not is_admin and existing["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized to edit this deal")
+
+    update_data = data.dict(exclude_none=True)
+    if not update_data:
+        raise HTTPException(400, "No fields to update")
+
+    set_clauses = []
+    params = {"id": deal_id}
+
+    for key, value in update_data.items():
+        set_clauses.append(f"{key} = :{key}")
+        params[key] = value
+
+    set_clauses.append("updated_at = NOW()")
+
+    result = execute_single(
+        f"UPDATE crm_deals SET {', '.join(set_clauses)} WHERE id = :id RETURNING *",
+        params,
+    )
+    return result
+
+
+@router.patch("/deals/{deal_id}/stage")
+async def change_deal_stage(
+    deal_id: str,
+    data: StageChangeRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Move a deal to a new stage. Records history and auto-updates probability."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    if data.stage not in VALID_STAGES:
+        raise HTTPException(400, f"Invalid stage. Must be one of: {', '.join(VALID_STAGES)}")
+
+    existing = execute_single(
+        "SELECT id, stage, assigned_rep_id FROM crm_deals WHERE id = :id",
+        {"id": deal_id},
+    )
+    if not existing:
+        raise HTTPException(404, "Deal not found")
+    if not is_admin and existing["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized to update this deal")
+
+    old_stage = existing["stage"]
+    if old_stage == data.stage:
+        raise HTTPException(400, "Deal is already in this stage")
+
+    # Build update
+    update_params = {
+        "id": deal_id,
+        "stage": data.stage,
+        "probability": STAGE_PROBABILITY[data.stage],
+    }
+
+    extra_sets = ""
+    if data.stage in ("closed_won", "closed_lost"):
+        extra_sets = ", actual_close_date = CURRENT_DATE"
+        if data.close_reason:
+            extra_sets += ", close_reason = :close_reason"
+            update_params["close_reason"] = data.close_reason
+
+    result = execute_single(
+        f"""
+        UPDATE crm_deals
+        SET stage = :stage, probability = :probability, updated_at = NOW(){extra_sets}
+        WHERE id = :id RETURNING *
+        """,
+        update_params,
+    )
+
+    # Record stage history
+    execute_insert(
+        """
+        INSERT INTO crm_deal_stage_history (deal_id, from_stage, to_stage, changed_by, notes)
+        VALUES (:deal_id, :from_stage, :to_stage, :changed_by, :notes)
+        RETURNING id
+        """,
+        {
+            "deal_id": deal_id,
+            "from_stage": old_stage,
+            "to_stage": data.stage,
+            "changed_by": profile["id"],
+            "notes": data.notes,
+        },
+    )
+
+    return result
+
+
+@router.delete("/deals/{deal_id}")
+async def delete_deal(
+    deal_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Delete a deal."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    existing = execute_single(
+        "SELECT assigned_rep_id FROM crm_deals WHERE id = :id",
+        {"id": deal_id},
+    )
+    if not existing:
+        raise HTTPException(404, "Deal not found")
+    if not is_admin and existing["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized to delete this deal")
+
+    execute_single(
+        "DELETE FROM crm_deals WHERE id = :id RETURNING id",
+        {"id": deal_id},
+    )
+    return {"message": "Deal deleted"}
+
+
+# ============================================================================
+# Goals
+# ============================================================================
+
+class GoalOverrideRequest(BaseModel):
+    manual_override: Optional[int] = None
+
+
+@router.get("/goals/my")
+async def get_my_goals(
+    period_type: Optional[str] = Query(None),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get the current rep's goals with auto-computed progress."""
+    conditions = [
+        "(g.rep_id = :rep_id OR g.rep_id IS NULL)",
+        "g.period_end >= CURRENT_DATE",
+    ]
+    params = {"rep_id": profile["id"]}
+
+    if period_type:
+        conditions.append("g.period_type = :period_type")
+        params["period_type"] = period_type
+
+    where = " AND ".join(conditions)
+
+    rows = execute_query(
+        f"""
+        SELECT g.*, p.full_name as set_by_name,
+               CASE WHEN g.rep_id IS NULL THEN true ELSE false END as is_team_goal,
+               CASE g.goal_type
+                 WHEN 'revenue' THEN COALESCE((
+                   SELECT SUM(d.amount_cents)
+                   FROM crm_deals d
+                   WHERE d.stage = 'closed_won'
+                     AND d.actual_close_date >= g.period_start
+                     AND d.actual_close_date <= g.period_end
+                     AND (g.rep_id IS NULL OR d.assigned_rep_id = g.rep_id)
+                 ), 0)
+                 WHEN 'deals_closed' THEN COALESCE((
+                   SELECT COUNT(*)
+                   FROM crm_deals d
+                   WHERE d.stage = 'closed_won'
+                     AND d.actual_close_date >= g.period_start
+                     AND d.actual_close_date <= g.period_end
+                     AND (g.rep_id IS NULL OR d.assigned_rep_id = g.rep_id)
+                 ), 0)
+                 WHEN 'calls_made' THEN COALESCE((
+                   SELECT SUM(ic.calls)
+                   FROM crm_interaction_counts ic
+                   WHERE ic.count_date >= g.period_start
+                     AND ic.count_date <= g.period_end
+                     AND (g.rep_id IS NULL OR ic.rep_id = g.rep_id)
+                 ), 0)
+                 WHEN 'emails_sent' THEN COALESCE((
+                   SELECT SUM(ic.emails)
+                   FROM crm_interaction_counts ic
+                   WHERE ic.count_date >= g.period_start
+                     AND ic.count_date <= g.period_end
+                     AND (g.rep_id IS NULL OR ic.rep_id = g.rep_id)
+                 ), 0)
+                 WHEN 'meetings_held' THEN COALESCE((
+                   SELECT SUM(ic.meetings)
+                   FROM crm_interaction_counts ic
+                   WHERE ic.count_date >= g.period_start
+                     AND ic.count_date <= g.period_end
+                     AND (g.rep_id IS NULL OR ic.rep_id = g.rep_id)
+                 ), 0)
+                 WHEN 'demos_given' THEN COALESCE((
+                   SELECT SUM(ic.demos)
+                   FROM crm_interaction_counts ic
+                   WHERE ic.count_date >= g.period_start
+                     AND ic.count_date <= g.period_end
+                     AND (g.rep_id IS NULL OR ic.rep_id = g.rep_id)
+                 ), 0)
+                 WHEN 'new_contacts' THEN COALESCE((
+                   SELECT COUNT(*)
+                   FROM crm_contacts c
+                   WHERE c.created_at::date >= g.period_start
+                     AND c.created_at::date <= g.period_end
+                     AND (g.rep_id IS NULL OR c.assigned_rep_id = g.rep_id)
+                 ), 0)
+                 ELSE 0
+               END as computed_value
+        FROM crm_sales_goals g
+        LEFT JOIN profiles p ON p.id = g.set_by
+        WHERE {where}
+        ORDER BY g.period_start DESC, g.goal_type ASC
+        """,
+        params,
+    )
+
+    # Set actual_value from manual_override or computed_value
+    for row in rows:
+        computed = int(row.get("computed_value", 0))
+        override = row.get("manual_override")
+        if override is not None:
+            row["actual_value"] = override
+            row["is_overridden"] = True
+        else:
+            row["actual_value"] = computed
+            row["is_overridden"] = False
+        row["computed_value"] = computed
+
+    return {"goals": rows}
+
+
+@router.put("/goals/{goal_id}/override")
+async def set_goal_override(
+    goal_id: str,
+    data: GoalOverrideRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Set or clear a manual override on a goal's actual_value."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    existing = execute_single(
+        "SELECT id, rep_id FROM crm_sales_goals WHERE id = :id",
+        {"id": goal_id},
+    )
+    if not existing:
+        raise HTTPException(404, "Goal not found")
+
+    # Reps can override their own goals or team goals (rep_id IS NULL)
+    if not is_admin:
+        if existing["rep_id"] is not None and existing["rep_id"] != profile["id"]:
+            raise HTTPException(403, "Not authorized to override this goal")
+
+    result = execute_single(
+        """
+        UPDATE crm_sales_goals
+        SET manual_override = :manual_override, updated_at = NOW()
+        WHERE id = :id
+        RETURNING *
+        """,
+        {"id": goal_id, "manual_override": data.manual_override},
+    )
+    return result
+
+
+# ============================================================================
+# Customer Log
+# ============================================================================
+
+class LogCreate(BaseModel):
+    contact_id: str
+    log_type: str = "general"
+    subject: str
+    description: Optional[str] = None
+    priority: Optional[str] = "normal"
+
+
+class LogUpdate(BaseModel):
+    subject: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    resolution: Optional[str] = None
+
+
+@router.get("/contacts/{contact_id}/log")
+async def get_contact_log(
+    contact_id: str,
+    status: Optional[str] = Query(None),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get customer log entries for a contact."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    # Verify access
+    contact = execute_single(
+        "SELECT assigned_rep_id FROM crm_contacts WHERE id = :id",
+        {"id": contact_id},
+    )
+    if not contact:
+        raise HTTPException(404, "Contact not found")
+    if not is_admin and contact["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized")
+
+    conditions = ["l.contact_id = :contact_id"]
+    params = {"contact_id": contact_id}
+
+    if status:
+        conditions.append("l.status = :status")
+        params["status"] = status
+
+    where = " AND ".join(conditions)
+
+    rows = execute_query(
+        f"""
+        SELECT l.*, p.full_name as rep_name, rp.full_name as resolved_by_name
+        FROM crm_customer_log l
+        LEFT JOIN profiles p ON p.id = l.rep_id
+        LEFT JOIN profiles rp ON rp.id = l.resolved_by
+        WHERE {where}
+        ORDER BY l.created_at DESC
+        """,
+        params,
+    )
+    return {"log_entries": rows}
+
+
+@router.post("/contacts/{contact_id}/log")
+async def create_log_entry(
+    contact_id: str,
+    data: LogCreate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Create a customer log entry."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    contact = execute_single(
+        "SELECT assigned_rep_id FROM crm_contacts WHERE id = :id",
+        {"id": contact_id},
+    )
+    if not contact:
+        raise HTTPException(404, "Contact not found")
+    if not is_admin and contact["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized")
+
+    log_data = {
+        "contact_id": contact_id,
+        "rep_id": profile["id"],
+        "log_type": data.log_type,
+        "subject": data.subject,
+        "description": data.description,
+        "priority": data.priority or "normal",
+    }
+    log_data = {k: v for k, v in log_data.items() if v is not None}
+
+    columns = ", ".join(log_data.keys())
+    placeholders = ", ".join(f":{k}" for k in log_data.keys())
+
+    result = execute_insert(
+        f"INSERT INTO crm_customer_log ({columns}) VALUES ({placeholders}) RETURNING *",
+        log_data,
+    )
+    return result
+
+
+@router.put("/log/{log_id}")
+async def update_log_entry(
+    log_id: str,
+    data: LogUpdate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Update a log entry status/resolution."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    existing = execute_single(
+        "SELECT rep_id FROM crm_customer_log WHERE id = :id",
+        {"id": log_id},
+    )
+    if not existing:
+        raise HTTPException(404, "Log entry not found")
+    if not is_admin and existing["rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized")
+
+    update_data = data.dict(exclude_none=True)
+    if not update_data:
+        raise HTTPException(400, "No fields to update")
+
+    set_clauses = []
+    params = {"id": log_id}
+
+    for key, value in update_data.items():
+        set_clauses.append(f"{key} = :{key}")
+        params[key] = value
+
+    # Auto-set resolved_at and resolved_by when marking as resolved
+    if update_data.get("status") == "resolved":
+        set_clauses.append("resolved_at = NOW()")
+        set_clauses.append("resolved_by = :resolved_by")
+        params["resolved_by"] = profile["id"]
+
+    set_clauses.append("updated_at = NOW()")
+
+    result = execute_single(
+        f"UPDATE crm_customer_log SET {', '.join(set_clauses)} WHERE id = :id RETURNING *",
+        params,
+    )
+    return result
+
+
+@router.get("/log/open")
+async def get_open_log_entries(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get all open/in-progress log entries for the current rep."""
+    rows = execute_query(
+        """
+        SELECT l.*, c.first_name as contact_first_name, c.last_name as contact_last_name,
+               c.company, c.temperature
+        FROM crm_customer_log l
+        LEFT JOIN crm_contacts c ON c.id = l.contact_id
+        WHERE l.rep_id = :rep_id AND l.status IN ('open', 'in_progress')
+        ORDER BY CASE l.priority
+            WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'normal' THEN 3 WHEN 'low' THEN 4
+        END, l.created_at ASC
+        """,
+        {"rep_id": profile["id"]},
+    )
+    return {"log_entries": rows}
+
+
+# ============================================================================
+# Rep Reviews
+# ============================================================================
+
+@router.get("/reviews/my")
+async def get_my_reviews(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get the current rep's visible reviews."""
+    rows = execute_query(
+        """
+        SELECT r.*, c.first_name as contact_first_name, c.last_name as contact_last_name,
+               rv.full_name as reviewer_name
+        FROM crm_rep_reviews r
+        LEFT JOIN crm_contacts c ON c.id = r.contact_id
+        LEFT JOIN profiles rv ON rv.id = r.reviewer_id
+        WHERE r.rep_id = :rep_id AND r.is_visible_to_rep = true
+        ORDER BY r.created_at DESC
+        """,
+        {"rep_id": profile["id"]},
+    )
+    return {"reviews": rows}
+
+
+# ============================================================================
+# Do Not Contact
+# ============================================================================
+
+class DNCUpdate(BaseModel):
+    do_not_email: Optional[bool] = None
+    do_not_call: Optional[bool] = None
+    do_not_text: Optional[bool] = None
+    status: Optional[str] = None  # Can set to 'do_not_contact'
+
+
+@router.patch("/contacts/{contact_id}/dnc")
+async def update_dnc_flags(
+    contact_id: str,
+    data: DNCUpdate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Update Do Not Contact flags on a contact."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    existing = execute_single(
+        "SELECT assigned_rep_id FROM crm_contacts WHERE id = :id",
+        {"id": contact_id},
+    )
+    if not existing:
+        raise HTTPException(404, "Contact not found")
+    if not is_admin and existing["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized")
+
+    update_data = data.dict(exclude_none=True)
+    if not update_data:
+        raise HTTPException(400, "No fields to update")
+
+    set_clauses = []
+    params = {"id": contact_id}
+    for key, value in update_data.items():
+        set_clauses.append(f"{key} = :{key}")
+        params[key] = value
+
+    set_clauses.append("updated_at = NOW()")
+
+    result = execute_single(
+        f"UPDATE crm_contacts SET {', '.join(set_clauses)} WHERE id = :id RETURNING *",
+        params,
+    )
+    return result
+
+
+# ============================================================================
+# CRM Email — Templates (Rep-facing)
+# ============================================================================
+
+@router.get("/email/templates")
+async def list_email_templates(
+    category: Optional[str] = Query(None),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """List active email templates for the template picker."""
+    conditions = ["t.is_active = true"]
+    params = {}
+
+    if category:
+        conditions.append("t.category = :category")
+        params["category"] = category
+
+    where = " AND ".join(conditions)
+
+    rows = execute_query(
+        f"""
+        SELECT t.id, t.name, t.subject, t.body_html, t.body_text,
+               t.category, t.placeholders
+        FROM crm_email_templates t
+        WHERE {where}
+        ORDER BY t.category ASC, t.name ASC
+        """,
+        params,
+    )
+    return {"templates": rows}
+
+
+# ============================================================================
+# CRM Email — Schemas
+# ============================================================================
+
+class SendEmailRequest(BaseModel):
+    contact_id: Optional[str] = None
+    to_email: str
+    subject: str
+    body_html: str
+    body_text: Optional[str] = None
+    cc: Optional[List[str]] = None
+    thread_id: Optional[str] = None  # Reply to existing thread
+    scheduled_at: Optional[str] = None  # ISO datetime for scheduled sends
+    attachment_ids: Optional[List[str]] = None  # IDs of uploaded attachments
+    template_id: Optional[str] = None  # Track which template was used
+
+
+class UpdateSignatureRequest(BaseModel):
+    signature_html: str
+
+
+# ============================================================================
+# CRM Email — Account
+# ============================================================================
+
+@router.get("/email/account")
+async def get_email_account(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get the current rep's email account."""
+    account = execute_single(
+        "SELECT * FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(404, "No email account configured. Contact admin.")
+    return account
+
+
+@router.put("/email/account/signature")
+async def update_email_signature(
+    data: UpdateSignatureRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Update the rep's email signature."""
+    result = execute_single(
+        """
+        UPDATE crm_email_accounts SET signature_html = :sig
+        WHERE profile_id = :pid AND is_active = true RETURNING *
+        """,
+        {"sig": data.signature_html, "pid": profile["id"]},
+    )
+    if not result:
+        raise HTTPException(404, "No email account found")
+    return result
+
+
+class UpdateAvatarRequest(BaseModel):
+    avatar_url: str
+
+
+@router.put("/email/account/avatar")
+async def update_email_avatar(
+    data: UpdateAvatarRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Update the rep's email account avatar."""
+    result = execute_single(
+        """
+        UPDATE crm_email_accounts SET avatar_url = :url
+        WHERE profile_id = :pid AND is_active = true RETURNING *
+        """,
+        {"url": data.avatar_url, "pid": profile["id"]},
+    )
+    if not result:
+        raise HTTPException(404, "No email account found")
+    return result
+
+
+# ============================================================================
+# CRM Email — Inbox & Threads
+# ============================================================================
+
+@router.get("/email/inbox")
+async def get_email_inbox(
+    unread_only: bool = Query(False),
+    archived: bool = Query(False),
+    starred_only: bool = Query(False),
+    snoozed: bool = Query(False),
+    deleted: bool = Query(False),
+    label_id: Optional[str] = Query(None),
+    sort_by: Optional[str] = Query("last_message_at_desc"),
+    all_threads: bool = Query(False),
+    search: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """List email threads for the current rep's inbox."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    # Admin can see all threads
+    if all_threads and is_admin:
+        conditions = []
+        params: Dict[str, Any] = {}
+    else:
+        account = execute_single(
+            "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+            {"pid": profile["id"]},
+        )
+        if not account:
+            return {"threads": [], "total": 0}
+        conditions = ["t.account_id = :account_id"]
+        params = {"account_id": account["id"]}
+
+    # Filter modes
+    if deleted:
+        conditions.append("t.is_deleted = true")
+    else:
+        conditions.append("COALESCE(t.is_deleted, false) = false")
+        if snoozed:
+            conditions.append("t.snoozed_until IS NOT NULL AND t.snoozed_until > NOW()")
+        else:
+            conditions.append("(t.snoozed_until IS NULL OR t.snoozed_until <= NOW())")
+            conditions.append("t.is_archived = :archived")
+            params["archived"] = archived
+
+    if starred_only:
+        conditions.append("t.is_starred = true")
+
+    if unread_only:
+        conditions.append("t.unread_count > 0")
+
+    if search:
+        conditions.append("(t.subject ILIKE :search OR t.contact_email ILIKE :search)")
+        params["search"] = f"%{search}%"
+
+    if label_id:
+        conditions.append(
+            "EXISTS (SELECT 1 FROM crm_email_thread_labels tl WHERE tl.thread_id = t.id AND tl.label_id = :label_id)"
+        )
+        params["label_id"] = label_id
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+
+    count_row = execute_single(
+        f"SELECT COUNT(*) as total FROM crm_email_threads t WHERE {where}",
+        params,
+    )
+
+    # Sort options
+    order_clause = "t.last_message_at DESC"
+    if sort_by == "last_message_at_asc":
+        order_clause = "t.last_message_at ASC"
+    elif sort_by == "unread_first":
+        order_clause = "CASE WHEN t.unread_count > 0 THEN 0 ELSE 1 END ASC, t.last_message_at DESC"
+
+    rows = execute_query(
+        f"""
+        SELECT t.*, c.first_name as contact_first_name, c.last_name as contact_last_name,
+               c.company as contact_company,
+               ap.full_name as assigned_to_name,
+               (SELECT COALESCE(json_agg(json_build_object('id', el.id, 'name', el.name, 'color', el.color)), '[]'::json)
+                FROM crm_email_thread_labels etl
+                JOIN crm_email_labels el ON el.id = etl.label_id
+                WHERE etl.thread_id = t.id) as labels
+        FROM crm_email_threads t
+        LEFT JOIN crm_contacts c ON c.id = t.contact_id
+        LEFT JOIN profiles ap ON ap.id = t.assigned_to
+        WHERE {where}
+        ORDER BY {order_clause}
+        LIMIT :limit OFFSET :offset
+        """,
+        {**params, "limit": limit, "offset": offset},
+    )
+    return {"threads": rows, "total": count_row["total"] if count_row else 0}
+
+
+@router.get("/email/threads/{thread_id}")
+async def get_email_thread(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get a thread with all its messages."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(404, "No email account")
+
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    thread = execute_single(
+        """
+        SELECT t.*, c.first_name as contact_first_name, c.last_name as contact_last_name,
+               ap.full_name as assigned_to_name,
+               (SELECT COALESCE(json_agg(json_build_object('id', el.id, 'name', el.name, 'color', el.color)), '[]'::json)
+                FROM crm_email_thread_labels etl
+                JOIN crm_email_labels el ON el.id = etl.label_id
+                WHERE etl.thread_id = t.id) as labels
+        FROM crm_email_threads t
+        LEFT JOIN crm_contacts c ON c.id = t.contact_id
+        LEFT JOIN profiles ap ON ap.id = t.assigned_to
+        WHERE t.id = :tid AND (t.account_id = :aid OR :is_admin = true)
+        """,
+        {"tid": thread_id, "aid": account["id"], "is_admin": is_admin},
+    )
+    if not thread:
+        raise HTTPException(404, "Thread not found")
+
+    messages = execute_query(
+        """
+        SELECT m.*,
+               (SELECT COUNT(*) FROM crm_email_opens o WHERE o.message_id = m.id) as open_count,
+               (SELECT MIN(o.opened_at) FROM crm_email_opens o WHERE o.message_id = m.id) as first_opened_at,
+               (SELECT MAX(o.opened_at) FROM crm_email_opens o WHERE o.message_id = m.id) as last_opened_at,
+               (SELECT COALESCE(json_agg(json_build_object(
+                   'id', a.id, 'filename', a.filename, 'content_type', a.content_type,
+                   'size_bytes', a.size_bytes
+               )), '[]'::json) FROM crm_email_attachments a WHERE a.message_id = m.id) as attachments
+        FROM crm_email_messages m
+        WHERE m.thread_id = :tid
+        ORDER BY m.created_at ASC
+        """,
+        {"tid": thread_id},
+    )
+    return {"thread": thread, "messages": messages}
+
+
+@router.patch("/email/threads/{thread_id}/read")
+async def mark_thread_read(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Mark a thread as read (reset unread count)."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(404, "No email account")
+
+    execute_single(
+        """
+        UPDATE crm_email_threads SET unread_count = 0
+        WHERE id = :tid AND account_id = :aid RETURNING id
+        """,
+        {"tid": thread_id, "aid": account["id"]},
+    )
+    # Also mark individual messages as read
+    execute_query(
+        """
+        UPDATE crm_email_messages SET read_at = NOW()
+        WHERE thread_id = :tid AND read_at IS NULL AND direction = 'inbound'
+        RETURNING id
+        """,
+        {"tid": thread_id},
+    )
+    return {"success": True}
+
+
+@router.patch("/email/threads/{thread_id}/archive")
+async def archive_thread(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Toggle archive status on a thread."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(404, "No email account")
+
+    result = execute_single(
+        """
+        UPDATE crm_email_threads SET is_archived = NOT is_archived
+        WHERE id = :tid AND account_id = :aid RETURNING *
+        """,
+        {"tid": thread_id, "aid": account["id"]},
+    )
+    if not result:
+        raise HTTPException(404, "Thread not found")
+    return result
+
+
+@router.get("/email/contacts/{contact_id}/threads")
+async def get_contact_threads(
+    contact_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get all email threads with a specific contact."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        return {"threads": []}
+
+    rows = execute_query(
+        """
+        SELECT t.* FROM crm_email_threads t
+        WHERE t.account_id = :aid AND t.contact_id = :cid
+        ORDER BY t.last_message_at DESC
+        """,
+        {"aid": account["id"], "cid": contact_id},
+    )
+    return {"threads": rows}
+
+
+@router.get("/email/unread-count")
+async def get_unread_count(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get total unread email count for the rep's inbox."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        return {"count": 0}
+
+    row = execute_single(
+        """
+        SELECT COALESCE(SUM(unread_count), 0) as count
+        FROM crm_email_threads WHERE account_id = :aid AND is_archived = false
+        AND COALESCE(is_deleted, false) = false
+        """,
+        {"aid": account["id"]},
+    )
+    return {"count": row["count"] if row else 0}
+
+
+# ============================================================================
+# CRM Email — Suggestions (autocomplete for To field)
+# ============================================================================
+
+@router.get("/email/suggestions")
+async def get_email_suggestions(
+    q: str = Query(..., min_length=2, max_length=100),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Return email suggestions from contacts, recent emails, and org team members."""
+    account = execute_single(
+        "SELECT id, email_address FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    account_id = account["id"] if account else None
+    self_email = account["email_address"] if account else None
+    like_q = f"%{q}%"
+
+    suggestions = execute_query(
+        """
+        SELECT DISTINCT ON (email) email, display_name, company, source, contact_id
+        FROM (
+            -- CRM contacts
+            SELECT c.email, CONCAT(c.first_name, ' ', c.last_name) as display_name,
+                   c.company, 'contact' as source, c.id::text as contact_id, 1 as priority
+            FROM crm_contacts c
+            WHERE c.email IS NOT NULL
+                AND c.do_not_email IS NOT TRUE
+                AND c.status != 'inactive'
+                AND (c.email ILIKE :q OR c.first_name ILIKE :q OR c.last_name ILIKE :q OR c.company ILIKE :q)
+            UNION ALL
+            -- Recent email threads
+            SELECT t.contact_email as email,
+                   COALESCE(CONCAT(c2.first_name, ' ', c2.last_name), t.contact_email) as display_name,
+                   c2.company, 'recent' as source, c2.id::text as contact_id, 2 as priority
+            FROM crm_email_threads t
+            LEFT JOIN crm_contacts c2 ON c2.id = t.contact_id
+            WHERE t.account_id = :aid
+                AND t.contact_email IS NOT NULL
+                AND t.contact_email ILIKE :q
+            UNION ALL
+            -- Org team members (other active email accounts)
+            SELECT a.email_address as email, a.display_name,
+                   NULL as company, 'team' as source, NULL as contact_id, 3 as priority
+            FROM crm_email_accounts a
+            WHERE a.is_active = true
+                AND a.email_address != :self_email
+                AND (a.email_address ILIKE :q OR a.display_name ILIKE :q)
+        ) combined
+        ORDER BY email, priority ASC
+        LIMIT 10
+        """,
+        {"q": like_q, "aid": account_id, "self_email": self_email or ""},
+    )
+
+    return {"suggestions": suggestions}
+
+
+# ============================================================================
+# CRM Email — Internal Routing Helper
+# ============================================================================
+
+def _route_email_internally(
+    sender_account: Dict[str, Any],
+    recipient_account: Dict[str, Any],
+    subject: str,
+    body_html: str,
+    body_text: str,
+    to_addresses: List[str],
+    cc_addresses: List[str],
+):
+    """Route an email internally between org members. Skips Resend API."""
+    # Find or create thread on recipient's account (sender is the "contact")
+    existing_thread = execute_single(
+        """
+        SELECT id FROM crm_email_threads
+        WHERE account_id = :aid AND contact_email = :sender_email AND subject = :subj
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        {
+            "aid": recipient_account["id"],
+            "sender_email": sender_account["email_address"],
+            "subj": subject,
+        },
+    )
+
+    if existing_thread:
+        recipient_thread_id = existing_thread["id"]
+    else:
+        new_thread = execute_single(
+            """
+            INSERT INTO crm_email_threads (account_id, contact_email, subject)
+            VALUES (:aid, :sender_email, :subj) RETURNING *
+            """,
+            {
+                "aid": recipient_account["id"],
+                "sender_email": sender_account["email_address"],
+                "subj": subject,
+            },
+        )
+        recipient_thread_id = new_thread["id"]
+
+    # Insert inbound message on recipient's thread
+    execute_single(
+        """
+        INSERT INTO crm_email_messages
+            (thread_id, direction, from_address, to_addresses, cc_addresses,
+             subject, body_html, body_text, status)
+        VALUES (:tid, 'inbound', :from_addr, :to_addrs, :cc_addrs,
+                :subj, :html, :text, 'received')
+        RETURNING id
+        """,
+        {
+            "tid": recipient_thread_id,
+            "from_addr": sender_account["email_address"],
+            "to_addrs": to_addresses,
+            "cc_addrs": cc_addresses,
+            "subj": subject,
+            "html": body_html,
+            "text": body_text,
+        },
+    )
+
+    # Bump recipient thread unread count and last_message_at
+    execute_single(
+        """
+        UPDATE crm_email_threads
+        SET last_message_at = NOW(), unread_count = unread_count + 1,
+            snoozed_until = NULL, is_archived = false
+        WHERE id = :tid RETURNING id
+        """,
+        {"tid": recipient_thread_id},
+    )
+
+    # WebSocket notification to recipient (best-effort)
+    try:
+        import boto3
+        import json as json_mod
+        dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+        table = dynamodb.Table("second-watch-websocket-connections")
+
+        resp = table.query(
+            IndexName="GSI1",
+            KeyConditionExpression="GSI1PK = :pk",
+            ExpressionAttributeValues={":pk": f"PROFILE#{recipient_account['profile_id']}"},
+        )
+        if resp.get("Items"):
+            apigw = boto3.client("apigatewaymanagementapi",
+                endpoint_url="https://j4f73g2zp0.execute-api.us-east-1.amazonaws.com/prod")
+            notification = json_mod.dumps({
+                "action": "crm:email:new",
+                "thread_id": recipient_thread_id,
+                "from": sender_account["email_address"],
+                "subject": subject,
+                "preview": (body_text or "")[:100],
+            })
+            for item in resp["Items"]:
+                conn_id = item.get("SK", "").replace("CONN#", "")
+                if conn_id:
+                    try:
+                        apigw.post_to_connection(
+                            ConnectionId=conn_id,
+                            Data=notification.encode("utf-8"),
+                        )
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+
+# ============================================================================
+# CRM Email — Send
+# ============================================================================
+
+@router.post("/email/send")
+async def send_crm_email(
+    data: SendEmailRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Compose and send an email. Creates/reuses thread as needed."""
+    import resend as resend_sdk
+    from app.core.config import settings
+
+    # Get the rep's email account
+    account = execute_single(
+        "SELECT * FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(400, "No email account configured. Contact admin.")
+
+    # Check DNC if contact provided
+    if data.contact_id:
+        contact = execute_single(
+            "SELECT id, do_not_email, email FROM crm_contacts WHERE id = :cid",
+            {"cid": data.contact_id},
+        )
+        if contact and contact.get("do_not_email"):
+            raise HTTPException(400, "Contact is flagged as Do Not Email")
+
+    # Determine or create thread
+    thread_id = data.thread_id
+    if thread_id:
+        thread = execute_single(
+            "SELECT id FROM crm_email_threads WHERE id = :tid AND account_id = :aid",
+            {"tid": thread_id, "aid": account["id"]},
+        )
+        if not thread:
+            raise HTTPException(404, "Thread not found")
+    else:
+        thread = execute_single(
+            """
+            INSERT INTO crm_email_threads (account_id, contact_id, contact_email, subject)
+            VALUES (:aid, :cid, :email, :subj) RETURNING *
+            """,
+            {
+                "aid": account["id"],
+                "cid": data.contact_id,
+                "email": data.to_email,
+                "subj": data.subject,
+            },
+        )
+        thread_id = thread["id"]
+
+    # Build reply-to: sender's real address first, routing address for inbound webhook second
+    reply_to = [account["email_address"], f"reply+{thread_id}@theswn.com"]
+
+    # Append signature if exists
+    body_html = data.body_html
+    if account.get("signature_html"):
+        body_html += f'<div style="margin-top: 20px; padding-top: 12px; border-top: 1px solid #ddd;">{account["signature_html"]}</div>'
+
+    # If scheduled, store without sending
+    if data.scheduled_at:
+        message = execute_single(
+            """
+            INSERT INTO crm_email_messages
+                (thread_id, direction, from_address, to_addresses, cc_addresses,
+                 subject, body_html, body_text, status, scheduled_at, template_id)
+            VALUES (:tid, 'outbound', :from_addr, :to_addrs, :cc_addrs,
+                    :subj, :html, :text, 'scheduled', :scheduled_at, :template_id)
+            RETURNING *
+            """,
+            {
+                "tid": thread_id,
+                "from_addr": account["email_address"],
+                "to_addrs": [data.to_email],
+                "cc_addrs": data.cc or [],
+                "subj": data.subject,
+                "html": body_html,
+                "text": data.body_text,
+                "scheduled_at": data.scheduled_at,
+                "template_id": data.template_id,
+            },
+        )
+        # Link attachments
+        if data.attachment_ids:
+            for att_id in data.attachment_ids:
+                execute_single(
+                    "UPDATE crm_email_attachments SET message_id = :mid WHERE id = :aid RETURNING id",
+                    {"mid": message["id"], "aid": att_id},
+                )
+        return {"message": message, "thread_id": thread_id, "scheduled": True}
+
+    # Insert message first to get ID for tracking pixel
+    message = execute_single(
+        """
+        INSERT INTO crm_email_messages
+            (thread_id, direction, from_address, to_addresses, cc_addresses,
+             subject, body_html, body_text, status, template_id)
+        VALUES (:tid, 'outbound', :from_addr, :to_addrs, :cc_addrs,
+                :subj, :html, :text, 'sending', :template_id)
+        RETURNING *
+        """,
+        {
+            "tid": thread_id,
+            "from_addr": account["email_address"],
+            "to_addrs": [data.to_email],
+            "cc_addrs": data.cc or [],
+            "subj": data.subject,
+            "html": body_html,
+            "text": data.body_text,
+            "template_id": data.template_id,
+        },
+    )
+
+    # Skip tracking pixel for 1:1 sends to improve deliverability (Gmail Primary tab)
+    # Tracking pixels are only used for campaign/bulk sends in email_scheduler.py
+
+    # Check if recipient is an internal org member — skip Resend if so
+    recipient_account = execute_single(
+        "SELECT * FROM crm_email_accounts WHERE email_address = :email AND is_active = true",
+        {"email": data.to_email},
+    )
+    if recipient_account:
+        # Internal delivery — mark as sent, route internally, skip Resend
+        message = execute_single(
+            "UPDATE crm_email_messages SET status = 'sent' WHERE id = :mid RETURNING *",
+            {"mid": message["id"]},
+        )
+
+        # Link attachments
+        if data.attachment_ids:
+            for att_id in data.attachment_ids:
+                execute_single(
+                    "UPDATE crm_email_attachments SET message_id = :mid WHERE id = :aid RETURNING id",
+                    {"mid": message["id"], "aid": att_id},
+                )
+
+        # Generate plain text fallback if not provided
+        plain_text = data.body_text
+        if not plain_text:
+            import re
+            plain_text = re.sub(r'<br\s*/?>', '\n', body_html)
+            plain_text = re.sub(r'<[^>]+>', '', plain_text)
+            plain_text = plain_text.strip()
+
+        _route_email_internally(
+            sender_account=account,
+            recipient_account=recipient_account,
+            subject=data.subject,
+            body_html=body_html,
+            body_text=plain_text or "",
+            to_addresses=[data.to_email],
+            cc_addresses=data.cc or [],
+        )
+
+        # Update sender thread last_message_at
+        execute_single(
+            "UPDATE crm_email_threads SET last_message_at = NOW() WHERE id = :tid RETURNING id",
+            {"tid": thread_id},
+        )
+
+        # Auto-increment interaction counter (always, not gated by contact_id)
+        _increment_interaction(profile["id"], "emails")
+
+        # Auto-create CRM activity
+        if data.contact_id:
+            execute_insert(
+                """
+                INSERT INTO crm_activities
+                    (contact_id, rep_id, activity_type, subject, description, activity_date)
+                VALUES (:cid, :rid, 'email', :subj, :desc, NOW())
+                RETURNING id
+                """,
+                {
+                    "cid": data.contact_id,
+                    "rid": profile["id"],
+                    "subj": f"Email: {data.subject}",
+                    "desc": f"Sent email to {data.to_email} (internal)",
+                },
+            )
+
+        return {"message": message, "thread_id": thread_id, "internal": True}
+
+    # Link attachments and build Resend attachment list
+    resend_attachments = []
+    if data.attachment_ids:
+        import boto3
+        s3 = boto3.client("s3", region_name="us-east-1")
+        for att_id in data.attachment_ids:
+            att = execute_single(
+                "UPDATE crm_email_attachments SET message_id = :mid WHERE id = :aid RETURNING *",
+                {"mid": message["id"], "aid": att_id},
+            )
+            if att and att.get("s3_key"):
+                presigned = s3.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": att.get("s3_bucket", settings.AWS_S3_BACKLOT_FILES_BUCKET), "Key": att["s3_key"]},
+                    ExpiresIn=300,
+                )
+                resend_attachments.append({"path": presigned, "filename": att["filename"]})
+
+    # Send via Resend
+    resend_sdk.api_key = settings.RESEND_API_KEY
+
+    # Generate plain text fallback if not provided (multipart emails land in Primary more often)
+    plain_text = data.body_text
+    if not plain_text:
+        import re
+        plain_text = re.sub(r'<br\s*/?>', '\n', body_html)
+        plain_text = re.sub(r'<[^>]+>', '', plain_text)
+        plain_text = plain_text.strip()
+
+    send_params = {
+        "from": f"{account['display_name']} <{account['email_address']}>",
+        "to": [data.to_email],
+        "subject": data.subject,
+        "html": body_html,
+        "text": plain_text,
+        "reply_to": reply_to,
+    }
+    if data.cc:
+        send_params["cc"] = data.cc
+    if resend_attachments:
+        send_params["attachments"] = resend_attachments
+
+    try:
+        result = resend_sdk.Emails.send(send_params)
+    except Exception as e:
+        execute_single(
+            "UPDATE crm_email_messages SET status = 'failed' WHERE id = :mid RETURNING id",
+            {"mid": message["id"]},
+        )
+        raise HTTPException(502, f"Failed to send email: {str(e)}")
+
+    resend_id = result.get("id")
+
+    # Update message with resend ID and sent status
+    message = execute_single(
+        "UPDATE crm_email_messages SET resend_message_id = :rid, status = 'sent' WHERE id = :mid RETURNING *",
+        {"rid": resend_id, "mid": message["id"]},
+    )
+
+    # Update thread last_message_at
+    execute_single(
+        "UPDATE crm_email_threads SET last_message_at = NOW() WHERE id = :tid RETURNING id",
+        {"tid": thread_id},
+    )
+
+    # Auto-increment interaction counter (always, not gated by contact_id)
+    _increment_interaction(profile["id"], "emails")
+
+    # Set source_type on message
+    execute_single(
+        "UPDATE crm_email_messages SET source_type = 'manual' WHERE id = :mid RETURNING id",
+        {"mid": message["id"]},
+    )
+
+    # Auto-create CRM activity
+    if data.contact_id:
+        execute_insert(
+            """
+            INSERT INTO crm_activities
+                (contact_id, rep_id, activity_type, subject, description, activity_date)
+            VALUES (:cid, :rid, 'email', :subj, :desc, NOW())
+            RETURNING id
+            """,
+            {
+                "cid": data.contact_id,
+                "rid": profile["id"],
+                "subj": f"Email: {data.subject}",
+                "desc": f"Sent email to {data.to_email}",
+            },
+        )
+
+    return {"message": message, "thread_id": thread_id}
+
+
+# ============================================================================
+# CRM Email — Inbound Webhook (public, verified via Resend signature)
+# ============================================================================
+
+from fastapi import Request
+
+@router.post("/email/webhook/inbound")
+async def email_inbound_webhook_handler(request: Request):
+    """
+    Resend inbound email webhook with signature verification.
+    Parses reply+{thread_id} from the to address, stores the message,
+    updates thread unread count. Sends WebSocket notification.
+    """
+    import re
+    import hmac
+    import hashlib
+    import base64
+    import json
+    from app.core.config import settings
+
+    # Verify Resend webhook signature
+    raw_body = await request.body()
+    signature = request.headers.get("svix-signature", "")
+    if settings.RESEND_WEBHOOK_SIGNING_SECRET and signature:
+        # Resend uses Svix for webhook signing
+        msg_id = request.headers.get("svix-id", "")
+        timestamp = request.headers.get("svix-timestamp", "")
+        to_sign = f"{msg_id}.{timestamp}.{raw_body.decode()}"
+        secret = settings.RESEND_WEBHOOK_SIGNING_SECRET
+        # Svix secrets are base64-encoded with "whsec_" prefix
+        if secret.startswith("whsec_"):
+            secret_bytes = base64.b64decode(secret[6:])
+        else:
+            secret_bytes = secret.encode()
+        expected = base64.b64encode(
+            hmac.new(secret_bytes, to_sign.encode(), hashlib.sha256).digest()
+        ).decode()
+        # Svix sends multiple signatures separated by spaces, each prefixed with "v1,"
+        valid = any(
+            hmac.compare_digest(expected, sig.replace("v1,", ""))
+            for sig in signature.split(" ")
+        )
+        if not valid:
+            raise HTTPException(401, "Invalid webhook signature")
+
+    body = json.loads(raw_body)
+    event_type = body.get("type", "")
+
+    # Only process inbound email events
+    if event_type != "email.received":
+        return {"status": "ignored", "type": event_type}
+
+    payload = body.get("data", {})
+    to_addresses = payload.get("to", [])
+    from_address = payload.get("from", "")
+    subject = payload.get("subject", "")
+    email_id = payload.get("email_id", "")
+
+    # Find reply+{thread_id} in to addresses
+    thread_id = None
+    for addr in to_addresses:
+        match = re.search(r"reply\+([a-f0-9-]+)@", addr)
+        if match:
+            thread_id = match.group(1)
+            break
+
+    if not thread_id:
+        return {"status": "no_thread_match", "from": from_address}
+
+    # Fetch full email content from Resend API (webhook only sends metadata)
+    import logging as _logging
+    import httpx
+    _log = _logging.getLogger(__name__)
+    html_body = ""
+    text_body = ""
+    if email_id and settings.RESEND_API_KEY:
+        try:
+            resp = httpx.get(
+                f"https://api.resend.com/emails/receiving/{email_id}",
+                headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                email_data = resp.json()
+                html_body = email_data.get("html") or ""
+                text_body = email_data.get("text") or ""
+                if not from_address:
+                    from_address = email_data.get("from", "")
+                if not subject:
+                    subject = email_data.get("subject", "")
+            else:
+                _log.warning(f"Resend API returned {resp.status_code} for email {email_id}")
+        except Exception as e:
+            _log.error(f"Failed to fetch inbound email content: {e}")
+
+    # Verify thread exists
+    thread = execute_single(
+        "SELECT * FROM crm_email_threads WHERE id = :tid",
+        {"tid": thread_id},
+    )
+    if not thread:
+        return {"status": "thread_not_found", "thread_id": thread_id}
+
+    # Auto-link contact if thread has no contact_id
+    if not thread.get("contact_id"):
+        linked_contact = execute_single(
+            "SELECT id FROM crm_contacts WHERE email = :email LIMIT 1",
+            {"email": from_address},
+        )
+        if linked_contact:
+            execute_single(
+                "UPDATE crm_email_threads SET contact_id = :cid WHERE id = :tid RETURNING id",
+                {"cid": linked_contact["id"], "tid": thread_id},
+            )
+
+    # Store inbound message
+    message = execute_single(
+        """
+        INSERT INTO crm_email_messages
+            (thread_id, direction, from_address, to_addresses, subject,
+             body_html, body_text, status)
+        VALUES (:tid, 'inbound', :from_addr, :to_addrs, :subj,
+                :html, :text, 'received')
+        RETURNING *
+        """,
+        {
+            "tid": thread_id,
+            "from_addr": from_address,
+            "to_addrs": to_addresses,
+            "subj": subject,
+            "html": html_body,
+            "text": text_body,
+        },
+    )
+
+    # Update thread: bump last_message_at, increment unread, clear snooze
+    execute_single(
+        """
+        UPDATE crm_email_threads
+        SET last_message_at = NOW(), unread_count = unread_count + 1,
+            snoozed_until = NULL, is_archived = false
+        WHERE id = :tid RETURNING id
+        """,
+        {"tid": thread_id},
+    )
+
+    # Auto-stop active sequence enrollments when contact replies
+    if thread.get("contact_id"):
+        execute_query(
+            """
+            UPDATE crm_email_sequence_enrollments
+            SET status = 'replied', completed_at = NOW()
+            WHERE contact_id = :cid AND status = 'active'
+            RETURNING id
+            """,
+            {"cid": thread["contact_id"]},
+        )
+
+    # Auto-increment interaction counter + create activity for inbound email
+    account = execute_single(
+        "SELECT profile_id FROM crm_email_accounts WHERE id = :aid",
+        {"aid": thread["account_id"]},
+    )
+    if account:
+        from app.api.crm_email_helpers import increment_email_interaction, create_email_activity
+        increment_email_interaction(account["profile_id"], "emails_received")
+        contact_id = thread.get("contact_id")
+        if contact_id:
+            create_email_activity(
+                contact_id=contact_id,
+                rep_id=account["profile_id"],
+                activity_type="email_received",
+                subject=f"Received: {subject}",
+                description=f"Inbound email from {from_address}",
+                deal_id=thread.get("deal_id"),
+            )
+
+    # WebSocket notification (best-effort)
+    # account already fetched above
+    if account:
+        try:
+            import boto3
+            import json as json_mod
+            dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+            table = dynamodb.Table("second-watch-websocket-connections")
+
+            resp = table.query(
+                IndexName="GSI1",
+                KeyConditionExpression="GSI1PK = :pk",
+                ExpressionAttributeValues={":pk": f"PROFILE#{account['profile_id']}"},
+            )
+            if resp.get("Items"):
+                apigw = boto3.client("apigatewaymanagementapi",
+                    endpoint_url="https://j4f73g2zp0.execute-api.us-east-1.amazonaws.com/prod")
+                notification = json_mod.dumps({
+                    "action": "crm:email:new",
+                    "thread_id": thread_id,
+                    "from": from_address,
+                    "subject": subject,
+                    "preview": (text_body or "")[:100],
+                })
+                for item in resp["Items"]:
+                    conn_id = item.get("SK", "").replace("CONN#", "")
+                    if conn_id:
+                        try:
+                            apigw.post_to_connection(
+                                ConnectionId=conn_id,
+                                Data=notification.encode("utf-8"),
+                            )
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    return {"status": "stored", "message_id": message["id"] if message else None}
+
+
+# ============================================================================
+# CRM Email — Deal-Email Linking
+# ============================================================================
+
+class LinkDealRequest(BaseModel):
+    deal_id: Optional[str] = None
+
+@router.patch("/email/threads/{thread_id}/deal")
+async def link_thread_to_deal(
+    thread_id: str,
+    data: LinkDealRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Link or unlink an email thread to a deal."""
+    result = execute_single(
+        "UPDATE crm_email_threads SET deal_id = :did WHERE id = :tid RETURNING *",
+        {"did": data.deal_id, "tid": thread_id},
+    )
+    if not result:
+        raise HTTPException(404, "Thread not found")
+    return result
+
+@router.get("/email/deals/{deal_id}/threads")
+async def get_deal_email_threads(
+    deal_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get all email threads linked to a deal."""
+    threads = execute_query(
+        """
+        SELECT t.*, a.display_name as account_name,
+               (SELECT COUNT(*) FROM crm_email_messages m WHERE m.thread_id = t.id) as message_count
+        FROM crm_email_threads t
+        LEFT JOIN crm_email_accounts a ON a.id = t.account_id
+        WHERE t.deal_id = :did
+        ORDER BY t.last_message_at DESC
+        """,
+        {"did": deal_id},
+    )
+    return {"threads": threads}
+
+
+# ============================================================================
+# CRM Email — Star / Snooze / Bulk / Link / Assign
+# ============================================================================
+
+@router.patch("/email/threads/{thread_id}/star")
+async def toggle_star_thread(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Toggle starred status on a thread."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(404, "No email account")
+    result = execute_single(
+        "UPDATE crm_email_threads SET is_starred = NOT COALESCE(is_starred, false) WHERE id = :tid AND account_id = :aid RETURNING *",
+        {"tid": thread_id, "aid": account["id"]},
+    )
+    if not result:
+        raise HTTPException(404, "Thread not found")
+    return result
+
+
+class SnoozeRequest(BaseModel):
+    snoozed_until: str  # ISO datetime
+
+
+@router.patch("/email/threads/{thread_id}/snooze")
+async def snooze_thread(
+    thread_id: str,
+    data: SnoozeRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Snooze a thread until a specific time."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(404, "No email account")
+    result = execute_single(
+        "UPDATE crm_email_threads SET snoozed_until = :until WHERE id = :tid AND account_id = :aid RETURNING *",
+        {"tid": thread_id, "aid": account["id"], "until": data.snoozed_until},
+    )
+    if not result:
+        raise HTTPException(404, "Thread not found")
+    return result
+
+
+class BulkActionRequest(BaseModel):
+    thread_ids: List[str]
+    action: str  # archive, read, unread, star, delete
+
+
+@router.post("/email/threads/bulk")
+async def bulk_thread_action(
+    data: BulkActionRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Perform bulk actions on threads. Max 50 threads per request."""
+    if len(data.thread_ids) > 50:
+        raise HTTPException(400, "Maximum 50 threads per bulk action")
+
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(404, "No email account")
+
+    if data.action == "archive":
+        execute_query(
+            "UPDATE crm_email_threads SET is_archived = true WHERE id = ANY(:ids) AND account_id = :aid RETURNING id",
+            {"ids": data.thread_ids, "aid": account["id"]},
+        )
+    elif data.action == "read":
+        execute_query(
+            "UPDATE crm_email_threads SET unread_count = 0 WHERE id = ANY(:ids) AND account_id = :aid RETURNING id",
+            {"ids": data.thread_ids, "aid": account["id"]},
+        )
+    elif data.action == "unread":
+        execute_query(
+            "UPDATE crm_email_threads SET unread_count = GREATEST(unread_count, 1) WHERE id = ANY(:ids) AND account_id = :aid RETURNING id",
+            {"ids": data.thread_ids, "aid": account["id"]},
+        )
+    elif data.action == "star":
+        execute_query(
+            "UPDATE crm_email_threads SET is_starred = true WHERE id = ANY(:ids) AND account_id = :aid RETURNING id",
+            {"ids": data.thread_ids, "aid": account["id"]},
+        )
+    elif data.action == "delete":
+        execute_query(
+            "UPDATE crm_email_threads SET is_deleted = true WHERE id = ANY(:ids) AND account_id = :aid RETURNING id",
+            {"ids": data.thread_ids, "aid": account["id"]},
+        )
+    else:
+        raise HTTPException(400, f"Unknown action: {data.action}")
+
+    return {"success": True, "count": len(data.thread_ids)}
+
+
+class LinkContactRequest(BaseModel):
+    contact_id: str
+
+
+@router.patch("/email/threads/{thread_id}/link-contact")
+async def link_thread_contact(
+    thread_id: str,
+    data: LinkContactRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Link a thread to a CRM contact."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(404, "No email account")
+    result = execute_single(
+        "UPDATE crm_email_threads SET contact_id = :cid WHERE id = :tid AND account_id = :aid RETURNING *",
+        {"tid": thread_id, "aid": account["id"], "cid": data.contact_id},
+    )
+    if not result:
+        raise HTTPException(404, "Thread not found")
+    return result
+
+
+@router.patch("/email/threads/{thread_id}/unlink-contact")
+async def unlink_thread_contact(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Unlink a thread from its CRM contact."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(404, "No email account")
+    result = execute_single(
+        "UPDATE crm_email_threads SET contact_id = NULL WHERE id = :tid AND account_id = :aid RETURNING *",
+        {"tid": thread_id, "aid": account["id"]},
+    )
+    if not result:
+        raise HTTPException(404, "Thread not found")
+    return result
+
+
+class AssignThreadRequest(BaseModel):
+    assigned_to: Optional[str] = None  # profile ID or None to unassign
+
+
+@router.patch("/email/threads/{thread_id}/assign")
+async def assign_thread(
+    thread_id: str,
+    data: AssignThreadRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """Assign a thread to a rep (admin only)."""
+    result = execute_single(
+        "UPDATE crm_email_threads SET assigned_to = :assigned WHERE id = :tid RETURNING *",
+        {"tid": thread_id, "assigned": data.assigned_to},
+    )
+    if not result:
+        raise HTTPException(404, "Thread not found")
+    return result
+
+
+# ============================================================================
+# CRM Email — Internal Notes
+# ============================================================================
+
+@router.get("/email/threads/{thread_id}/notes")
+async def get_thread_notes(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get internal notes for a thread."""
+    rows = execute_query(
+        """
+        SELECT n.*, p.full_name as author_name, p.avatar_url as author_avatar
+        FROM crm_email_internal_notes n
+        JOIN profiles p ON p.id = n.author_id
+        WHERE n.thread_id = :tid
+        ORDER BY n.created_at ASC
+        """,
+        {"tid": thread_id},
+    )
+    return {"notes": rows}
+
+
+class CreateNoteRequest(BaseModel):
+    content: str
+
+
+@router.post("/email/threads/{thread_id}/notes")
+async def create_thread_note(
+    thread_id: str,
+    data: CreateNoteRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Add an internal note to a thread."""
+    result = execute_single(
+        """
+        INSERT INTO crm_email_internal_notes (thread_id, author_id, content)
+        VALUES (:tid, :aid, :content) RETURNING *
+        """,
+        {"tid": thread_id, "aid": profile["id"], "content": data.content},
+    )
+    return result
+
+
+@router.delete("/email/threads/{thread_id}/notes/{note_id}")
+async def delete_thread_note(
+    thread_id: str,
+    note_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Delete an internal note."""
+    result = execute_single(
+        "DELETE FROM crm_email_internal_notes WHERE id = :nid AND thread_id = :tid AND author_id = :aid RETURNING id",
+        {"nid": note_id, "tid": thread_id, "aid": profile["id"]},
+    )
+    if not result:
+        raise HTTPException(404, "Note not found or not yours")
+    return {"success": True}
+
+
+# ============================================================================
+# CRM Email — Labels
+# ============================================================================
+
+@router.get("/email/labels")
+async def list_email_labels(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """List labels for the current user's email account."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        return {"labels": []}
+    rows = execute_query(
+        "SELECT * FROM crm_email_labels WHERE account_id = :aid ORDER BY name ASC",
+        {"aid": account["id"]},
+    )
+    return {"labels": rows}
+
+
+class CreateLabelRequest(BaseModel):
+    name: str
+    color: Optional[str] = "#6B7280"
+
+
+@router.post("/email/labels")
+async def create_email_label(
+    data: CreateLabelRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Create a label."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(404, "No email account")
+    result = execute_single(
+        "INSERT INTO crm_email_labels (account_id, name, color) VALUES (:aid, :name, :color) RETURNING *",
+        {"aid": account["id"], "name": data.name, "color": data.color},
+    )
+    return result
+
+
+class UpdateLabelRequest(BaseModel):
+    name: Optional[str] = None
+    color: Optional[str] = None
+
+
+@router.put("/email/labels/{label_id}")
+async def update_email_label(
+    label_id: str,
+    data: UpdateLabelRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Update a label."""
+    updates = data.dict(exclude_none=True)
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+    set_clauses = [f"{k} = :{k}" for k in updates]
+    params = {"id": label_id, **updates}
+    result = execute_single(
+        f"UPDATE crm_email_labels SET {', '.join(set_clauses)} WHERE id = :id RETURNING *",
+        params,
+    )
+    if not result:
+        raise HTTPException(404, "Label not found")
+    return result
+
+
+@router.delete("/email/labels/{label_id}")
+async def delete_email_label(
+    label_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Delete a label."""
+    result = execute_single(
+        "DELETE FROM crm_email_labels WHERE id = :id RETURNING id",
+        {"id": label_id},
+    )
+    if not result:
+        raise HTTPException(404, "Label not found")
+    return {"success": True}
+
+
+@router.post("/email/threads/{thread_id}/labels/{label_id}")
+async def add_thread_label(
+    thread_id: str,
+    label_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Add a label to a thread."""
+    result = execute_single(
+        "INSERT INTO crm_email_thread_labels (thread_id, label_id) VALUES (:tid, :lid) ON CONFLICT DO NOTHING RETURNING *",
+        {"tid": thread_id, "lid": label_id},
+    )
+    return {"success": True}
+
+
+@router.delete("/email/threads/{thread_id}/labels/{label_id}")
+async def remove_thread_label(
+    thread_id: str,
+    label_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Remove a label from a thread."""
+    execute_single(
+        "DELETE FROM crm_email_thread_labels WHERE thread_id = :tid AND label_id = :lid RETURNING thread_id",
+        {"tid": thread_id, "lid": label_id},
+    )
+    return {"success": True}
+
+
+# ============================================================================
+# CRM Email — Quick Replies
+# ============================================================================
+
+@router.get("/email/quick-replies")
+async def list_quick_replies(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get system default quick replies + user's custom replies."""
+    rows = execute_query(
+        """
+        SELECT * FROM crm_email_quick_replies
+        WHERE profile_id IS NULL OR profile_id = :pid
+        ORDER BY is_system DESC, sort_order ASC, title ASC
+        """,
+        {"pid": profile["id"]},
+    )
+    return {"quick_replies": rows}
+
+
+class QuickReplyCreate(BaseModel):
+    title: str
+    body_text: str
+    body_html: Optional[str] = None
+    sort_order: Optional[int] = 0
+
+
+@router.post("/email/quick-replies")
+async def create_quick_reply(
+    data: QuickReplyCreate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Create a custom quick reply."""
+    result = execute_single(
+        """
+        INSERT INTO crm_email_quick_replies (profile_id, title, body_text, body_html, sort_order)
+        VALUES (:pid, :title, :body_text, :body_html, :sort_order) RETURNING *
+        """,
+        {"pid": profile["id"], "title": data.title, "body_text": data.body_text,
+         "body_html": data.body_html, "sort_order": data.sort_order},
+    )
+    return result
+
+
+class QuickReplyUpdate(BaseModel):
+    title: Optional[str] = None
+    body_text: Optional[str] = None
+    body_html: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+@router.put("/email/quick-replies/{reply_id}")
+async def update_quick_reply(
+    reply_id: str,
+    data: QuickReplyUpdate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Update a custom quick reply (only your own)."""
+    updates = data.dict(exclude_none=True)
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+    set_clauses = [f"{k} = :{k}" for k in updates]
+    params = {"id": reply_id, "pid": profile["id"], **updates}
+    result = execute_single(
+        f"UPDATE crm_email_quick_replies SET {', '.join(set_clauses)} WHERE id = :id AND profile_id = :pid RETURNING *",
+        params,
+    )
+    if not result:
+        raise HTTPException(404, "Quick reply not found or not yours")
+    return result
+
+
+@router.delete("/email/quick-replies/{reply_id}")
+async def delete_quick_reply(
+    reply_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Delete a custom quick reply."""
+    result = execute_single(
+        "DELETE FROM crm_email_quick_replies WHERE id = :id AND profile_id = :pid AND is_system = false RETURNING id",
+        {"id": reply_id, "pid": profile["id"]},
+    )
+    if not result:
+        raise HTTPException(404, "Quick reply not found or is a system default")
+    return {"success": True}
+
+
+# ============================================================================
+# CRM Email — Attachments
+# ============================================================================
+
+class AttachmentUploadRequest(BaseModel):
+    filename: str
+    content_type: str
+    size_bytes: int
+
+
+@router.post("/email/attachments/upload-url")
+async def get_attachment_upload_url(
+    data: AttachmentUploadRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Get a presigned S3 PUT URL for uploading an email attachment."""
+    import boto3
+    import uuid as uuid_mod
+    from app.core.config import settings
+
+    if data.size_bytes > 10 * 1024 * 1024:
+        raise HTTPException(400, "Maximum attachment size is 10MB")
+
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(404, "No email account")
+
+    ext = data.filename.rsplit(".", 1)[-1] if "." in data.filename else "bin"
+    attachment_id = str(uuid_mod.uuid4())
+    s3_key = f"email-attachments/{account['id']}/{attachment_id}.{ext}"
+    bucket = settings.AWS_S3_BACKLOT_FILES_BUCKET
+
+    s3 = boto3.client("s3", region_name="us-east-1")
+    presigned_url = s3.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": bucket, "Key": s3_key, "ContentType": data.content_type},
+        ExpiresIn=300,
+    )
+
+    # Create attachment record (not yet linked to a message)
+    att = execute_single(
+        """
+        INSERT INTO crm_email_attachments (id, message_id, filename, content_type, size_bytes, s3_key, s3_bucket)
+        VALUES (:id, NULL, :filename, :content_type, :size_bytes, :s3_key, :bucket) RETURNING *
+        """,
+        {"id": attachment_id, "filename": data.filename, "content_type": data.content_type,
+         "size_bytes": data.size_bytes, "s3_key": s3_key, "bucket": bucket},
+    )
+
+    return {"attachment": att, "upload_url": presigned_url}
+
+
+@router.get("/email/attachments/{attachment_id}/download")
+async def get_attachment_download_url(
+    attachment_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get a presigned S3 GET URL for downloading an attachment."""
+    import boto3
+    from app.core.config import settings
+
+    att = execute_single(
+        "SELECT * FROM crm_email_attachments WHERE id = :id",
+        {"id": attachment_id},
+    )
+    if not att or not att.get("s3_key"):
+        raise HTTPException(404, "Attachment not found")
+
+    bucket = att.get("s3_bucket") or settings.AWS_S3_BACKLOT_FILES_BUCKET
+    s3 = boto3.client("s3", region_name="us-east-1")
+    url = s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": att["s3_key"], "ResponseContentDisposition": f'attachment; filename="{att["filename"]}"'},
+        ExpiresIn=300,
+    )
+    return {"download_url": url, "filename": att["filename"]}
+
+
+# ============================================================================
+# CRM Email — Scheduled Sends
+# ============================================================================
+
+@router.get("/email/scheduled")
+async def list_scheduled_emails(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """List pending scheduled messages."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        return {"messages": []}
+
+    rows = execute_query(
+        """
+        SELECT m.*, t.subject as thread_subject, t.contact_email
+        FROM crm_email_messages m
+        JOIN crm_email_threads t ON t.id = m.thread_id
+        WHERE t.account_id = :aid AND m.status = 'scheduled' AND m.scheduled_at IS NOT NULL
+        ORDER BY m.scheduled_at ASC
+        """,
+        {"aid": account["id"]},
+    )
+    return {"messages": rows}
+
+
+@router.post("/email/messages/{message_id}/cancel-schedule")
+async def cancel_scheduled_email(
+    message_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Cancel a scheduled email."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(404, "No email account")
+
+    result = execute_single(
+        """
+        UPDATE crm_email_messages SET status = 'cancelled', scheduled_at = NULL
+        WHERE id = :mid AND status = 'scheduled'
+        AND thread_id IN (SELECT id FROM crm_email_threads WHERE account_id = :aid)
+        RETURNING *
+        """,
+        {"mid": message_id, "aid": account["id"]},
+    )
+    if not result:
+        raise HTTPException(404, "Scheduled message not found")
+    return result
+
+
+# ============================================================================
+# CRM Email — Open Tracking (Public endpoint)
+# ============================================================================
+
+@router.get("/email/track/{message_id}/open.png")
+async def track_email_open(
+    message_id: str,
+    request: Request,
+):
+    """Public tracking pixel endpoint. Returns 1x1 transparent PNG."""
+    import base64
+
+    # Record the open
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+
+    try:
+        execute_insert(
+            "INSERT INTO crm_email_opens (message_id, ip_address, user_agent) VALUES (:mid, :ip, :ua) RETURNING id",
+            {"mid": message_id, "ip": ip, "ua": ua},
+        )
+    except Exception:
+        pass
+
+    # 1x1 transparent PNG
+    pixel = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+    return Response(content=pixel, media_type="image/png", headers={"Cache-Control": "no-store, no-cache"})
+
+
+# ============================================================================
+# CRM Email — AI Assistant
+# ============================================================================
+
+class AIComposeRequest(BaseModel):
+    context: Optional[str] = None
+    tone: Optional[str] = "professional"  # professional, friendly, formal, casual
+    recipient_name: Optional[str] = None
+    topic: Optional[str] = None
+
+
+class AISummarizeRequest(BaseModel):
+    thread_id: str
+
+
+class AISentimentRequest(BaseModel):
+    thread_id: str
+
+
+async def _check_ai_rate_limit(profile_id: str):
+    """Check if user is within daily AI usage limit (50/day)."""
+    row = execute_single(
+        "SELECT COUNT(*) as cnt FROM crm_ai_usage WHERE profile_id = :pid AND used_at >= NOW() - INTERVAL '24 hours'",
+        {"pid": profile_id},
+    )
+    if row and row["cnt"] >= 50:
+        raise HTTPException(429, "Daily AI usage limit reached (50 per day)")
+
+
+async def _record_ai_usage(profile_id: str, feature: str):
+    execute_insert(
+        "INSERT INTO crm_ai_usage (profile_id, feature) VALUES (:pid, :feature) RETURNING id",
+        {"pid": profile_id, "feature": feature},
+    )
+
+
+@router.post("/email/ai/compose")
+async def ai_compose_email(
+    data: AIComposeRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Generate an email draft using AI."""
+    import anthropic
+    from app.core.config import settings
+
+    await _check_ai_rate_limit(profile["id"])
+
+    prompt = f"""Write a professional email{f' to {data.recipient_name}' if data.recipient_name else ''}.
+Tone: {data.tone}
+{f'Topic: {data.topic}' if data.topic else ''}
+{f'Context: {data.context}' if data.context else ''}
+
+Return ONLY the email body in HTML format (no subject, no salutation prefix if not appropriate).
+Keep it concise (2-4 paragraphs max). Use <p> tags for paragraphs."""
+
+    client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+    response = client.messages.create(
+        model="claude-sonnet-4-5-20250929",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    await _record_ai_usage(profile["id"], "compose")
+
+    body_html = response.content[0].text if response.content else ""
+    return {"body_html": body_html}
+
+
+@router.post("/email/ai/summarize")
+async def ai_summarize_thread(
+    data: AISummarizeRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Summarize a thread's conversation using AI."""
+    import anthropic
+    from app.core.config import settings
+
+    await _check_ai_rate_limit(profile["id"])
+
+    messages = execute_query(
+        "SELECT direction, from_address, body_text, created_at FROM crm_email_messages WHERE thread_id = :tid ORDER BY created_at ASC",
+        {"tid": data.thread_id},
+    )
+    if not messages:
+        raise HTTPException(404, "No messages in thread")
+
+    conversation = "\n\n".join([
+        f"[{m['direction'].upper()} from {m['from_address']} at {m['created_at']}]\n{m['body_text'] or '(no text)'}"
+        for m in messages
+    ])
+
+    client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+    response = client.messages.create(
+        model="claude-sonnet-4-5-20250929",
+        max_tokens=512,
+        messages=[{"role": "user", "content": f"Summarize this email thread in 2-3 bullet points:\n\n{conversation}"}],
+    )
+
+    await _record_ai_usage(profile["id"], "summarize")
+
+    summary = response.content[0].text if response.content else ""
+    return {"summary": summary}
+
+
+@router.post("/email/ai/sentiment")
+async def ai_analyze_sentiment(
+    data: AISentimentRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Analyze sentiment of inbound messages in a thread."""
+    import anthropic
+    from app.core.config import settings
+
+    await _check_ai_rate_limit(profile["id"])
+
+    messages = execute_query(
+        "SELECT body_text FROM crm_email_messages WHERE thread_id = :tid AND direction = 'inbound' ORDER BY created_at DESC LIMIT 5",
+        {"tid": data.thread_id},
+    )
+    if not messages:
+        return {"sentiment": "neutral", "confidence": 0}
+
+    text = "\n\n".join([m["body_text"] or "" for m in messages])
+
+    client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+    response = client.messages.create(
+        model="claude-sonnet-4-5-20250929",
+        max_tokens=100,
+        messages=[{"role": "user", "content": f'Analyze the sentiment of these inbound emails. Reply with ONLY a JSON object: {{"sentiment": "positive"|"neutral"|"negative", "confidence": 0.0-1.0}}\n\n{text}'}],
+    )
+
+    await _record_ai_usage(profile["id"], "sentiment")
+
+    import json as json_mod
+    try:
+        result = json_mod.loads(response.content[0].text)
+    except Exception:
+        result = {"sentiment": "neutral", "confidence": 0.5}
+
+    return result
+
+
+# ============================================================================
+# CRM Email — Sequences (Rep endpoints)
+# ============================================================================
+
+@router.get("/email/sequences")
+async def list_active_sequences(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """List active sequences available for reps to enroll contacts."""
+    rows = execute_query(
+        """
+        SELECT s.*, p.full_name as created_by_name,
+               (SELECT COUNT(*) FROM crm_email_sequence_steps st WHERE st.sequence_id = s.id) as step_count,
+               (SELECT COUNT(*) FROM crm_email_sequence_enrollments e WHERE e.sequence_id = s.id AND e.status = 'active') as active_enrollments
+        FROM crm_email_sequences s
+        JOIN profiles p ON p.id = s.created_by
+        WHERE s.is_active = true
+        ORDER BY s.name ASC
+        """,
+        {},
+    )
+    return {"sequences": rows}
+
+
+class EnrollRequest(BaseModel):
+    contact_id: str
+
+
+@router.post("/email/sequences/{sequence_id}/enroll")
+async def enroll_contact_in_sequence(
+    sequence_id: str,
+    data: EnrollRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Enroll a contact in a sequence."""
+    # Check DNC
+    contact = execute_single(
+        "SELECT id, do_not_email, email FROM crm_contacts WHERE id = :cid",
+        {"cid": data.contact_id},
+    )
+    if not contact:
+        raise HTTPException(404, "Contact not found")
+    if contact.get("do_not_email"):
+        raise HTTPException(400, "Contact is flagged as Do Not Email")
+
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(400, "No email account configured")
+
+    # Get first step delay
+    first_step = execute_single(
+        "SELECT delay_days FROM crm_email_sequence_steps WHERE sequence_id = :sid AND step_number = 1",
+        {"sid": sequence_id},
+    )
+    if not first_step:
+        raise HTTPException(400, "Sequence has no steps")
+
+    from datetime import timedelta
+    next_send = datetime.utcnow() + timedelta(days=first_step["delay_days"])
+
+    result = execute_single(
+        """
+        INSERT INTO crm_email_sequence_enrollments
+            (sequence_id, contact_id, account_id, current_step, status, next_send_at, enrolled_by)
+        VALUES (:sid, :cid, :aid, 1, 'active', :next_send, :enrolled_by)
+        ON CONFLICT (sequence_id, contact_id) DO NOTHING
+        RETURNING *
+        """,
+        {"sid": sequence_id, "cid": data.contact_id, "aid": account["id"],
+         "next_send": next_send, "enrolled_by": profile["id"]},
+    )
+    if not result:
+        raise HTTPException(409, "Contact is already enrolled in this sequence")
+
+    # Create activity for sequence enrollment
+    from app.api.crm_email_helpers import create_email_activity
+    seq = execute_single("SELECT name FROM crm_email_sequences WHERE id = :sid", {"sid": sequence_id})
+    seq_name = seq["name"] if seq else "Unknown Sequence"
+    create_email_activity(
+        contact_id=data.contact_id,
+        rep_id=profile["id"],
+        activity_type="sequence_enrolled",
+        subject=f"Enrolled in: {seq_name}",
+        description=f"Contact enrolled in email sequence '{seq_name}'",
+    )
+
+    return result
+
+
+@router.post("/email/sequences/{sequence_id}/unenroll")
+async def unenroll_contact_from_sequence(
+    sequence_id: str,
+    data: EnrollRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Unenroll a contact from a sequence."""
+    result = execute_single(
+        """
+        UPDATE crm_email_sequence_enrollments
+        SET status = 'unsubscribed', completed_at = NOW()
+        WHERE sequence_id = :sid AND contact_id = :cid AND status = 'active'
+        RETURNING *
+        """,
+        {"sid": sequence_id, "cid": data.contact_id},
+    )
+    if not result:
+        raise HTTPException(404, "Active enrollment not found")
+
+    # Create activity for sequence unenrollment
+    from app.api.crm_email_helpers import create_email_activity
+    seq = execute_single("SELECT name FROM crm_email_sequences WHERE id = :sid", {"sid": sequence_id})
+    seq_name = seq["name"] if seq else "Unknown Sequence"
+    create_email_activity(
+        contact_id=data.contact_id,
+        rep_id=profile["id"],
+        activity_type="sequence_unenrolled",
+        subject=f"Unenrolled from: {seq_name}",
+        description=f"Contact unenrolled from email sequence '{seq_name}'",
+    )
+
+    return result
+
+
+@router.get("/email/contacts/{contact_id}/sequences")
+async def get_contact_sequences(
+    contact_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get all sequence enrollments for a contact."""
+    rows = execute_query(
+        """
+        SELECT e.*, s.name as sequence_name, s.description as sequence_description,
+               p.full_name as enrolled_by_name
+        FROM crm_email_sequence_enrollments e
+        JOIN crm_email_sequences s ON s.id = e.sequence_id
+        JOIN profiles p ON p.id = e.enrolled_by
+        WHERE e.contact_id = :cid
+        ORDER BY e.enrolled_at DESC
+        """,
+        {"cid": contact_id},
+    )
+    return {"enrollments": rows}

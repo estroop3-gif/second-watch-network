@@ -122,6 +122,31 @@ import AdPlacements from "./pages/partner/AdPlacements";
 import Analytics from "./pages/partner/Analytics";
 import PartnerPromotions from "./pages/partner/Promotions";
 
+// CRM Pages
+import CRMLayout from "./pages/crm/Layout";
+import CRMDashboard from "./pages/crm/CRMDashboard";
+import CRMContacts from "./pages/crm/Contacts";
+import CRMContactDetail from "./pages/crm/ContactDetail";
+import CRMActivityCalendar from "./pages/crm/ActivityCalendar";
+import CRMInteractionTracker from "./pages/crm/InteractionTracker";
+import CRMTeamView from "./pages/crm/TeamView";
+import CRMReports from "./pages/crm/Reports";
+import CRMPipeline from "./pages/crm/Pipeline";
+import CRMDealDetail from "./pages/crm/DealDetail";
+import CRMLeads from "./pages/crm/Leads";
+import CRMGoals from "./pages/crm/Goals";
+import CRMKPIDashboard from "./pages/crm/KPIDashboard";
+import CRMCustomerLog from "./pages/crm/CustomerLog";
+import CRMRepReviews from "./pages/crm/RepReviews";
+import CRMAdminReviews from "./pages/crm/AdminReviews";
+import CRMCampaigns from "./pages/crm/Campaigns";
+import CRMCampaignDetail from "./pages/crm/CampaignDetail";
+import CRMDNCList from "./pages/crm/DNCList";
+import CRMEmail from "./pages/crm/Email";
+import CRMAdminLayout from "./pages/crm/AdminLayout";
+import CRMAdminEmail from "./pages/crm/AdminEmail";
+import { EmailComposeProvider } from "./context/EmailComposeContext";
+
 // Backlot Production Hub Pages
 import { BacklotHome, ProjectWorkspace, PublicProjectPage, PublicCallSheetPage, CollabApplicantsPage, ApplicantDetailPage } from "./pages/backlot";
 import React, { Suspense } from "react";
@@ -443,7 +468,51 @@ const App = () => (
                         <Route path="promotions" element={<PartnerPromotions />} />
                       </Route>
                     </Route>
-                    
+
+                    {/* CRM Routes (sales agents and admin) */}
+                    <Route path="/crm" element={<PermissionRoute requiredRoles={['sales_agent', 'admin', 'superadmin']} redirectTo="/dashboard" />}>
+                      <Route element={<EmailComposeProvider><CRMLayout /></EmailComposeProvider>}>
+                        <Route index element={<Navigate to="dashboard" replace />} />
+                        <Route path="dashboard" element={<CRMDashboard />} />
+                        <Route path="contacts" element={<CRMContacts />} />
+                        <Route path="contacts/:id" element={<CRMContactDetail />} />
+                        <Route path="email" element={<CRMEmail />} />
+                        <Route path="calendar" element={<CRMActivityCalendar />} />
+                        <Route path="interactions" element={<CRMInteractionTracker />} />
+                        <Route path="pipeline" element={<CRMPipeline />} />
+                        <Route path="deals/:id" element={<CRMDealDetail />} />
+                        <Route path="goals" element={<CRMGoals />} />
+                        <Route path="log" element={<CRMCustomerLog />} />
+                        <Route path="reviews" element={<CRMRepReviews />} />
+
+                        {/* Admin sub-layout with horizontal tabs */}
+                        <Route path="admin" element={<CRMAdminLayout />}>
+                          <Route index element={<CRMKPIDashboard />} />
+                          <Route path="team" element={<CRMTeamView />} />
+                          <Route path="leads" element={<CRMLeads />} />
+                          <Route path="campaigns" element={<CRMCampaigns />} />
+                          <Route path="campaigns/:id" element={<CRMCampaignDetail />} />
+                          <Route path="email" element={<CRMAdminEmail />} />
+                          <Route path="reviews" element={<CRMAdminReviews />} />
+                          <Route path="dnc" element={<CRMDNCList />} />
+                          <Route path="reports" element={<CRMReports />} />
+                        </Route>
+
+                        {/* Redirects from old admin routes */}
+                        <Route path="kpi" element={<Navigate to="/crm/admin" replace />} />
+                        <Route path="campaigns" element={<Navigate to="/crm/admin/campaigns" replace />} />
+                        <Route path="campaigns/:id" element={<Navigate to="/crm/admin/campaigns" replace />} />
+                        <Route path="templates" element={<Navigate to="/crm/admin/email" replace />} />
+                        <Route path="sequences" element={<Navigate to="/crm/admin/email" replace />} />
+                        <Route path="sequences/:id" element={<Navigate to="/crm/admin/email" replace />} />
+                        <Route path="email-analytics" element={<Navigate to="/crm/admin/email" replace />} />
+                        <Route path="dnc" element={<Navigate to="/crm/admin/dnc" replace />} />
+                        <Route path="team" element={<Navigate to="/crm/admin/team" replace />} />
+                        <Route path="reports" element={<Navigate to="/crm/admin/reports" replace />} />
+                        <Route path="leads" element={<Navigate to="/crm/admin/leads" replace />} />
+                      </Route>
+                    </Route>
+
                     {/* Admin Routes */}
                     <Route path="/admin" element={<PermissionRoute requiredRoles={['admin']} />}>
                       <Route element={<AdminLayout />}>

@@ -59,6 +59,9 @@ export const SECTION_COMPONENTS: SectionRegistry = {
   'order-jobs': lazy(() => import('../sections/order/OrderJobsSection')),
   'order-mentorship': lazy(() => import('../sections/order/MentorshipWidget')),
 
+  // CRM sections
+  'crm-overview': lazy(() => import('../sections/crm/CRMOverviewWidget')),
+
   // Admin sections
   'admin-stats': lazy(() => import('../sections/admin/AdminStatsWidget')),
   'admin-pending': lazy(() => import('../sections/admin/AdminPendingWidget')),

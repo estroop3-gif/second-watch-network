@@ -42,6 +42,7 @@ interface EnrichedProfileContextValue {
   isOrderMember: boolean;
   isLodgeOfficer: boolean;
   isModerator: boolean;
+  isSalesAgent: boolean;
 
   // Profile existence checks
   hasFilmmakerProfile: boolean;
@@ -130,6 +131,7 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
       is_premium: base.is_premium || authRoles.has('premium'),
       is_order_member: base.is_order_member || orderData?.hasProfile || authRoles.has('order_member'),
       is_lodge_officer: base.is_lodge_officer || orderData?.isOfficer || authRoles.has('lodge_officer'),
+      is_sales_agent: base.is_sales_agent || authRoles.has('sales_agent'),
     };
   }, [baseProfile, user, authRoles, hasFilmmakerProfile, hasPartnerProfile, orderData]);
 
@@ -147,6 +149,7 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
   const isPremium = hasRole(enrichedProfile, 'premium');
   const isOrderMember = hasRole(enrichedProfile, 'order_member');
   const isLodgeOfficer = hasRole(enrichedProfile, 'lodge_officer');
+  const isSalesAgent = hasRole(enrichedProfile, 'sales_agent');
 
   // Only block on profile loading - the enrichment queries (filmmaker, order) can
   // complete in the background. We have enough data from base profile to render.
@@ -169,6 +172,7 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
     isPremium,
     isOrderMember,
     isLodgeOfficer,
+    isSalesAgent,
     hasFilmmakerProfile: hasFilmmakerProfile || false,
     hasPartnerProfile: hasPartnerProfile || false,
     hasOrderProfile: orderData?.hasProfile || false,
@@ -209,6 +213,7 @@ export function useEnrichedProfileSafe() {
       isPremium: false,
       isOrderMember: false,
       isLodgeOfficer: false,
+      isSalesAgent: false,
       hasFilmmakerProfile: false,
       hasPartnerProfile: false,
       hasOrderProfile: false,

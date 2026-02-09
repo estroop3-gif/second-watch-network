@@ -58,8 +58,73 @@ Parameters:
     Type: String
     Default: second-watch-websocket-connections
     Description: DynamoDB table for WebSocket connections
+  ResendWebhookSigningSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Resend webhook signing secret for verifying inbound email webhooks
 
 Resources:
+  # ============================================================================
+  # Cognito Custom Email Sender (KMS Key + Lambda)
+  # ============================================================================
+  CognitoEmailSenderKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for Cognito Custom Email Sender code encryption
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowRootAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: AllowCognitoEncrypt
+            Effect: Allow
+            Principal:
+              Service: cognito-idp.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:GenerateDataKey*
+              - kms:ReEncrypt*
+              - kms:DescribeKey
+            Resource: "*"
+            Condition:
+              StringEquals:
+                "aws:SourceAccount": !Ref "AWS::AccountId"
+
+  CognitoEmailSenderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: cognito_email_sender/
+      Handler: handler.handler
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 256
+      Description: Cognito custom email sender — branded emails via Resend
+      Environment:
+        Variables:
+          RESEND_API_KEY: !Ref ResendApiKey
+          KMS_KEY_ARN: !GetAtt CognitoEmailSenderKmsKey.Arn
+          EMAIL_FROM_ADDRESS: noreply@secondwatch.network
+          EMAIL_FROM_NAME: Second Watch Network
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource: !GetAtt CognitoEmailSenderKmsKey.Arn
+
+  CognitoEmailSenderPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CognitoEmailSenderFunction
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}"
+
   # ============================================================================
   # HTTP API with CORS (ensures CORS headers on gateway-level errors like 502/503)
   # ============================================================================
@@ -114,6 +179,8 @@ Resources:
           STRIPE_WEBHOOK_SECRET: !Ref StripeWebhookSecret
           ANTHROPIC_API_KEY: !Ref AnthropicApiKey
           RESEND_API_KEY: !Ref ResendApiKey
+          RESEND_WEBHOOK_SIGNING_SECRET: !Ref ResendWebhookSigningSecret
+          EMAIL_PROVIDER: resend
       Events:
         ApiRoot:
           Type: HttpApi
@@ -316,3 +383,9 @@ Outputs:
   WebSocketConnectionsTableName:
     Description: "DynamoDB table for WebSocket connections"
     Value: !Ref WebSocketConnectionsTable
+  CognitoEmailSenderFunctionArn:
+    Description: "Cognito Custom Email Sender Lambda ARN"
+    Value: !GetAtt CognitoEmailSenderFunction.Arn
+  CognitoEmailSenderKmsKeyArn:
+    Description: "KMS Key ARN for Cognito email code encryption"
+    Value: !GetAtt CognitoEmailSenderKmsKey.Arn

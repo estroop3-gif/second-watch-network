@@ -1,5 +1,5 @@
 import { useAuth } from "@/context/AuthContext";
-import { Navigate, Outlet } from "react-router-dom";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
 import AppHeader from "@/components/AppHeader";
 import Footer from "@/components/landing/Footer";
 import { AlphaTrackingProvider } from "@/context/AlphaTrackingContext";
@@ -8,6 +8,8 @@ import { CartDrawer } from "@/components/gear/cart";
 
 const AuthenticatedLayout = () => {
   const { user, loading } = useAuth();
+  const location = useLocation();
+  const hideFooter = location.pathname.startsWith('/crm');
 
   if (loading) {
     return <div className="bg-charcoal-black min-h-screen" />;
@@ -24,7 +26,7 @@ const AuthenticatedLayout = () => {
         <main className="flex-grow pt-20 flex flex-col">
           <Outlet />
         </main>
-        <Footer />
+        {!hideFooter && <Footer />}
         <AlphaTesterBanner />
         <CartDrawer />
       </div>

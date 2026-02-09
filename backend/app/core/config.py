@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     # Email Configuration (Resend, SendGrid, or SMTP)
     EMAIL_PROVIDER: str = os.getenv("EMAIL_PROVIDER", "resend")  # resend, sendgrid, smtp
     RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
+    RESEND_WEBHOOK_SIGNING_SECRET: str = os.getenv("RESEND_WEBHOOK_SIGNING_SECRET", "")
     SENDGRID_API_KEY: str = os.getenv("SENDGRID_API_KEY", "")
     SMTP_HOST: str = os.getenv("SMTP_HOST", "")
     SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))

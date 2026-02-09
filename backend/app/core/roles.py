@@ -27,6 +27,7 @@ class RoleType(str, Enum):
     MODERATOR = "moderator"
     LODGE_OFFICER = "lodge_officer"
     ORDER_MEMBER = "order_member"
+    SALES_AGENT = "sales_agent"
     PARTNER = "partner"
     FILMMAKER = "filmmaker"
     PREMIUM = "premium"
@@ -40,6 +41,7 @@ ROLE_HIERARCHY: List[RoleType] = [
     RoleType.MODERATOR,
     RoleType.LODGE_OFFICER,
     RoleType.ORDER_MEMBER,
+    RoleType.SALES_AGENT,
     RoleType.PARTNER,
     RoleType.FILMMAKER,
     RoleType.PREMIUM,
@@ -55,6 +57,7 @@ PROFILE_ROLE_FIELDS = {
     "is_moderator": RoleType.MODERATOR,
     "is_lodge_officer": RoleType.LODGE_OFFICER,
     "is_order_member": RoleType.ORDER_MEMBER,
+    "is_sales_agent": RoleType.SALES_AGENT,
     "is_partner": RoleType.PARTNER,
     "is_filmmaker": RoleType.FILMMAKER,
     "is_premium": RoleType.PREMIUM,

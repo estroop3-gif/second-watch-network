@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useProfile } from '@/hooks/useProfile';
 import { usePermissions } from '@/hooks/usePermissions';
-import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Trophy, Crown, Handshake, Wrench, Package, Building2, Home, Clapperboard, Send, Inbox } from 'lucide-react';
+import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Trophy, Crown, Handshake, Wrench, Package, Building2, Home, Clapperboard, Send, Inbox, Contact } from 'lucide-react';
 import { track } from '@/utils/telemetry';
 
 interface UserNavMenuItemsProps {
@@ -37,11 +37,13 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
   const isFilmmaker = isFilmmakerRole || isFilmmakerProfile;
   const hasOnboarded = profile?.has_completed_filmmaker_onboarding === true;
 
+  const isSalesAgent = hasRole('sales_agent');
   const showAdminLink = isAdmin || isSuperadmin;
   const showPartnerLink = isPartner || isAdmin || isSuperadmin;
   const showOnboardingLink = isFilmmaker && !hasOnboarded;
   const canSubmitAndManageSubmissions = isFilmmakerRole || isAdmin || isSuperadmin;
   const showOrderLink = isOrderMember || isLodgeOfficer || isAdmin || isSuperadmin;
+  const showCRMLink = isSalesAgent || isAdmin || isSuperadmin;
 
   // Full Gear House is for non-free users (filmmaker, premium, admin, etc.)
   // Free users use My Gear (lite) instead
@@ -56,7 +58,14 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
           <span>Admin Panel</span>
         </MenuItem>
       )}
-      
+
+      {showCRMLink && (
+        <MenuItem to="/crm/dashboard" onClick={onLinkClick}>
+          <Contact className="mr-3 h-5 w-5" />
+          <span>Sales Dashboard</span>
+        </MenuItem>
+      )}
+
       {showPartnerLink && (
         <>
           <div className="text-sm font-semibold text-muted-gray mt-4 mb-2 px-2">Sponsor Tools</div>

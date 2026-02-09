@@ -94,7 +94,7 @@ class EmailService:
         if provider == "ses" or provider == "aws":
             return await EmailService._send_via_ses(to_emails, subject, html_content, text_content, reply_to, log_context)
         elif provider == "resend":
-            return await EmailService._send_via_resend(to_emails, subject, html_content, text_content, reply_to)
+            return await EmailService._send_via_resend(to_emails, subject, html_content, text_content, reply_to, log_context)
         elif provider == "sendgrid":
             return await EmailService._send_via_sendgrid(to_emails, subject, html_content, text_content, reply_to)
         elif provider == "smtp":
@@ -224,7 +224,8 @@ class EmailService:
         subject: str,
         html_content: str,
         text_content: Optional[str] = None,
-        reply_to: Optional[str] = None
+        reply_to: Optional[str] = None,
+        log_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Send email using Resend API"""
         if not settings.RESEND_API_KEY:
@@ -235,8 +236,11 @@ class EmailService:
             import resend
             resend.api_key = settings.RESEND_API_KEY
 
+            from_address = settings.EMAIL_FROM_ADDRESS
+            from_name = settings.EMAIL_FROM_NAME
+
             params = {
-                "from": f"{settings.EMAIL_FROM_NAME} <{settings.EMAIL_FROM_ADDRESS}>",
+                "from": f"{from_name} <{from_address}>",
                 "to": to_emails,
                 "subject": subject,
                 "html": html_content,
@@ -248,11 +252,28 @@ class EmailService:
                 params["reply_to"] = reply_to
 
             result = resend.Emails.send(params)
+            message_id = result.get("id")
+
+            # Log email to database for each recipient
+            if log_context and message_id:
+                for recipient in to_emails:
+                    await log_email_to_database(
+                        message_id=message_id,
+                        sender_email=from_address,
+                        sender_name=from_name,
+                        recipient_email=recipient,
+                        subject=subject,
+                        email_type=log_context.get("email_type"),
+                        source_service=log_context.get("source_service", "app"),
+                        source_action=log_context.get("source_action"),
+                        source_user_id=log_context.get("source_user_id"),
+                        source_reference_id=log_context.get("source_reference_id"),
+                    )
 
             return {
                 "success": True,
                 "provider": "resend",
-                "message_id": result.get("id"),
+                "message_id": message_id,
                 "recipients": len(to_emails)
             }
         except ImportError:

@@ -221,6 +221,21 @@ async def require_filmmaker(profile: Dict[str, Any] = Depends(get_user_profile))
     return profile
 
 
+async def require_sales_agent(profile: Dict[str, Any] = Depends(get_user_profile)) -> Dict[str, Any]:
+    """
+    Require sales agent, admin, or superadmin role for CRM access.
+
+    Raises:
+        HTTPException: If user is not a sales agent or admin
+    """
+    if not has_any_role(profile, [RoleType.SALES_AGENT, RoleType.ADMIN, RoleType.SUPERADMIN]):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sales agent access required"
+        )
+    return profile
+
+
 async def require_partner(profile: Dict[str, Any] = Depends(get_user_profile)) -> Dict[str, Any]:
     """
     Require partner role for access.

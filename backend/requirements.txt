@@ -22,3 +22,6 @@ weasyprint>=62.0
 reportlab>=4.0.0
 python-barcode>=0.15.1
 qrcode[pil]>=7.4.0
+resend>=2.21.0
+anthropic>=0.45.0
+apscheduler>=3.10.0

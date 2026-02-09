@@ -25,6 +25,7 @@ export const usePermissions = () => {
     if (enrichedProfile.isOrderMember) userRolesSet.add('order_member');
     if (enrichedProfile.isLodgeOfficer) userRolesSet.add('lodge_officer');
     if (enrichedProfile.isModerator) userRolesSet.add('moderator');
+    if (enrichedProfile.isSalesAgent) userRolesSet.add('sales_agent');
   }
 
   const roles = Array.from(userRolesSet);

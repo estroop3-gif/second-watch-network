@@ -20,6 +20,7 @@ export type RoleType =
   | 'moderator'
   | 'lodge_officer'
   | 'order_member'
+  | 'sales_agent'
   | 'partner'
   | 'filmmaker'
   | 'premium'
@@ -77,12 +78,20 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     priority: 5,
     description: 'Member of The Second Watch Order',
   },
+  sales_agent: {
+    role: 'sales_agent',
+    label: 'Sales Agent',
+    shortLabel: 'SALES',
+    cssClass: 'bg-teal-500 text-white font-bold',
+    priority: 6,
+    description: 'Sales team member',
+  },
   partner: {
     role: 'partner',
     label: 'Partner',
     shortLabel: 'PARTNER',
     cssClass: 'bg-sky-500 text-white font-bold',
-    priority: 6,
+    priority: 7,
     description: 'Business partner or sponsor',
   },
   filmmaker: {
@@ -90,7 +99,7 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     label: 'Filmmaker',
     shortLabel: 'FILMMAKER',
     cssClass: 'bg-rose-500 text-white font-bold',
-    priority: 7,
+    priority: 8,
     description: 'Verified content creator',
   },
   premium: {
@@ -98,7 +107,7 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     label: 'Premium',
     shortLabel: 'PREMIUM',
     cssClass: 'bg-gradient-to-r from-indigo-500 to-purple-500 text-white font-bold',
-    priority: 8,
+    priority: 9,
     description: 'Premium subscriber',
   },
   free: {
@@ -106,7 +115,7 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     label: 'Free',
     shortLabel: 'FREE',
     cssClass: 'bg-slate-600 text-slate-200',
-    priority: 9,
+    priority: 10,
     description: 'Free tier member',
   },
 };
@@ -118,6 +127,7 @@ export const ROLE_HIERARCHY: RoleType[] = [
   'moderator',
   'lodge_officer',
   'order_member',
+  'sales_agent',
   'partner',
   'filmmaker',
   'premium',
@@ -131,6 +141,7 @@ export const PROFILE_ROLE_FIELDS: Record<string, RoleType> = {
   is_moderator: 'moderator',
   is_lodge_officer: 'lodge_officer',
   is_order_member: 'order_member',
+  is_sales_agent: 'sales_agent',
   is_partner: 'partner',
   is_filmmaker: 'filmmaker',
   is_premium: 'premium',
@@ -150,6 +161,7 @@ export interface ProfileWithRoles {
   is_moderator?: boolean;
   is_order_member?: boolean;
   is_lodge_officer?: boolean;
+  is_sales_agent?: boolean;
   is_partner?: boolean;
   is_filmmaker?: boolean;
   is_premium?: boolean;

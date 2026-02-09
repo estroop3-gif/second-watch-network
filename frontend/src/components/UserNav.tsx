@@ -13,7 +13,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
-import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Landmark, Send, Inbox, Clapperboard, Crown, Handshake, Wrench, Building2, Home } from 'lucide-react';
+import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Landmark, Send, Inbox, Clapperboard, Crown, Handshake, Wrench, Building2, Home, Contact } from 'lucide-react';
 import { useLivePermissions, BADGE_CONFIG, BadgeType } from '@/hooks/useLivePermissions';
 import { cn } from '@/lib/utils';
 
@@ -49,6 +49,7 @@ export const UserNav = () => {
     isPartner,
     isOrderMember,
     isLodgeOfficer,
+    isSalesAgent,
   } = useEnrichedProfile();
 
   // Use live permissions for the badge (updates in real-time when role changes)
@@ -81,6 +82,7 @@ export const UserNav = () => {
   const showAdminLink = isAdmin || isSuperadmin;
   const showPartnerLink = isPartner || isAdmin || isSuperadmin;
   const showOrderLink = isOrderMember || isLodgeOfficer || isAdmin || isSuperadmin;
+  const showCRMLink = isSalesAgent || isAdmin || isSuperadmin;
   const canSubmitAndManageSubmissions = isFilmmaker || isAdmin || isSuperadmin;
 
   // Check for filmmaker onboarding
@@ -119,6 +121,15 @@ export const UserNav = () => {
             <Link to="/admin/dashboard">
               <Shield className="mr-2 h-4 w-4" />
               <span>Admin Panel</span>
+            </Link>
+          </DropdownMenuItem>
+        )}
+
+        {showCRMLink && (
+          <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
+            <Link to="/crm/dashboard">
+              <Contact className="mr-2 h-4 w-4" />
+              <span>Sales Dashboard</span>
             </Link>
           </DropdownMenuItem>
         )}

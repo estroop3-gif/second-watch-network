@@ -72,6 +72,7 @@ from app.api.gear import router as gear_router  # Gear House - Equipment managem
 from app.api.set_house import router as set_house_router  # Set House - Space/location management
 from app.api import org_messages  # Organization messaging
 from app.api import organization_backlot  # Organization Backlot seat management
+from app.api import crm, crm_admin  # CRM - Sales & Customer Relationship Management
 
 # Configure structured logging
 setup_logging(level="INFO")
@@ -165,8 +166,20 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler for startup/shutdown events."""
     # Startup
     await on_startup()
+
+    # Start email scheduler (scheduled sends, snooze, sequences)
+    email_scheduler = None
+    try:
+        from app.jobs.email_scheduler import start_email_scheduler
+        email_scheduler = start_email_scheduler()
+    except Exception as e:
+        logger.warning(f"Email scheduler failed to start: {e}")
+
     yield
-    # Shutdown (add cleanup tasks here if needed)
+
+    # Shutdown
+    if email_scheduler:
+        email_scheduler.shutdown(wait=False)
 
 # Create FastAPI app
 app = FastAPI(
@@ -386,6 +399,10 @@ app.include_router(gear_router, prefix=f"{settings.API_V1_PREFIX}/gear", tags=["
 app.include_router(set_house_router, prefix=f"{settings.API_V1_PREFIX}/set-house", tags=["Set House"])
 
 app.include_router(org_messages.router, prefix=settings.API_V1_PREFIX, tags=["Organization Messages"])
+
+# CRM - Sales & Customer Relationship Management
+app.include_router(crm.router, prefix=f"{settings.API_V1_PREFIX}/crm", tags=["CRM"])
+app.include_router(crm_admin.router, prefix=f"{settings.API_V1_PREFIX}/admin/crm", tags=["CRM Admin"])
 
 # Mount Socket.IO for real-time communications
 try:

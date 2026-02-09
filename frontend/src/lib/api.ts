@@ -4475,6 +4475,762 @@ class APIClient {
       bio?: string
     }>>(`/api/v1/order/directory${queryString ? `?${queryString}` : ''}`)
   }
+
+  // ============================================================================
+  // CRM — Contacts, Activities, Interactions
+  // ============================================================================
+
+  async getCRMContacts(params?: {
+    search?: string
+    temperature?: string
+    status?: string
+    tag?: string
+    assigned_rep_id?: string
+    sort_by?: string
+    sort_order?: string
+    limit?: number
+    offset?: number
+  }) {
+    const query = new URLSearchParams()
+    if (params?.search) query.append('search', params.search)
+    if (params?.temperature) query.append('temperature', params.temperature)
+    if (params?.status) query.append('status', params.status)
+    if (params?.tag) query.append('tag', params.tag)
+    if (params?.assigned_rep_id) query.append('assigned_rep_id', params.assigned_rep_id)
+    if (params?.sort_by) query.append('sort_by', params.sort_by)
+    if (params?.sort_order) query.append('sort_order', params.sort_order)
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.offset !== undefined) query.append('offset', params.offset.toString())
+    const qs = query.toString()
+    return this.get<{ contacts: any[]; total: number; limit: number; offset: number }>(
+      `/api/v1/crm/contacts${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  async getCRMContact(id: string) {
+    return this.get<any>(`/api/v1/crm/contacts/${id}`)
+  }
+
+  async createCRMContact(data: any) {
+    return this.post<any>('/api/v1/crm/contacts', data)
+  }
+
+  async updateCRMContact(id: string, data: any) {
+    return this.put<any>(`/api/v1/crm/contacts/${id}`, data)
+  }
+
+  async deleteCRMContact(id: string) {
+    return this.delete<any>(`/api/v1/crm/contacts/${id}`)
+  }
+
+  async linkCRMContactProfile(contactId: string, profileId: string) {
+    return this.post<any>(`/api/v1/crm/contacts/${contactId}/link-profile`, { profile_id: profileId })
+  }
+
+  async getCRMActivities(params?: {
+    contact_id?: string
+    rep_id?: string
+    activity_type?: string
+    date_from?: string
+    date_to?: string
+    limit?: number
+    offset?: number
+  }) {
+    const query = new URLSearchParams()
+    if (params?.contact_id) query.append('contact_id', params.contact_id)
+    if (params?.rep_id) query.append('rep_id', params.rep_id)
+    if (params?.activity_type) query.append('activity_type', params.activity_type)
+    if (params?.date_from) query.append('date_from', params.date_from)
+    if (params?.date_to) query.append('date_to', params.date_to)
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.offset !== undefined) query.append('offset', params.offset.toString())
+    const qs = query.toString()
+    return this.get<{ activities: any[] }>(`/api/v1/crm/activities${qs ? `?${qs}` : ''}`)
+  }
+
+  async createCRMActivity(data: any) {
+    return this.post<any>('/api/v1/crm/activities', data)
+  }
+
+  async updateCRMActivity(id: string, data: any) {
+    return this.put<any>(`/api/v1/crm/activities/${id}`, data)
+  }
+
+  async deleteCRMActivity(id: string) {
+    return this.delete<any>(`/api/v1/crm/activities/${id}`)
+  }
+
+  async getCRMActivityCalendar(month?: number, year?: number) {
+    const query = new URLSearchParams()
+    if (month !== undefined) query.append('month', month.toString())
+    if (year !== undefined) query.append('year', year.toString())
+    const qs = query.toString()
+    return this.get<{ calendar: Record<string, any[]>; follow_ups: Record<string, any[]>; month: number; year: number }>(
+      `/api/v1/crm/activities/calendar${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  async getCRMFollowUps() {
+    return this.get<{ follow_ups: any[] }>('/api/v1/crm/activities/follow-ups')
+  }
+
+  async getCRMMyInteractionsToday() {
+    return this.get<any>('/api/v1/crm/interactions/my-today')
+  }
+
+  async incrementCRMInteraction(interactionType: string) {
+    return this.post<any>('/api/v1/crm/interactions/increment', { interaction_type: interactionType })
+  }
+
+  async decrementCRMInteraction(interactionType: string) {
+    return this.post<any>('/api/v1/crm/interactions/decrement', { interaction_type: interactionType })
+  }
+
+  // CRM Admin
+  async getCRMReps() {
+    return this.get<{ reps: any[] }>('/api/v1/admin/crm/reps')
+  }
+
+  async getCRMAdminInteractions(params?: {
+    date_from?: string
+    date_to?: string
+    rep_id?: string
+  }) {
+    const query = new URLSearchParams()
+    if (params?.date_from) query.append('date_from', params.date_from)
+    if (params?.date_to) query.append('date_to', params.date_to)
+    if (params?.rep_id) query.append('rep_id', params.rep_id)
+    const qs = query.toString()
+    return this.get<{ by_rep: any[]; team_totals: any }>(
+      `/api/v1/admin/crm/interactions${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  async assignCRMContact(contactId: string, repId: string) {
+    return this.post<any>(`/api/v1/admin/crm/contacts/${contactId}/assign`, { rep_id: repId })
+  }
+
+  async bulkAssignCRMContacts(contactIds: string[], repId: string) {
+    return this.post<any>('/api/v1/admin/crm/contacts/bulk-assign', {
+      contact_ids: contactIds,
+      rep_id: repId,
+    })
+  }
+
+  // ============================================================================
+  // CRM — Deals & Pipeline
+  // ============================================================================
+
+  async getCRMDeals(params?: {
+    contact_id?: string
+    stage?: string
+    product_type?: string
+    assigned_rep_id?: string
+    search?: string
+    sort_by?: string
+    sort_order?: string
+    limit?: number
+    offset?: number
+  }) {
+    const query = new URLSearchParams()
+    if (params?.contact_id) query.append('contact_id', params.contact_id)
+    if (params?.stage) query.append('stage', params.stage)
+    if (params?.product_type) query.append('product_type', params.product_type)
+    if (params?.assigned_rep_id) query.append('assigned_rep_id', params.assigned_rep_id)
+    if (params?.search) query.append('search', params.search)
+    if (params?.sort_by) query.append('sort_by', params.sort_by)
+    if (params?.sort_order) query.append('sort_order', params.sort_order)
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.offset !== undefined) query.append('offset', params.offset.toString())
+    const qs = query.toString()
+    return this.get<{ deals: any[]; total: number; limit: number; offset: number }>(
+      `/api/v1/crm/deals${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  async getCRMDeal(id: string) {
+    return this.get<any>(`/api/v1/crm/deals/${id}`)
+  }
+
+  async createCRMDeal(data: any) {
+    return this.post<any>('/api/v1/crm/deals', data)
+  }
+
+  async updateCRMDeal(id: string, data: any) {
+    return this.put<any>(`/api/v1/crm/deals/${id}`, data)
+  }
+
+  async changeCRMDealStage(id: string, data: { stage: string; notes?: string; close_reason?: string }) {
+    return this.patch<any>(`/api/v1/crm/deals/${id}/stage`, data)
+  }
+
+  async deleteCRMDeal(id: string) {
+    return this.delete<any>(`/api/v1/crm/deals/${id}`)
+  }
+
+  async getCRMPipeline(params?: {
+    assigned_rep_id?: string
+    product_type?: string
+  }) {
+    const query = new URLSearchParams()
+    if (params?.assigned_rep_id) query.append('assigned_rep_id', params.assigned_rep_id)
+    if (params?.product_type) query.append('product_type', params.product_type)
+    const qs = query.toString()
+    return this.get<{ pipeline: Record<string, any[]> }>(
+      `/api/v1/crm/deals/pipeline${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  async getCRMPipelineStats(params?: { assigned_rep_id?: string }) {
+    const query = new URLSearchParams()
+    if (params?.assigned_rep_id) query.append('assigned_rep_id', params.assigned_rep_id)
+    const qs = query.toString()
+    return this.get<{ stages: any[] }>(
+      `/api/v1/crm/deals/pipeline/stats${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  // CRM Admin — Deals
+  async getCRMLeads(params?: { limit?: number; offset?: number }) {
+    const query = new URLSearchParams()
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.offset !== undefined) query.append('offset', params.offset.toString())
+    const qs = query.toString()
+    return this.get<{ leads: any[]; total: number; limit: number; offset: number }>(
+      `/api/v1/admin/crm/leads${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  async assignCRMDeal(dealId: string, repId: string) {
+    return this.post<any>(`/api/v1/admin/crm/deals/${dealId}/assign`, { rep_id: repId })
+  }
+
+  async getCRMPipelineForecast(monthsAhead?: number) {
+    const query = new URLSearchParams()
+    if (monthsAhead !== undefined) query.append('months_ahead', monthsAhead.toString())
+    const qs = query.toString()
+    return this.get<{ forecast: any[]; summary: any }>(
+      `/api/v1/admin/crm/pipeline/forecast${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  // ============================================================================
+  // CRM — Goals & KPIs
+  // ============================================================================
+
+  async getCRMMyGoals(params?: { period_type?: string }) {
+    const query = new URLSearchParams()
+    if (params?.period_type) query.append('period_type', params.period_type)
+    const qs = query.toString()
+    return this.get<{ goals: any[] }>(`/api/v1/crm/goals/my${qs ? `?${qs}` : ''}`)
+  }
+
+  async createCRMGoal(data: any) {
+    return this.post<any>('/api/v1/admin/crm/goals', data)
+  }
+
+  async updateCRMGoal(id: string, data: any) {
+    return this.put<any>(`/api/v1/admin/crm/goals/${id}`, data)
+  }
+
+  async deleteCRMGoal(id: string) {
+    return this.delete<any>(`/api/v1/admin/crm/goals/${id}`)
+  }
+
+  async setCRMGoalOverride(id: string, data: { manual_override: number | null }) {
+    return this.put<any>(`/api/v1/crm/goals/${id}/override`, data)
+  }
+
+  async getCRMKPIOverview(params?: { date_from?: string; date_to?: string }) {
+    const query = new URLSearchParams()
+    if (params?.date_from) query.append('date_from', params.date_from)
+    if (params?.date_to) query.append('date_to', params.date_to)
+    const qs = query.toString()
+    return this.get<any>(`/api/v1/admin/crm/kpi/overview${qs ? `?${qs}` : ''}`)
+  }
+
+  async getCRMRepPerformance(params?: { date_from?: string; date_to?: string }) {
+    const query = new URLSearchParams()
+    if (params?.date_from) query.append('date_from', params.date_from)
+    if (params?.date_to) query.append('date_to', params.date_to)
+    const qs = query.toString()
+    return this.get<{ reps: any[] }>(`/api/v1/admin/crm/kpi/rep-performance${qs ? `?${qs}` : ''}`)
+  }
+
+  async getCRMKPITrends(params?: { period?: string; months_back?: number }) {
+    const query = new URLSearchParams()
+    if (params?.period) query.append('period', params.period)
+    if (params?.months_back !== undefined) query.append('months_back', params.months_back.toString())
+    const qs = query.toString()
+    return this.get<{ trends: any[]; period: string }>(`/api/v1/admin/crm/kpi/trends${qs ? `?${qs}` : ''}`)
+  }
+
+  async getCRMLeaderboard(params?: { metric?: string; date_from?: string; date_to?: string }) {
+    const query = new URLSearchParams()
+    if (params?.metric) query.append('metric', params.metric)
+    if (params?.date_from) query.append('date_from', params.date_from)
+    if (params?.date_to) query.append('date_to', params.date_to)
+    const qs = query.toString()
+    return this.get<{ leaderboard: any[]; metric: string }>(
+      `/api/v1/admin/crm/kpi/leaderboard${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  // ============================================================================
+  // CRM — Customer Log & Reviews
+  // ============================================================================
+
+  async getCRMContactLog(contactId: string, status?: string) {
+    const query = new URLSearchParams()
+    if (status) query.append('status', status)
+    const qs = query.toString()
+    return this.get<{ log_entries: any[] }>(`/api/v1/crm/contacts/${contactId}/log${qs ? `?${qs}` : ''}`)
+  }
+
+  async createCRMLogEntry(contactId: string, data: any) {
+    return this.post<any>(`/api/v1/crm/contacts/${contactId}/log`, data)
+  }
+
+  async updateCRMLogEntry(logId: string, data: any) {
+    return this.put<any>(`/api/v1/crm/log/${logId}`, data)
+  }
+
+  async getCRMOpenLogEntries() {
+    return this.get<{ log_entries: any[] }>('/api/v1/crm/log/open')
+  }
+
+  async getCRMMyReviews() {
+    return this.get<{ reviews: any[] }>('/api/v1/crm/reviews/my')
+  }
+
+  // Admin reviews
+  async getCRMAdminReviews(params?: { rep_id?: string; review_type?: string; limit?: number; offset?: number }) {
+    const query = new URLSearchParams()
+    if (params?.rep_id) query.append('rep_id', params.rep_id)
+    if (params?.review_type) query.append('review_type', params.review_type)
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.offset !== undefined) query.append('offset', params.offset.toString())
+    const qs = query.toString()
+    return this.get<{ reviews: any[]; total: number }>(`/api/v1/admin/crm/reviews${qs ? `?${qs}` : ''}`)
+  }
+
+  async createCRMReview(data: any) {
+    return this.post<any>('/api/v1/admin/crm/reviews', data)
+  }
+
+  async updateCRMReview(id: string, data: any) {
+    return this.put<any>(`/api/v1/admin/crm/reviews/${id}`, data)
+  }
+
+  async deleteCRMReview(id: string) {
+    return this.delete<any>(`/api/v1/admin/crm/reviews/${id}`)
+  }
+
+  async escalateCRMLogEntry(logId: string) {
+    return this.post<any>(`/api/v1/admin/crm/log/${logId}/escalate`, {})
+  }
+
+  // ============================================================================
+  // CRM — Email Campaigns & DNC
+  // ============================================================================
+
+  async updateCRMContactDNC(contactId: string, data: {
+    do_not_email?: boolean
+    do_not_call?: boolean
+    do_not_text?: boolean
+    status?: string
+  }) {
+    return this.patch<any>(`/api/v1/crm/contacts/${contactId}/dnc`, data)
+  }
+
+  async getCRMCampaigns(params?: { status?: string; limit?: number; offset?: number }) {
+    const query = new URLSearchParams()
+    if (params?.status) query.append('status', params.status)
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.offset !== undefined) query.append('offset', params.offset.toString())
+    const qs = query.toString()
+    return this.get<{ campaigns: any[]; total: number }>(
+      `/api/v1/admin/crm/campaigns${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  async getCRMCampaign(id: string) {
+    return this.get<any>(`/api/v1/admin/crm/campaigns/${id}`)
+  }
+
+  async createCRMCampaign(data: any) {
+    return this.post<any>('/api/v1/admin/crm/campaigns', data)
+  }
+
+  async updateCRMCampaign(id: string, data: any) {
+    return this.put<any>(`/api/v1/admin/crm/campaigns/${id}`, data)
+  }
+
+  async deleteCRMCampaign(id: string) {
+    return this.delete<any>(`/api/v1/admin/crm/campaigns/${id}`)
+  }
+
+  async scheduleCRMCampaign(id: string) {
+    return this.post<any>(`/api/v1/admin/crm/campaigns/${id}/schedule`, {})
+  }
+
+  async cancelCRMCampaign(id: string) {
+    return this.post<any>(`/api/v1/admin/crm/campaigns/${id}/cancel`, {})
+  }
+
+  async sendCRMCampaignNow(id: string) {
+    return this.post<any>(`/api/v1/admin/crm/campaigns/${id}/send-now`, {})
+  }
+
+  async getCRMCampaignSenders(id: string) {
+    return this.get<{ senders: any[] }>(`/api/v1/admin/crm/campaigns/${id}/senders`)
+  }
+
+  async updateCRMCampaignSenders(id: string, accountIds: string[]) {
+    return this.put<{ senders: any[] }>(`/api/v1/admin/crm/campaigns/${id}/senders`, { account_ids: accountIds })
+  }
+
+  async previewCRMCampaignTargeting(id: string) {
+    return this.get<{ total: number; sample: any[] }>(`/api/v1/admin/crm/campaigns/${id}/preview-targeting`)
+  }
+
+  // CRM — Email System (Individual Rep Inbox)
+
+  async getCRMEmailAccount() {
+    return this.get<any>('/api/v1/crm/email/account')
+  }
+
+  async updateCRMEmailSignature(signatureHtml: string) {
+    return this.put<any>('/api/v1/crm/email/account/signature', { signature_html: signatureHtml })
+  }
+
+  async getCRMEmailInbox(params?: {
+    unread_only?: boolean; archived?: boolean; starred_only?: boolean;
+    snoozed?: boolean; deleted?: boolean; label_id?: string;
+    sort_by?: string; all_threads?: boolean;
+    search?: string; limit?: number; offset?: number
+  }) {
+    const query = new URLSearchParams()
+    if (params?.unread_only) query.append('unread_only', 'true')
+    if (params?.archived) query.append('archived', 'true')
+    if (params?.starred_only) query.append('starred_only', 'true')
+    if (params?.snoozed) query.append('snoozed', 'true')
+    if (params?.deleted) query.append('deleted', 'true')
+    if (params?.label_id) query.append('label_id', params.label_id)
+    if (params?.sort_by) query.append('sort_by', params.sort_by)
+    if (params?.all_threads) query.append('all_threads', 'true')
+    if (params?.search) query.append('search', params.search)
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.offset !== undefined) query.append('offset', params.offset.toString())
+    const qs = query.toString()
+    return this.get<{ threads: any[]; total: number }>(
+      `/api/v1/crm/email/inbox${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  async getCRMEmailThread(threadId: string) {
+    return this.get<{ thread: any; messages: any[] }>(`/api/v1/crm/email/threads/${threadId}`)
+  }
+
+  async markCRMEmailThreadRead(threadId: string) {
+    return this.patch<any>(`/api/v1/crm/email/threads/${threadId}/read`, {})
+  }
+
+  async archiveCRMEmailThread(threadId: string) {
+    return this.patch<any>(`/api/v1/crm/email/threads/${threadId}/archive`, {})
+  }
+
+  async getCRMEmailContactThreads(contactId: string) {
+    return this.get<{ threads: any[] }>(`/api/v1/crm/email/contacts/${contactId}/threads`)
+  }
+
+  async getCRMEmailUnreadCount() {
+    return this.get<{ count: number }>('/api/v1/crm/email/unread-count')
+  }
+
+  async getCRMEmailSuggestions(q: string) {
+    const query = new URLSearchParams({ q })
+    return this.get<{ suggestions: { email: string; display_name: string; company: string | null; source: string; contact_id: string | null }[] }>(`/api/v1/crm/email/suggestions?${query}`)
+  }
+
+  async sendCRMEmail(data: {
+    contact_id?: string; to_email: string; subject: string;
+    body_html: string; body_text?: string; cc?: string[];
+    thread_id?: string; scheduled_at?: string;
+    attachment_ids?: string[]; template_id?: string;
+  }) {
+    return this.post<{ message: any; thread_id: string; scheduled?: boolean; internal?: boolean }>('/api/v1/crm/email/send', data)
+  }
+
+  // CRM — Email Templates
+
+  async getCRMEmailTemplates(category?: string) {
+    const query = new URLSearchParams()
+    if (category) query.append('category', category)
+    const qs = query.toString()
+    return this.get<{ templates: any[] }>(
+      `/api/v1/crm/email/templates${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  async createCRMEmailTemplate(data: {
+    name: string; subject: string; body_html: string;
+    body_text?: string; category?: string; placeholders?: string[];
+  }) {
+    return this.post<any>('/api/v1/admin/crm/email/templates', data)
+  }
+
+  async updateCRMEmailTemplate(id: string, data: {
+    name?: string; subject?: string; body_html?: string;
+    body_text?: string; category?: string; placeholders?: string[];
+    is_active?: boolean;
+  }) {
+    return this.put<any>(`/api/v1/admin/crm/email/templates/${id}`, data)
+  }
+
+  async deleteCRMEmailTemplate(id: string) {
+    return this.delete<any>(`/api/v1/admin/crm/email/templates/${id}`)
+  }
+
+  // CRM Admin — Email Accounts
+
+  async createCRMEmailAccount(data: { profile_id: string; email_address: string; display_name: string }) {
+    return this.post<any>('/api/v1/admin/crm/email/accounts', data)
+  }
+
+  async getCRMEmailAccounts() {
+    return this.get<{ accounts: any[] }>('/api/v1/admin/crm/email/accounts')
+  }
+
+  async deactivateCRMEmailAccount(accountId: string) {
+    return this.delete<any>(`/api/v1/admin/crm/email/accounts/${accountId}`)
+  }
+
+  // CRM Email — Star / Snooze / Bulk / Link / Assign
+
+  async starCRMEmailThread(threadId: string) {
+    return this.patch<any>(`/api/v1/crm/email/threads/${threadId}/star`, {})
+  }
+
+  async snoozeCRMEmailThread(threadId: string, snoozedUntil: string) {
+    return this.patch<any>(`/api/v1/crm/email/threads/${threadId}/snooze`, { snoozed_until: snoozedUntil })
+  }
+
+  async bulkCRMEmailThreadAction(threadIds: string[], action: string) {
+    return this.post<any>('/api/v1/crm/email/threads/bulk', { thread_ids: threadIds, action })
+  }
+
+  async linkCRMEmailThreadContact(threadId: string, contactId: string) {
+    return this.patch<any>(`/api/v1/crm/email/threads/${threadId}/link-contact`, { contact_id: contactId })
+  }
+
+  async unlinkCRMEmailThreadContact(threadId: string) {
+    return this.patch<any>(`/api/v1/crm/email/threads/${threadId}/unlink-contact`, {})
+  }
+
+  async assignCRMEmailThread(threadId: string, assignedTo: string | null) {
+    return this.patch<any>(`/api/v1/crm/email/threads/${threadId}/assign`, { assigned_to: assignedTo })
+  }
+
+  // CRM Email — Internal Notes
+
+  async getCRMEmailThreadNotes(threadId: string) {
+    return this.get<{ notes: any[] }>(`/api/v1/crm/email/threads/${threadId}/notes`)
+  }
+
+  async createCRMEmailThreadNote(threadId: string, content: string) {
+    return this.post<any>(`/api/v1/crm/email/threads/${threadId}/notes`, { content })
+  }
+
+  async deleteCRMEmailThreadNote(threadId: string, noteId: string) {
+    return this.delete<any>(`/api/v1/crm/email/threads/${threadId}/notes/${noteId}`)
+  }
+
+  // CRM Email — Labels
+
+  async getCRMEmailLabels() {
+    return this.get<{ labels: any[] }>('/api/v1/crm/email/labels')
+  }
+
+  async createCRMEmailLabel(data: { name: string; color?: string }) {
+    return this.post<any>('/api/v1/crm/email/labels', data)
+  }
+
+  async updateCRMEmailLabel(id: string, data: { name?: string; color?: string }) {
+    return this.put<any>(`/api/v1/crm/email/labels/${id}`, data)
+  }
+
+  async deleteCRMEmailLabel(id: string) {
+    return this.delete<any>(`/api/v1/crm/email/labels/${id}`)
+  }
+
+  async addCRMEmailThreadLabel(threadId: string, labelId: string) {
+    return this.post<any>(`/api/v1/crm/email/threads/${threadId}/labels/${labelId}`, {})
+  }
+
+  async removeCRMEmailThreadLabel(threadId: string, labelId: string) {
+    return this.delete<any>(`/api/v1/crm/email/threads/${threadId}/labels/${labelId}`)
+  }
+
+  // CRM Email — Quick Replies
+
+  async getCRMEmailQuickReplies() {
+    return this.get<{ quick_replies: any[] }>('/api/v1/crm/email/quick-replies')
+  }
+
+  async createCRMEmailQuickReply(data: { title: string; body_text: string; body_html?: string }) {
+    return this.post<any>('/api/v1/crm/email/quick-replies', data)
+  }
+
+  async updateCRMEmailQuickReply(id: string, data: { title?: string; body_text?: string; body_html?: string }) {
+    return this.put<any>(`/api/v1/crm/email/quick-replies/${id}`, data)
+  }
+
+  async deleteCRMEmailQuickReply(id: string) {
+    return this.delete<any>(`/api/v1/crm/email/quick-replies/${id}`)
+  }
+
+  // CRM Email — Attachments
+
+  async getCRMEmailAttachmentUploadUrl(data: { filename: string; content_type: string; size_bytes: number }) {
+    return this.post<{ attachment: any; upload_url: string }>('/api/v1/crm/email/attachments/upload-url', data)
+  }
+
+  async getCRMEmailAttachmentDownloadUrl(attachmentId: string) {
+    return this.get<{ download_url: string; filename: string }>(`/api/v1/crm/email/attachments/${attachmentId}/download`)
+  }
+
+  // CRM Email — Scheduled
+
+  async getCRMEmailScheduled() {
+    return this.get<{ messages: any[] }>('/api/v1/crm/email/scheduled')
+  }
+
+  async cancelCRMEmailScheduled(messageId: string) {
+    return this.post<any>(`/api/v1/crm/email/messages/${messageId}/cancel-schedule`, {})
+  }
+
+  // CRM Email — AI
+
+  async aiComposeCRMEmail(data: { context?: string; tone?: string; recipient_name?: string; topic?: string }) {
+    return this.post<{ body_html: string }>('/api/v1/crm/email/ai/compose', data)
+  }
+
+  async aiSummarizeCRMEmailThread(threadId: string) {
+    return this.post<{ summary: string }>('/api/v1/crm/email/ai/summarize', { thread_id: threadId })
+  }
+
+  async aiAnalyzeCRMEmailSentiment(threadId: string) {
+    return this.post<{ sentiment: string; confidence: number }>('/api/v1/crm/email/ai/sentiment', { thread_id: threadId })
+  }
+
+  // CRM Email — Sequences (Rep)
+
+  async getCRMEmailSequences() {
+    return this.get<{ sequences: any[] }>('/api/v1/crm/email/sequences')
+  }
+
+  async enrollCRMEmailSequence(sequenceId: string, contactId: string) {
+    return this.post<any>(`/api/v1/crm/email/sequences/${sequenceId}/enroll`, { contact_id: contactId })
+  }
+
+  async unenrollCRMEmailSequence(sequenceId: string, contactId: string) {
+    return this.post<any>(`/api/v1/crm/email/sequences/${sequenceId}/unenroll`, { contact_id: contactId })
+  }
+
+  async getCRMEmailContactSequences(contactId: string) {
+    return this.get<{ enrollments: any[] }>(`/api/v1/crm/email/contacts/${contactId}/sequences`)
+  }
+
+  // CRM Admin — Email Analytics
+
+  async getCRMEmailAnalytics(days?: number) {
+    const query = new URLSearchParams()
+    if (days !== undefined) query.append('days', days.toString())
+    const qs = query.toString()
+    return this.get<any>(`/api/v1/admin/crm/email/analytics${qs ? `?${qs}` : ''}`)
+  }
+
+  // CRM Admin — Rep Email Drill-Down
+
+  async getCRMRepEmailMessages(repId: string, params?: {
+    direction?: string; days?: number; limit?: number; offset?: number;
+  }) {
+    const query = new URLSearchParams()
+    if (params?.direction) query.append('direction', params.direction)
+    if (params?.days !== undefined) query.append('days', params.days.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.offset !== undefined) query.append('offset', params.offset.toString())
+    const qs = query.toString()
+    return this.get<{ messages: any[]; total: number }>(
+      `/api/v1/admin/crm/email/reps/${repId}/messages${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  // CRM — Deal-Email Linking
+
+  async linkCRMEmailThreadDeal(threadId: string, dealId: string | null) {
+    return this.patch<any>(`/api/v1/crm/email/threads/${threadId}/deal`, { deal_id: dealId })
+  }
+
+  async getCRMDealEmailThreads(dealId: string) {
+    return this.get<{ threads: any[] }>(`/api/v1/crm/email/deals/${dealId}/threads`)
+  }
+
+  // CRM — Email Account Avatar
+
+  async updateCRMEmailAvatar(avatarUrl: string) {
+    return this.put<any>('/api/v1/crm/email/account/avatar', { avatar_url: avatarUrl })
+  }
+
+  // CRM Admin — Email Sequences
+
+  async getAdminCRMEmailSequences() {
+    return this.get<{ sequences: any[] }>('/api/v1/admin/crm/email/sequences')
+  }
+
+  async createAdminCRMEmailSequence(data: { name: string; description?: string }) {
+    return this.post<any>('/api/v1/admin/crm/email/sequences', data)
+  }
+
+  async getAdminCRMEmailSequence(id: string) {
+    return this.get<{ sequence: any; steps: any[]; enrollments: any[] }>(`/api/v1/admin/crm/email/sequences/${id}`)
+  }
+
+  async updateAdminCRMEmailSequence(id: string, data: { name?: string; description?: string; is_active?: boolean }) {
+    return this.put<any>(`/api/v1/admin/crm/email/sequences/${id}`, data)
+  }
+
+  async deleteAdminCRMEmailSequence(id: string) {
+    return this.delete<any>(`/api/v1/admin/crm/email/sequences/${id}`)
+  }
+
+  async createAdminCRMEmailSequenceStep(sequenceId: string, data: {
+    step_number: number; delay_days: number; template_id?: string;
+    subject: string; body_html: string
+  }) {
+    return this.post<any>(`/api/v1/admin/crm/email/sequences/${sequenceId}/steps`, data)
+  }
+
+  async updateAdminCRMEmailSequenceStep(sequenceId: string, stepId: string, data: {
+    delay_days?: number; template_id?: string; subject?: string; body_html?: string
+  }) {
+    return this.put<any>(`/api/v1/admin/crm/email/sequences/${sequenceId}/steps/${stepId}`, data)
+  }
+
+  async deleteAdminCRMEmailSequenceStep(sequenceId: string, stepId: string) {
+    return this.delete<any>(`/api/v1/admin/crm/email/sequences/${sequenceId}/steps/${stepId}`)
+  }
+
+  async getCRMDNCList(params?: { limit?: number; offset?: number }) {
+    const query = new URLSearchParams()
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.offset !== undefined) query.append('offset', params.offset.toString())
+    const qs = query.toString()
+    return this.get<{ contacts: any[]; total: number }>(
+      `/api/v1/admin/crm/dnc-list${qs ? `?${qs}` : ''}`
+    )
+  }
 }
 
 // Export singleton instance
