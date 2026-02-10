@@ -107,13 +107,8 @@ export function useStories(projectId: string | null) {
   return useQuery({
     queryKey: storyKeys.all(projectId || ''),
     queryFn: async () => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!response.ok) throw new Error('Failed to fetch stories');
-      const data = await response.json();
-      return data.stories as Story[];
+      const data = await api.get<{ stories: Story[] }>(`/api/v1/backlot/projects/${projectId}/stories`);
+      return data.stories;
     },
     enabled: !!projectId,
   });
@@ -122,14 +117,7 @@ export function useStories(projectId: string | null) {
 export function useStory(projectId: string | null, storyId: string | null) {
   return useQuery({
     queryKey: storyKeys.detail(projectId || '', storyId || ''),
-    queryFn: async () => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!response.ok) throw new Error('Failed to fetch story');
-      return response.json() as Promise<Story>;
-    },
+    queryFn: () => api.get<Story>(`/api/v1/backlot/projects/${projectId}/stories/${storyId}`),
     enabled: !!projectId && !!storyId,
   });
 }
@@ -138,26 +126,14 @@ export function useCreateStory(projectId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: {
+    mutationFn: (data: {
       title: string;
       logline?: string;
       genre?: string;
       tone?: string;
       themes?: string[];
       structure_type?: string;
-    }) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(data),
-      });
-      if (!response.ok) throw new Error('Failed to create story');
-      return response.json() as Promise<Story>;
-    },
+    }) => api.post<Story>(`/api/v1/backlot/projects/${projectId}/stories`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.all(projectId) });
     },
@@ -168,26 +144,14 @@ export function useUpdateStory(projectId: string, storyId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: {
+    mutationFn: (data: {
       title?: string;
       logline?: string;
       genre?: string;
       tone?: string;
       themes?: string[];
       structure_type?: string;
-    }) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}`, {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(data),
-      });
-      if (!response.ok) throw new Error('Failed to update story');
-      return response.json() as Promise<Story>;
-    },
+    }) => api.put<Story>(`/api/v1/backlot/projects/${projectId}/stories/${storyId}`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.all(projectId) });
       queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
@@ -199,15 +163,7 @@ export function useDeleteStory(projectId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (storyId: string) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!response.ok) throw new Error('Failed to delete story');
-      return response.json();
-    },
+    mutationFn: (storyId: string) => api.delete(`/api/v1/backlot/projects/${projectId}/stories/${storyId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.all(projectId) });
     },
@@ -222,7 +178,7 @@ export function useCreateBeat(projectId: string, storyId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: {
+    mutationFn: (data: {
       title: string;
       act_marker?: string;
       content?: string;
@@ -231,19 +187,7 @@ export function useCreateBeat(projectId: string, storyId: string) {
       page_end?: number;
       emotional_tone?: string;
       primary_character_id?: string;
-    }) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(data),
-      });
-      if (!response.ok) throw new Error('Failed to create beat');
-      return response.json() as Promise<StoryBeat>;
-    },
+    }) => api.post<StoryBeat>(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
     },
@@ -254,7 +198,7 @@ export function useUpdateBeat(projectId: string, storyId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ beatId, data }: {
+    mutationFn: ({ beatId, data }: {
       beatId: string;
       data: {
         title?: string;
@@ -266,19 +210,7 @@ export function useUpdateBeat(projectId: string, storyId: string) {
         emotional_tone?: string;
         primary_character_id?: string;
       };
-    }) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/${beatId}`, {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(data),
-      });
-      if (!response.ok) throw new Error('Failed to update beat');
-      return response.json() as Promise<StoryBeat>;
-    },
+    }) => api.put<StoryBeat>(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/${beatId}`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
     },
@@ -289,15 +221,7 @@ export function useDeleteBeat(projectId: string, storyId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (beatId: string) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/${beatId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!response.ok) throw new Error('Failed to delete beat');
-      return response.json();
-    },
+    mutationFn: (beatId: string) => api.delete(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/${beatId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
     },
@@ -308,19 +232,8 @@ export function useReorderBeats(projectId: string, storyId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ beatId, direction }: { beatId: string; direction: 'UP' | 'DOWN' }) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/reorder`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ beat_id: beatId, direction }),
-      });
-      if (!response.ok) throw new Error('Failed to reorder beat');
-      return response.json();
-    },
+    mutationFn: ({ beatId, direction }: { beatId: string; direction: 'UP' | 'DOWN' }) =>
+      api.post(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/reorder`, { beat_id: beatId, direction }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
     },
@@ -335,13 +248,8 @@ export function useCharacters(projectId: string | null, storyId: string | null) 
   return useQuery({
     queryKey: storyKeys.characters(projectId || '', storyId || ''),
     queryFn: async () => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!response.ok) throw new Error('Failed to fetch characters');
-      const data = await response.json();
-      return data.characters as StoryCharacter[];
+      const data = await api.get<{ characters: StoryCharacter[] }>(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters`);
+      return data.characters;
     },
     enabled: !!projectId && !!storyId,
   });
@@ -351,25 +259,13 @@ export function useCreateCharacter(projectId: string, storyId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: {
+    mutationFn: (data: {
       name: string;
       role?: string;
       arc_summary?: string;
       notes?: string;
       contact_id?: string;
-    }) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(data),
-      });
-      if (!response.ok) throw new Error('Failed to create character');
-      return response.json() as Promise<StoryCharacter>;
-    },
+    }) => api.post<StoryCharacter>(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
       queryClient.invalidateQueries({ queryKey: storyKeys.characters(projectId, storyId) });
@@ -381,24 +277,12 @@ export function useCreateCharacterFromContact(projectId: string, storyId: string
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: {
+    mutationFn: (data: {
       contact_id: string;
       role?: string;
       arc_summary?: string;
       notes?: string;
-    }) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/from-contact`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(data),
-      });
-      if (!response.ok) throw new Error('Failed to create character from contact');
-      return response.json() as Promise<StoryCharacter>;
-    },
+    }) => api.post<StoryCharacter>(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/from-contact`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
       queryClient.invalidateQueries({ queryKey: storyKeys.characters(projectId, storyId) });
@@ -410,7 +294,7 @@ export function useUpdateCharacter(projectId: string, storyId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ characterId, data }: {
+    mutationFn: ({ characterId, data }: {
       characterId: string;
       data: {
         name?: string;
@@ -419,19 +303,7 @@ export function useUpdateCharacter(projectId: string, storyId: string) {
         notes?: string;
         contact_id?: string | null;
       };
-    }) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}`, {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(data),
-      });
-      if (!response.ok) throw new Error('Failed to update character');
-      return response.json() as Promise<StoryCharacter>;
-    },
+    }) => api.put<StoryCharacter>(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
       queryClient.invalidateQueries({ queryKey: storyKeys.characters(projectId, storyId) });
@@ -443,15 +315,7 @@ export function useDeleteCharacter(projectId: string, storyId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (characterId: string) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!response.ok) throw new Error('Failed to delete character');
-      return response.json();
-    },
+    mutationFn: (characterId: string) => api.delete(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
       queryClient.invalidateQueries({ queryKey: storyKeys.characters(projectId, storyId) });
@@ -467,22 +331,10 @@ export function useCreateCharacterArc(projectId: string, storyId: string, charac
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: {
+    mutationFn: (data: {
       beat_id: string;
       description: string;
-    }) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/arcs`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(data),
-      });
-      if (!response.ok) throw new Error('Failed to create character arc');
-      return response.json() as Promise<CharacterArc>;
-    },
+    }) => api.post<CharacterArc>(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/arcs`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
     },
@@ -493,22 +345,10 @@ export function useUpdateCharacterArc(projectId: string, storyId: string, charac
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ arcId, data }: {
+    mutationFn: ({ arcId, data }: {
       arcId: string;
       data: { description?: string };
-    }) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/arcs/${arcId}`, {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(data),
-      });
-      if (!response.ok) throw new Error('Failed to update character arc');
-      return response.json() as Promise<CharacterArc>;
-    },
+    }) => api.put<CharacterArc>(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/arcs/${arcId}`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
     },
@@ -519,15 +359,7 @@ export function useDeleteCharacterArc(projectId: string, storyId: string, charac
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (arcId: string) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/arcs/${arcId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!response.ok) throw new Error('Failed to delete character arc');
-      return response.json();
-    },
+    mutationFn: (arcId: string) => api.delete(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/arcs/${arcId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
     },
@@ -541,14 +373,7 @@ export function useDeleteCharacterArc(projectId: string, storyId: string, charac
 export function useStoryPrintData(projectId: string | null, storyId: string | null) {
   return useQuery({
     queryKey: storyKeys.print(projectId || '', storyId || ''),
-    queryFn: async () => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/print`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!response.ok) throw new Error('Failed to fetch story print data');
-      return response.json() as Promise<StoryPrintData>;
-    },
+    queryFn: () => api.get<StoryPrintData>(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/print`),
     enabled: !!projectId && !!storyId,
   });
 }
@@ -635,14 +460,10 @@ export function useBeatSceneLinks(projectId: string | null, storyId: string | nu
   return useQuery({
     queryKey: connectionKeys.beatScenes(projectId || '', storyId || '', beatId || ''),
     queryFn: async () => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(
-        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/${beatId}/scenes`,
-        { headers: { Authorization: `Bearer ${token}` } }
+      const data = await api.get<{ links: BeatSceneLink[] }>(
+        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/${beatId}/scenes`
       );
-      if (!response.ok) throw new Error('Failed to fetch beat scene links');
-      const data = await response.json();
-      return data.links as BeatSceneLink[];
+      return data.links;
     },
     enabled: !!projectId && !!storyId && !!beatId,
   });
@@ -652,26 +473,13 @@ export function useLinkBeatToScene(projectId: string, storyId: string, beatId: s
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: {
+    mutationFn: (data: {
       scene_id: string;
       relationship?: 'features' | 'setup' | 'payoff' | 'reference';
       notes?: string;
-    }) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(
-        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/${beatId}/scenes`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(data),
-        }
-      );
-      if (!response.ok) throw new Error('Failed to link beat to scene');
-      return response.json() as Promise<BeatSceneLink>;
-    },
+    }) => api.post<BeatSceneLink>(
+      `/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/${beatId}/scenes`, data
+    ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: connectionKeys.beatScenes(projectId, storyId, beatId) });
     },
@@ -682,18 +490,9 @@ export function useUnlinkBeatFromScene(projectId: string, storyId: string, beatI
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (linkId: string) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(
-        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/${beatId}/scenes/${linkId}`,
-        {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
-      if (!response.ok) throw new Error('Failed to unlink beat from scene');
-      return response.json();
-    },
+    mutationFn: (linkId: string) => api.delete(
+      `/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/${beatId}/scenes/${linkId}`
+    ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: connectionKeys.beatScenes(projectId, storyId, beatId) });
     },
@@ -708,14 +507,10 @@ export function useStoryEpisodeLinks(projectId: string | null, storyId: string |
   return useQuery({
     queryKey: connectionKeys.storyEpisodes(projectId || '', storyId || ''),
     queryFn: async () => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(
-        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/episodes`,
-        { headers: { Authorization: `Bearer ${token}` } }
+      const data = await api.get<{ links: StoryEpisodeLink[] }>(
+        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/episodes`
       );
-      if (!response.ok) throw new Error('Failed to fetch story episode links');
-      const data = await response.json();
-      return data.links as StoryEpisodeLink[];
+      return data.links;
     },
     enabled: !!projectId && !!storyId,
   });
@@ -725,26 +520,13 @@ export function useLinkStoryToEpisode(projectId: string, storyId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: {
+    mutationFn: (data: {
       episode_id: string;
       relationship?: 'primary' | 'subplot' | 'arc';
       notes?: string;
-    }) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(
-        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/episodes`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(data),
-        }
-      );
-      if (!response.ok) throw new Error('Failed to link story to episode');
-      return response.json() as Promise<StoryEpisodeLink>;
-    },
+    }) => api.post<StoryEpisodeLink>(
+      `/api/v1/backlot/projects/${projectId}/stories/${storyId}/episodes`, data
+    ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: connectionKeys.storyEpisodes(projectId, storyId) });
     },
@@ -755,18 +537,9 @@ export function useUnlinkStoryFromEpisode(projectId: string, storyId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (linkId: string) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(
-        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/episodes/${linkId}`,
-        {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
-      if (!response.ok) throw new Error('Failed to unlink story from episode');
-      return response.json();
-    },
+    mutationFn: (linkId: string) => api.delete(
+      `/api/v1/backlot/projects/${projectId}/stories/${storyId}/episodes/${linkId}`
+    ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: connectionKeys.storyEpisodes(projectId, storyId) });
     },
@@ -781,14 +554,10 @@ export function useCharacterCastLinks(projectId: string | null, storyId: string 
   return useQuery({
     queryKey: connectionKeys.characterCast(projectId || '', storyId || '', characterId || ''),
     queryFn: async () => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(
-        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/cast`,
-        { headers: { Authorization: `Bearer ${token}` } }
+      const data = await api.get<{ links: CharacterCastLink[] }>(
+        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/cast`
       );
-      if (!response.ok) throw new Error('Failed to fetch character cast links');
-      const data = await response.json();
-      return data.links as CharacterCastLink[];
+      return data.links;
     },
     enabled: !!projectId && !!storyId && !!characterId,
   });
@@ -798,25 +567,12 @@ export function useLinkCharacterToCast(projectId: string, storyId: string, chara
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: {
+    mutationFn: (data: {
       role_id: string;
       notes?: string;
-    }) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(
-        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/cast`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(data),
-        }
-      );
-      if (!response.ok) throw new Error('Failed to link character to cast');
-      return response.json() as Promise<CharacterCastLink>;
-    },
+    }) => api.post<CharacterCastLink>(
+      `/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/cast`, data
+    ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: connectionKeys.characterCast(projectId, storyId, characterId) });
     },
@@ -827,18 +583,9 @@ export function useUnlinkCharacterFromCast(projectId: string, storyId: string, c
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (linkId: string) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(
-        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/cast/${linkId}`,
-        {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
-      if (!response.ok) throw new Error('Failed to unlink character from cast');
-      return response.json();
-    },
+    mutationFn: (linkId: string) => api.delete(
+      `/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/cast/${linkId}`
+    ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: connectionKeys.characterCast(projectId, storyId, characterId) });
     },
@@ -853,13 +600,8 @@ export function useBeatTemplates(projectId: string, storyId: string | null) {
   return useQuery({
     queryKey: ['beat-templates', projectId, storyId],
     queryFn: async () => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/templates`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!response.ok) throw new Error('Failed to fetch templates');
-      const data = await response.json();
-      return data.templates as BeatTemplate[];
+      const data = await api.get<{ templates: BeatTemplate[] }>(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/templates`);
+      return data.templates;
     },
     enabled: !!projectId && !!storyId,
   });
@@ -869,22 +611,8 @@ export function useApplyTemplate(projectId: string, storyId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ template }: { template: string }) => {
-      const token = localStorage.getItem('access_token');
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/apply-template`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ template }),
-      });
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.detail || 'Failed to apply template');
-      }
-      return response.json();
-    },
+    mutationFn: ({ template }: { template: string }) =>
+      api.post(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/apply-template`, { template }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
     },

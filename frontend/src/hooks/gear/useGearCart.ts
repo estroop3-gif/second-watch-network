@@ -47,7 +47,7 @@ async function fetchWithAuth(url: string, token: string, options?: RequestInit) 
     throw new Error(errorDetail);
   }
 
-  const data = await response.json();
+  const data = await response.json().catch(() => ({}));
   console.log(`[Cart API] Response:`, data);
   return data;
 }

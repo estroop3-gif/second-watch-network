@@ -185,7 +185,7 @@ class APIClient {
         throw new Error(error.detail || 'Request failed')
       }
 
-      return response.json()
+      return response.json().catch(() => ({}))
     } catch (err: any) {
       // Log network errors
       if (err.name === 'TypeError' && err.message.includes('NetworkError')) {

@@ -39,7 +39,7 @@ async function fetchWithAuth(url: string, token: string, options?: RequestInit) 
     throw new Error(errorDetail);
   }
 
-  return response.json();
+  return response.json().catch(() => ({}));
 }
 
 export function useSetHouseCart() {

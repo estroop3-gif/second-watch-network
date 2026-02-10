@@ -16661,28 +16661,120 @@ async def export_script_with_highlights(
                 raise HTTPException(status_code=500, detail="Failed to download script PDF")
             pdf_content = pdf_response.content
 
-        # Read original PDF
-        original_pdf = PdfReader(BytesIO(pdf_content))
-        num_pages = len(original_pdf.pages)
-
-        # Use PyMuPDF to extract text positions for highlight rect calculation
-        # PyMuPDF is optional — if not available, highlights without pre-computed rects
-        # will simply be skipped (the PDF export still works, just without auto-positioned highlights)
+        # Read original PDF (strict=False for maximum compatibility with various PDF generators)
         try:
-            import fitz  # PyMuPDF
-            fitz_doc = fitz.open(stream=pdf_content, filetype="pdf")
-        except ImportError:
-            fitz_doc = None
-            print("[EXPORT] PyMuPDF not available — skipping text position extraction")
+            original_pdf = PdfReader(BytesIO(pdf_content), strict=False)
+            num_pages = len(original_pdf.pages)
+        except Exception as e:
+            print(f"[EXPORT] Failed to parse PDF: {e}")
+            raise HTTPException(status_code=400, detail=f"Could not read script PDF: {str(e)}")
+
+        # Use pdfplumber to extract text positions for highlight rect calculation
+        try:
+            import pdfplumber
+            plumber_doc = pdfplumber.open(BytesIO(pdf_content))
+        except Exception as e:
+            plumber_doc = None
+            print(f"[EXPORT] pdfplumber not available — skipping text position extraction: {e}")
+
+        # Helper: search for text on a pdfplumber page, return list of bbox dicts
+        def plumber_search_for(plumber_page, search_text, case_sensitive=False):
+            """Search for text on a pdfplumber page. Returns list of dicts with x0,y0,x1,y1 (top coords)."""
+            if not plumber_page or not search_text:
+                return []
+            try:
+                words = plumber_page.extract_words(keep_blank_chars=True, x_tolerance=3, y_tolerance=3)
+            except Exception:
+                return []
+            if not words:
+                return []
+
+            # Build lines by grouping words with similar top values
+            lines = []
+            current_line = []
+            current_top = None
+            for w in sorted(words, key=lambda w: (round(w["top"], 1), w["x0"])):
+                if current_top is None or abs(w["top"] - current_top) < 4:
+                    current_line.append(w)
+                    current_top = w["top"] if current_top is None else current_top
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                    current_line = [w]
+                    current_top = w["top"]
+            if current_line:
+                lines.append(current_line)
+
+            results = []
+            target = search_text if case_sensitive else search_text.lower()
+
+            for line_words in lines:
+                # Build the full line text and track character positions
+                line_text = ""
+                char_map = []  # maps char index -> (word_idx, char_in_word)
+                for wi, w in enumerate(line_words):
+                    if line_text and not line_text.endswith(" "):
+                        line_text += " "
+                        char_map.append((-1, -1))  # space between words
+                    start = len(line_text)
+                    line_text += w["text"]
+                    for ci in range(len(w["text"])):
+                        char_map.append((wi, ci))
+
+                compare_text = line_text if case_sensitive else line_text.lower()
+                search_start = 0
+                while True:
+                    pos = compare_text.find(target, search_start)
+                    if pos == -1:
+                        break
+                    end_pos = pos + len(target) - 1
+
+                    # Find bounding box from the words that contain the match
+                    match_x0 = None
+                    match_x1 = None
+                    match_top = None
+                    match_bottom = None
+
+                    for ci in range(pos, min(end_pos + 1, len(char_map))):
+                        wi, char_in_word = char_map[ci]
+                        if wi < 0:
+                            continue  # skip inter-word spaces
+                        w = line_words[wi]
+                        wx0 = w["x0"]
+                        wx1 = w["x1"]
+                        # Approximate char position within word
+                        word_len = max(len(w["text"]), 1)
+                        char_width = (wx1 - wx0) / word_len
+                        cx0 = wx0 + char_in_word * char_width
+                        cx1 = cx0 + char_width
+
+                        if match_x0 is None or cx0 < match_x0:
+                            match_x0 = cx0
+                        if match_x1 is None or cx1 > match_x1:
+                            match_x1 = cx1
+                        if match_top is None or w["top"] < match_top:
+                            match_top = w["top"]
+                        if match_bottom is None or w["bottom"] > match_bottom:
+                            match_bottom = w["bottom"]
+
+                    if match_x0 is not None:
+                        results.append({
+                            "x0": match_x0,
+                            "y0": match_top,
+                            "x1": match_x1,
+                            "y1": match_bottom
+                        })
+                    search_start = pos + 1
+
+            return results
 
         # Find Y positions of scene headings for scroll-to-top functionality
-        for scene_mapping in (export_scene_mappings if fitz_doc else []):
+        for scene_mapping in (export_scene_mappings if plumber_doc else []):
             page_num = scene_mapping.get("page_number", 1)
-            if page_num < 1 or page_num > len(fitz_doc):
+            if page_num < 1 or page_num > len(plumber_doc.pages):
                 continue
 
-            fitz_page = fitz_doc[page_num - 1]  # 0-indexed
-            page_height = fitz_page.rect.height
+            plumber_page = plumber_doc.pages[page_num - 1]  # 0-indexed
 
             # Build search patterns for scene heading
             bookmark_title = scene_mapping.get("bookmark_title", "")
@@ -16705,13 +16797,11 @@ async def export_script_with_highlights(
                 if not pattern:
                     continue
                 # Case insensitive search
-                text_instances = fitz_page.search_for(pattern, quads=False)
+                text_instances = plumber_search_for(plumber_page, pattern)
                 if text_instances:
                     # Get the topmost occurrence (smallest y0)
-                    topmost = min(text_instances, key=lambda r: r.y0)
-                    # Convert to PDF points from top (for #page=N&zoom=auto,0,Y format)
-                    # But browser PDF viewers typically measure from bottom, so we may need to adjust
-                    y_from_top = topmost.y0
+                    topmost = min(text_instances, key=lambda r: r["y0"])
+                    y_from_top = topmost["y0"]
                     if best_y is None or y_from_top < best_y:
                         best_y = y_from_top
                     break  # Found it, stop searching
@@ -16724,24 +16814,23 @@ async def export_script_with_highlights(
 
         def find_text_rects_on_page(page_num, search_text):
             """Find all occurrences of text on a page and return their rects as percentages"""
-            if page_num < 1 or page_num > len(fitz_doc):
+            if page_num < 1 or page_num > len(plumber_doc.pages):
                 return [], page_num
 
-            fitz_page = fitz_doc[page_num - 1]  # 0-indexed
-            page_rect = fitz_page.rect
-            page_width = page_rect.width
-            page_height = page_rect.height
+            plumber_page = plumber_doc.pages[page_num - 1]  # 0-indexed
+            page_width = plumber_page.width
+            page_height = plumber_page.height
 
             # Search for the text
-            text_instances = fitz_page.search_for(search_text)
+            text_instances = plumber_search_for(plumber_page, search_text, case_sensitive=True)
 
             rects = []
             for inst in text_instances:
                 # Convert to percentages (0-1 range)
-                rect_x = inst.x0 / page_width
-                rect_y = inst.y0 / page_height
-                rect_width = (inst.x1 - inst.x0) / page_width
-                rect_height = (inst.y1 - inst.y0) / page_height
+                rect_x = inst["x0"] / page_width
+                rect_y = inst["y0"] / page_height
+                rect_width = (inst["x1"] - inst["x0"]) / page_width
+                rect_height = (inst["y1"] - inst["y0"]) / page_height
                 rects.append({
                     "rect_x": rect_x,
                     "rect_y": rect_y,
@@ -16759,21 +16848,20 @@ async def export_script_with_highlights(
                     return rects, found_page
 
             # Search all pages
-            for page_idx in range(len(fitz_doc)):
+            for page_idx in range(len(plumber_doc.pages)):
                 page_num = page_idx + 1
-                fitz_page = fitz_doc[page_idx]
-                page_rect = fitz_page.rect
-                page_width = page_rect.width
-                page_height = page_rect.height
+                plumber_page = plumber_doc.pages[page_idx]
+                page_width = plumber_page.width
+                page_height = plumber_page.height
 
-                text_instances = fitz_page.search_for(search_text)
+                text_instances = plumber_search_for(plumber_page, search_text, case_sensitive=True)
                 if text_instances:
                     rects = []
                     for inst in text_instances:
-                        rect_x = inst.x0 / page_width
-                        rect_y = inst.y0 / page_height
-                        rect_width = (inst.x1 - inst.x0) / page_width
-                        rect_height = (inst.y1 - inst.y0) / page_height
+                        rect_x = inst["x0"] / page_width
+                        rect_y = inst["y0"] / page_height
+                        rect_width = (inst["x1"] - inst["x0"]) / page_width
+                        rect_height = (inst["y1"] - inst["y0"]) / page_height
                         rects.append({
                             "rect_x": rect_x,
                             "rect_y": rect_y,
@@ -16836,30 +16924,16 @@ async def export_script_with_highlights(
             def search_page_for_match(page_idx):
                 """Search a single page for the text with matching context. Returns (rect, page_num, score)."""
                 page_num = page_idx + 1
-                fitz_page = fitz_doc[page_idx]
-                page_rect = fitz_page.rect
-                page_width = page_rect.width
-                page_height = page_rect.height
+                plumber_page = plumber_doc.pages[page_idx]
+                page_width = plumber_page.width
+                page_height = plumber_page.height
 
-                # search_for() is CASE-INSENSITIVE, so filter to exact case matches
-                all_rects = fitz_page.search_for(search_text)
-                if not all_rects:
-                    return None, None, 0
-
-                # Filter rects to only those with exact case match
-                text_instances = []
-                for rect in all_rects:
-                    text_at_rect = fitz_page.get_text("text", clip=rect).strip()
-                    if text_at_rect == search_text:
-                        text_instances.append(rect)
-                    else:
-                        print(f"[EXPORT DEBUG] Skipping rect at y={rect.y0:.1f} - text '{text_at_rect}' != '{search_text}'")
-
+                # Case-sensitive search
+                text_instances = plumber_search_for(plumber_page, search_text, case_sensitive=True)
                 if not text_instances:
-                    print(f"[EXPORT DEBUG] No exact case matches for '{search_text}' on page {page_num}")
                     return None, None, 0
 
-                page_text = fitz_page.get_text()
+                page_text = plumber_page.extract_text() or ""
 
                 search_pos = 0
                 best_match = None
@@ -16890,10 +16964,10 @@ async def export_script_with_highlights(
                         best_match_score = total_score
                         best_match = {
                             "rect": {
-                                "rect_x": inst.x0 / page_width,
-                                "rect_y": inst.y0 / page_height,
-                                "rect_width": (inst.x1 - inst.x0) / page_width,
-                                "rect_height": (inst.y1 - inst.y0) / page_height
+                                "rect_x": inst["x0"] / page_width,
+                                "rect_y": inst["y0"] / page_height,
+                                "rect_width": (inst["x1"] - inst["x0"]) / page_width,
+                                "rect_height": (inst["y1"] - inst["y0"]) / page_height
                             },
                             "page_num": page_num
                         }
@@ -16911,7 +16985,7 @@ async def export_script_with_highlights(
             best_global_score = 0
 
             # Search hint page first (if provided)
-            if hint_page is not None and 1 <= hint_page <= len(fitz_doc):
+            if hint_page is not None and 1 <= hint_page <= len(plumber_doc.pages):
                 print(f"[EXPORT DEBUG] Searching hint page {hint_page} first")
                 rect, page_num, score = search_page_for_match(hint_page - 1)
                 if rect and score > best_global_score:
@@ -16920,7 +16994,7 @@ async def export_script_with_highlights(
                     best_global_score = score
 
             # Search all other pages
-            for page_idx in range(len(fitz_doc)):
+            for page_idx in range(len(plumber_doc.pages)):
                 if hint_page and page_idx == hint_page - 1:
                     continue  # Already searched
                 rect, page_num, score = search_page_for_match(page_idx)
@@ -16937,28 +17011,27 @@ async def export_script_with_highlights(
             # Fallback: return first instance on hint page or first page with matches
             print(f"[EXPORT DEBUG] No strong context match (score={best_global_score}), using first instance")
             pages_to_check = [hint_page - 1] if hint_page else []
-            pages_to_check.extend(range(len(fitz_doc)))
+            pages_to_check.extend(range(len(plumber_doc.pages)))
 
             for page_idx in pages_to_check:
-                if page_idx < 0 or page_idx >= len(fitz_doc):
+                if page_idx < 0 or page_idx >= len(plumber_doc.pages):
                     continue
-                fitz_page = fitz_doc[page_idx]
-                text_instances = fitz_page.search_for(search_text)
+                plumber_page = plumber_doc.pages[page_idx]
+                text_instances = plumber_search_for(plumber_page, search_text, case_sensitive=True)
                 if text_instances:
                     inst = text_instances[0]
-                    page_rect = fitz_page.rect
                     return {
-                        "rect_x": inst.x0 / page_rect.width,
-                        "rect_y": inst.y0 / page_rect.height,
-                        "rect_width": (inst.x1 - inst.x0) / page_rect.width,
-                        "rect_height": (inst.y1 - inst.y0) / page_rect.height
+                        "rect_x": inst["x0"] / plumber_page.width,
+                        "rect_y": inst["y0"] / plumber_page.height,
+                        "rect_width": (inst["x1"] - inst["x0"]) / plumber_page.width,
+                        "rect_height": (inst["y1"] - inst["y0"]) / plumber_page.height
                     }, page_idx + 1
 
             return None, None
 
-        # Calculate missing rect coordinates for highlights (requires PyMuPDF)
-        print(f"[EXPORT DEBUG] Processing {len(highlights)} highlights (fitz={'available' if fitz_doc else 'unavailable'})")
-        for highlight in (highlights if fitz_doc else []):
+        # Calculate missing rect coordinates for highlights (requires pdfplumber)
+        print(f"[EXPORT DEBUG] Processing {len(highlights)} highlights (pdfplumber={'available' if plumber_doc else 'unavailable'})")
+        for highlight in (highlights if plumber_doc else []):
             # Skip if already has rect coordinates
             if highlight.get("rect_x") is not None and highlight.get("rect_y") is not None:
                 print(f"[EXPORT DEBUG] Highlight already has rects: {highlight.get('suggested_label')}")
@@ -17035,8 +17108,14 @@ async def export_script_with_highlights(
         # Process each page and add highlight overlays and note markers
         for page_num in range(num_pages):
             original_page = original_pdf.pages[page_num]
-            page_width = float(original_page.mediabox.width)
-            page_height = float(original_page.mediabox.height)
+
+            try:
+                page_width = float(original_page.mediabox.width)
+                page_height = float(original_page.mediabox.height)
+            except Exception as e:
+                print(f"[EXPORT] Warning: Could not read page {page_num + 1} dimensions: {e}, using defaults")
+                output.add_page(original_page)
+                continue
 
             # Get highlights for this page (only if highlights are included)
             page_highlights = [h for h in highlights if h.get("page_number") == page_num + 1] if include_highlights else []
@@ -17044,79 +17123,82 @@ async def export_script_with_highlights(
             page_notes = [n for n in notes if n.get("page_number") == page_num + 1] if include_notes else []
 
             if page_highlights or page_notes:
-                # Create overlay for this page
-                overlay_buffer = BytesIO()
-                c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
+                try:
+                    # Create overlay for this page
+                    overlay_buffer = BytesIO()
+                    c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
 
-                # Draw highlight rectangles (if highlights are included)
-                if include_highlights:
-                    print(f"[EXPORT DEBUG] Drawing {len(page_highlights)} highlights on page {page_num + 1}")
-                    for highlight in page_highlights:
-                        # Skip highlights without rect coordinates
-                        if highlight.get("rect_x") is None or highlight.get("rect_y") is None:
-                            print(f"[EXPORT DEBUG] Skipping highlight without rects: {highlight.get('suggested_label')}")
-                            continue
+                    # Draw highlight rectangles (if highlights are included)
+                    if include_highlights:
+                        print(f"[EXPORT DEBUG] Drawing {len(page_highlights)} highlights on page {page_num + 1}")
+                        for highlight in page_highlights:
+                            # Skip highlights without rect coordinates
+                            if highlight.get("rect_x") is None or highlight.get("rect_y") is None:
+                                print(f"[EXPORT DEBUG] Skipping highlight without rects: {highlight.get('suggested_label')}")
+                                continue
 
-                        # Get color
-                        color_hex = highlight.get("color") or CATEGORY_COLORS.get(highlight.get("category"), "#FFFF00")
-                        r, g, b = hex_to_rgb(color_hex)
+                            # Get color
+                            color_hex = highlight.get("color") or CATEGORY_COLORS.get(highlight.get("category"), "#FFFF00")
+                            r, g, b = hex_to_rgb(color_hex)
 
-                        # Calculate position (rect values are 0-1 percentages)
-                        # Convert Decimal to float for math operations
-                        rect_x = float(highlight.get("rect_x") or 0)
-                        rect_y = float(highlight.get("rect_y") or 0)
-                        rect_w = float(highlight.get("rect_width") or 0.1)
-                        rect_h = float(highlight.get("rect_height") or 0.02)
+                            # Calculate position (rect values are 0-1 percentages)
+                            # Convert Decimal to float for math operations
+                            rect_x = float(highlight.get("rect_x") or 0)
+                            rect_y = float(highlight.get("rect_y") or 0)
+                            rect_w = float(highlight.get("rect_width") or 0.1)
+                            rect_h = float(highlight.get("rect_height") or 0.02)
 
-                        x = rect_x * page_width
-                        # PDF coordinates are from bottom, so invert y
-                        y = page_height - (rect_y * page_height) - (rect_h * page_height)
-                        w = rect_w * page_width
-                        h = rect_h * page_height
+                            x = rect_x * page_width
+                            # PDF coordinates are from bottom, so invert y
+                            y = page_height - (rect_y * page_height) - (rect_h * page_height)
+                            w = rect_w * page_width
+                            h = rect_h * page_height
 
-                        print(f"[EXPORT DEBUG] Drawing highlight '{highlight.get('suggested_label')}' at x={x:.1f}, y={y:.1f}, w={w:.1f}, h={h:.1f}")
+                            print(f"[EXPORT DEBUG] Drawing highlight '{highlight.get('suggested_label')}' at x={x:.1f}, y={y:.1f}, w={w:.1f}, h={h:.1f}")
 
-                        # Draw semi-transparent highlight rectangle
-                        c.setFillColor(Color(r, g, b, alpha=0.3))
-                        c.setStrokeColor(Color(r, g, b, alpha=0.8))
-                        c.setLineWidth(0.5)
-                        c.rect(x, y, w, h, fill=True, stroke=True)
+                            # Draw semi-transparent highlight rectangle
+                            c.setFillColor(Color(r, g, b, alpha=0.3))
+                            c.setStrokeColor(Color(r, g, b, alpha=0.8))
+                            c.setLineWidth(0.5)
+                            c.rect(x, y, w, h, fill=True, stroke=True)
 
-                # Draw note markers (circled numbers) - if notes are included
-                if include_notes:
-                    for note in page_notes:
-                        note_num = note_index_map.get(note.get("id"), 0)
-                        if note_num == 0:
-                            continue
+                    # Draw note markers (circled numbers) - if notes are included
+                    if include_notes:
+                        for note in page_notes:
+                            note_num = note_index_map.get(note.get("id"), 0)
+                            if note_num == 0:
+                                continue
 
-                        # Get note position (0-100 percentages)
-                        pos_x = float(note.get("position_x") or 0) / 100.0  # Convert 0-100 to 0-1
-                        pos_y = float(note.get("position_y") or 0) / 100.0  # Convert 0-100 to 0-1
+                            # Get note position (0-100 percentages)
+                            pos_x = float(note.get("position_x") or 0) / 100.0  # Convert 0-100 to 0-1
+                            pos_y = float(note.get("position_y") or 0) / 100.0  # Convert 0-100 to 0-1
 
-                        # Convert to PDF coordinates
-                        marker_x = pos_x * page_width
-                        marker_y = page_height - (pos_y * page_height)
+                            # Convert to PDF coordinates
+                            marker_x = pos_x * page_width
+                            marker_y = page_height - (pos_y * page_height)
 
-                        # Draw marker - red circle with white number
-                        marker_radius = 8
-                        c.setFillColor(Color(0.9, 0.2, 0.2, alpha=0.9))  # Red
-                        c.setStrokeColor(Color(1, 1, 1, alpha=1))  # White border
-                        c.setLineWidth(1)
-                        c.circle(marker_x, marker_y, marker_radius, fill=True, stroke=True)
+                            # Draw marker - red circle with white number
+                            marker_radius = 8
+                            c.setFillColor(Color(0.9, 0.2, 0.2, alpha=0.9))  # Red
+                            c.setStrokeColor(Color(1, 1, 1, alpha=1))  # White border
+                            c.setLineWidth(1)
+                            c.circle(marker_x, marker_y, marker_radius, fill=True, stroke=True)
 
-                        # Draw number in white
-                        c.setFillColor(Color(1, 1, 1, alpha=1))
-                        c.setFont("Helvetica-Bold", 7)
-                        # Center the text in the circle
-                        text_width = c.stringWidth(str(note_num), "Helvetica-Bold", 7)
-                        c.drawString(marker_x - text_width/2, marker_y - 2.5, str(note_num))
+                            # Draw number in white
+                            c.setFillColor(Color(1, 1, 1, alpha=1))
+                            c.setFont("Helvetica-Bold", 7)
+                            # Center the text in the circle
+                            text_width = c.stringWidth(str(note_num), "Helvetica-Bold", 7)
+                            c.drawString(marker_x - text_width/2, marker_y - 2.5, str(note_num))
 
-                c.save()
-                overlay_buffer.seek(0)
+                    c.save()
+                    overlay_buffer.seek(0)
 
-                # Merge overlay with original page
-                overlay_pdf = PdfReader(overlay_buffer)
-                original_page.merge_page(overlay_pdf.pages[0])
+                    # Merge overlay with original page
+                    overlay_pdf = PdfReader(overlay_buffer)
+                    original_page.merge_page(overlay_pdf.pages[0])
+                except Exception as e:
+                    print(f"[EXPORT] Warning: Failed to overlay page {page_num + 1}: {e}, using original")
 
             output.add_page(original_page)
 
@@ -17379,23 +17461,27 @@ async def export_script_with_highlights(
             for page in highlights_addendum_pdf.pages:
                 output.add_page(page)
 
-        # Add PDF bookmarks for scene navigation
-        for scene_mapping in export_scene_mappings:
-            page_num = scene_mapping.get("page_number", 1) - 1  # 0-indexed for pypdf
-            if 0 <= page_num < len(output.pages):
-                output.add_outline_item(
-                    title=scene_mapping.get("bookmark_title", f"Scene {scene_mapping.get('scene_number')}"),
-                    page_number=page_num
-                )
-
-        # Add addendum bookmarks
+        # Add PDF bookmarks for scene navigation (wrapped in try/except — some PDFs
+        # have structures that cause pypdf to throw "Sequence index out of range" during write)
         addendums_info = {}
-        if notes_addendum_page_start:
-            output.add_outline_item(title="Notes Addendum", page_number=notes_addendum_page_start - 1)
-            addendums_info["notes"] = {"page_number": notes_addendum_page_start, "title": "Notes Addendum"}
-        if highlights_addendum_page_start:
-            output.add_outline_item(title="Highlights Addendum", page_number=highlights_addendum_page_start - 1)
-            addendums_info["highlights"] = {"page_number": highlights_addendum_page_start, "title": "Highlights Addendum"}
+        try:
+            for scene_mapping in export_scene_mappings:
+                page_num = scene_mapping.get("page_number", 1) - 1  # 0-indexed for pypdf
+                if 0 <= page_num < len(output.pages):
+                    output.add_outline_item(
+                        title=scene_mapping.get("bookmark_title", f"Scene {scene_mapping.get('scene_number')}"),
+                        page_number=page_num
+                    )
+
+            # Add addendum bookmarks
+            if notes_addendum_page_start:
+                output.add_outline_item(title="Notes Addendum", page_number=notes_addendum_page_start - 1)
+                addendums_info["notes"] = {"page_number": notes_addendum_page_start, "title": "Notes Addendum"}
+            if highlights_addendum_page_start:
+                output.add_outline_item(title="Highlights Addendum", page_number=highlights_addendum_page_start - 1)
+                addendums_info["highlights"] = {"page_number": highlights_addendum_page_start, "title": "Highlights Addendum"}
+        except Exception as e:
+            print(f"[EXPORT] Warning: Failed to add bookmarks: {e}, continuing without them")
 
         # Build final scene mappings JSON for response header
         scene_mappings_json = json.dumps({
@@ -17405,12 +17491,18 @@ async def export_script_with_highlights(
 
         # Write final PDF to buffer
         final_buffer = BytesIO()
-        output.write(final_buffer)
+        try:
+            output.write(final_buffer)
+        except Exception as write_err:
+            # If writing merged PDF fails (e.g. "Sequence index out of range"),
+            # fall back to returning the original unmodified PDF
+            print(f"[EXPORT] Warning: Failed to write merged PDF: {write_err}, returning original")
+            final_buffer = BytesIO(pdf_content)
         final_buffer.seek(0)
 
-        # Close PyMuPDF document
-        if fitz_doc:
-            fitz_doc.close()
+        # Close pdfplumber document
+        if plumber_doc:
+            plumber_doc.close()
 
         # Generate filename
         script_title = script.get("title", "script").replace(" ", "_")[:30]
