@@ -16,3 +16,12 @@ resolve_s3 = true
 
 # Parameter overrides - update these values before deploying
 # parameter_overrides = "DatabaseUrl=postgresql://... CognitoUserPoolId=us-east-1_xxx ..."
+
+# CI/CD environment — no profile, uses env var credentials from GitHub Actions
+[ci.deploy.parameters]
+stack_name = "second-watch-network-api"
+region = "us-east-1"
+confirm_changeset = false
+capabilities = "CAPABILITY_IAM"
+disable_rollback = false
+resolve_s3 = true
