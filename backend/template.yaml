@@ -163,8 +163,9 @@ Resources:
       Handler: handler.handler
       Description: Second Watch Network FastAPI Backend
       Timeout: 60
+      MemorySize: 3008
       Architectures:
-        - x86_64
+        - arm64
       Environment:
         Variables:
           DATABASE_URL: !Ref DatabaseUrl
@@ -192,13 +193,12 @@ Resources:
           Properties:
             Path: /{proxy+}
             Method: ANY
-        # Keep-warm: EventBridge pings /health every 5 minutes
+        # Keep-warm: EventBridge pings every 1 minute to prevent cold starts
         KeepWarm:
           Type: Schedule
           Properties:
-            Schedule: rate(2 minutes)
+            Schedule: rate(1 minute)
             Description: Keep Lambda warm to reduce cold start latency
-            Input: '{"httpMethod": "GET", "path": "/health", "requestContext": {"http": {"method": "GET", "path": "/health"}}, "headers": {"X-Warmup-Ping": "true"}, "isBase64Encoded": false}'
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref S3AvatarsBucket

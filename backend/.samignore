@@ -1,0 +1,33 @@
+# Tests
+tests/
+test_*.py
+
+# Migrations (run separately, not needed at runtime)
+migrations/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment / secrets
+.env
+.env.*
+
+# Dev tools
+venv/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# SAM build artifacts
+.aws-sam/
+
+# Documentation
+*.md
+CLAUDE.md

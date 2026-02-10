@@ -38,14 +38,26 @@ def handler(event, context):
     # EventBridge scheduled events have 'source': 'aws.events'
     source = event.get('source', '')
     if source == 'aws.events' or event.get('detail-type') == 'Scheduled Event':
-        # This is a keep-warm ping - respond quickly without full request processing
+        # Route through Mangum as a /health request so lifespan init (DB pool,
+        # scheduler) is fully warmed — the old short-circuit meant the first real
+        # request still paid for init.
         print(json.dumps({
             "event": "warmup_ping",
             "cold_start": cold_start,
             "process_age_ms": round(get_process_age_ms(), 2),
             "request_id": context.aws_request_id if context else 'local',
         }), flush=True)
-        return {"statusCode": 200, "body": '{"status": "warm"}'}
+        warmup_event = {
+            "version": "2.0",
+            "rawPath": "/health",
+            "requestContext": {
+                "http": {"method": "GET", "path": "/health", "sourceIp": "127.0.0.1", "protocol": "HTTP/1.1"},
+                "requestId": context.aws_request_id if context else "warmup",
+            },
+            "headers": {"x-warmup-ping": "true"},
+            "isBase64Encoded": False,
+        }
+        return mangum_handler(warmup_event, context)
 
     try:
         # Extract request info

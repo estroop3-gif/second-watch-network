@@ -124,7 +124,36 @@ class APIClient {
   }
 
   private async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
-    return await this._doRequest<T>(endpoint, options)
+    return await this._doRequestWithRetry<T>(endpoint, options)
+  }
+
+  /**
+   * Retry wrapper for network errors (e.g. CORS-blocked 503s during Lambda cold starts).
+   * Retries up to 2 times with 1s/2s backoff. Only retries on TypeError/NetworkError,
+   * not on HTTP errors (those are real server responses).
+   */
+  private async _doRequestWithRetry<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+    const MAX_RETRIES = 2
+    const BACKOFF_MS = [1000, 2000]
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        return await this._doRequest<T>(endpoint, options)
+      } catch (err: any) {
+        const isNetworkError = err instanceof TypeError || (err.name === 'TypeError' && err.message?.includes('fetch'))
+        const isLastAttempt = attempt >= MAX_RETRIES
+
+        if (!isNetworkError || isLastAttempt) {
+          throw err
+        }
+
+        console.warn(`[API] Network error on ${options.method || 'GET'} ${endpoint}, retrying in ${BACKOFF_MS[attempt]}ms (attempt ${attempt + 1}/${MAX_RETRIES})`)
+        await new Promise(resolve => setTimeout(resolve, BACKOFF_MS[attempt]))
+      }
+    }
+
+    // Unreachable, but TypeScript needs it
+    throw new Error('Request failed after retries')
   }
 
   private async _doRequest<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
