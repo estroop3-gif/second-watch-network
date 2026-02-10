@@ -393,19 +393,18 @@ async def get_for_you_recommendations(
         # Step 5: Get recent episodes from popular worlds
         episodes_query = """
             SELECT
-                e.id::text, 'episode' as type, e.title, e.slug, e.thumbnail_url,
-                NULL as cover_art_url, e.description as logline, NULL as content_format,
-                NULL as maturity_rating, e.duration_seconds, e.episode_number,
-                s.season_number, w.id::text as world_id, w.title as world_title, w.slug as world_slug,
+                wc.id::text, 'episode' as type, wc.title, NULL as slug, wc.thumbnail_url,
+                NULL as cover_art_url, wc.description as logline, NULL as content_format,
+                NULL as maturity_rating, wc.duration_seconds, COALESCE(wc.sort_order, 0) as episode_number,
+                NULL::int as season_number, w.id::text as world_id, w.title as world_title, w.slug as world_slug,
                 'New episode' as reason
-            FROM episodes e
-            JOIN seasons s ON s.id = e.season_id
-            JOIN worlds w ON w.id = s.world_id
+            FROM world_content wc
+            JOIN worlds w ON w.id = wc.world_id
             WHERE w.visibility = 'public'
-              AND e.status = 'published'
-              AND e.published_at > :since_date
+              AND wc.status = 'published'
+              AND wc.published_at > :since_date
               AND w.id NOT IN (SELECT unnest(:watched_ids::uuid[]))
-            ORDER BY e.published_at DESC
+            ORDER BY wc.published_at DESC
             LIMIT 4
         """
         new_episodes = execute_query(episodes_query, {

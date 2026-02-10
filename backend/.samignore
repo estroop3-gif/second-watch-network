@@ -28,6 +28,15 @@ venv/
 # SAM build artifacts
 .aws-sam/
 
+# Lambda layer build artifacts
+layers/
+
+# Test output
+test-output/
+
+# Node modules (migration runner)
+node_modules/
+
 # Documentation
 *.md
 CLAUDE.md

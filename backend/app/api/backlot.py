@@ -16666,11 +16666,17 @@ async def export_script_with_highlights(
         num_pages = len(original_pdf.pages)
 
         # Use PyMuPDF to extract text positions for highlight rect calculation
-        import fitz  # PyMuPDF
-        fitz_doc = fitz.open(stream=pdf_content, filetype="pdf")
+        # PyMuPDF is optional — if not available, highlights without pre-computed rects
+        # will simply be skipped (the PDF export still works, just without auto-positioned highlights)
+        try:
+            import fitz  # PyMuPDF
+            fitz_doc = fitz.open(stream=pdf_content, filetype="pdf")
+        except ImportError:
+            fitz_doc = None
+            print("[EXPORT] PyMuPDF not available — skipping text position extraction")
 
         # Find Y positions of scene headings for scroll-to-top functionality
-        for scene_mapping in export_scene_mappings:
+        for scene_mapping in (export_scene_mappings if fitz_doc else []):
             page_num = scene_mapping.get("page_number", 1)
             if page_num < 1 or page_num > len(fitz_doc):
                 continue
@@ -16950,9 +16956,9 @@ async def export_script_with_highlights(
 
             return None, None
 
-        # Calculate missing rect coordinates for highlights
-        print(f"[EXPORT DEBUG] Processing {len(highlights)} highlights")
-        for highlight in highlights:
+        # Calculate missing rect coordinates for highlights (requires PyMuPDF)
+        print(f"[EXPORT DEBUG] Processing {len(highlights)} highlights (fitz={'available' if fitz_doc else 'unavailable'})")
+        for highlight in (highlights if fitz_doc else []):
             # Skip if already has rect coordinates
             if highlight.get("rect_x") is not None and highlight.get("rect_y") is not None:
                 print(f"[EXPORT DEBUG] Highlight already has rects: {highlight.get('suggested_label')}")
@@ -17403,7 +17409,8 @@ async def export_script_with_highlights(
         final_buffer.seek(0)
 
         # Close PyMuPDF document
-        fitz_doc.close()
+        if fitz_doc:
+            fitz_doc.close()
 
         # Generate filename
         script_title = script.get("title", "script").replace(" ", "_")[:30]

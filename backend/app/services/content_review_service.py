@@ -303,7 +303,7 @@ class ContentReviewService:
             """, {"id": content_id})
         elif content_type == 'episode':
             execute_update("""
-                UPDATE episodes SET status = 'published', updated_at = NOW()
+                UPDATE world_content SET status = 'published', updated_at = NOW()
                 WHERE id = :id AND status = 'pending_review'
             """, {"id": content_id})
 

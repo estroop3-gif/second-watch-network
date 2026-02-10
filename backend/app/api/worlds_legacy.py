@@ -808,18 +808,17 @@ async def get_continue_watching(
 
         query = """
             SELECT
-                wh.id, wh.user_id, wh.episode_id, wh.world_id,
+                wh.id, wh.user_id, wh.world_content_id as episode_id, wh.world_id,
                 wh.position_seconds, wh.duration_seconds, wh.completed,
                 wh.last_watched_at, wh.completed_at, wh.device_type,
                 jsonb_build_object(
-                    'id', e.id,
-                    'title', e.title,
-                    'episode_number', e.episode_number,
-                    'thumbnail_url', e.thumbnail_url,
-                    'duration_seconds', e.duration_seconds,
-                    'season_id', e.season_id,
-                    'world_id', e.world_id,
-                    'created_at', e.created_at
+                    'id', wc.id,
+                    'title', wc.title,
+                    'episode_number', COALESCE(wc.sort_order, 0),
+                    'thumbnail_url', wc.thumbnail_url,
+                    'duration_seconds', wc.duration_seconds,
+                    'world_id', wc.world_id,
+                    'created_at', wc.created_at
                 ) as episode,
                 jsonb_build_object(
                     'id', w.id,
@@ -829,11 +828,11 @@ async def get_continue_watching(
                     'content_format', w.content_format
                 ) as world
             FROM watch_history wh
-            JOIN episodes e ON e.id = wh.episode_id
+            JOIN world_content wc ON wc.id = wh.world_content_id
             JOIN worlds w ON w.id = wh.world_id
             WHERE wh.user_id = :user_id
               AND wh.completed = FALSE
-              AND e.status = 'published'
+              AND wc.status = 'published'
             ORDER BY wh.last_watched_at DESC
             LIMIT :limit
         """

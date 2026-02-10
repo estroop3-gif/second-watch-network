@@ -625,11 +625,11 @@ async def create_playback_session(
     # Check for premium content access
     # Video can be linked to an episode - check if episode requires premium access
     premium_check = execute_single("""
-        SELECT e.id, e.visibility
-        FROM episodes e
-        WHERE e.video_asset_id = :video_asset_id
-          AND e.visibility = 'premium'
-          AND e.status = 'published'
+        SELECT wc.id, wc.visibility
+        FROM world_content wc
+        WHERE wc.video_asset_id = :video_asset_id
+          AND wc.visibility = 'premium'
+          AND wc.status = 'published'
         LIMIT 1
     """, {"video_asset_id": request.video_asset_id})
 
@@ -662,10 +662,10 @@ async def create_playback_session(
     # Phase 2C: Check festival/venue availability
     # Look up the episode's world to check for release window restrictions
     episode_world = execute_single("""
-        SELECT e.id as episode_id, e.world_id
-        FROM episodes e
-        WHERE e.video_asset_id = :video_asset_id
-          AND e.status = 'published'
+        SELECT wc.id as episode_id, wc.world_id
+        FROM world_content wc
+        WHERE wc.video_asset_id = :video_asset_id
+          AND wc.status = 'published'
         LIMIT 1
     """, {"video_asset_id": request.video_asset_id})
 

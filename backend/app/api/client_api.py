@@ -682,24 +682,23 @@ async def _get_continue_watching(user_id: str, limit: int) -> List[dict]:
             w.title as world_title,
             w.slug as world_slug,
             w.cover_art_url,
-            e.id as episode_id,
-            e.title as episode_title,
-            e.episode_number,
-            e.thumbnail_url,
-            e.duration_seconds,
-            s.season_number,
+            wc.id as episode_id,
+            wc.title as episode_title,
+            COALESCE(wc.sort_order, 0) as episode_number,
+            wc.thumbnail_url,
+            wc.duration_seconds,
+            NULL::int as season_number,
             wh.position_seconds,
-            ROUND(wh.position_seconds::numeric / NULLIF(e.duration_seconds, 0) * 100, 1) as progress_percent,
+            ROUND(wh.position_seconds::numeric / NULLIF(wc.duration_seconds, 0) * 100, 1) as progress_percent,
             wh.updated_at as last_watched
         FROM watch_history wh
-        JOIN episodes e ON wh.episode_id = e.id
-        JOIN worlds w ON e.world_id = w.id
-        LEFT JOIN seasons s ON e.season_id = s.id
+        JOIN world_content wc ON wh.world_content_id = wc.id
+        JOIN worlds w ON wc.world_id = w.id
         WHERE wh.user_id = :user_id
           AND wh.completed = false
           AND wh.position_seconds > 30
           AND w.status = 'active'
-          AND e.status = 'published'
+          AND wc.status = 'published'
         ORDER BY w.id, wh.updated_at DESC
         LIMIT :limit
     """, {"user_id": user_id, "limit": limit})
@@ -715,27 +714,26 @@ async def _get_followed_worlds_new_content(user_id: str, limit: int) -> List[dic
             w.title as world_title,
             w.slug as world_slug,
             w.cover_art_url,
-            e.id as episode_id,
-            e.title as episode_title,
-            e.episode_number,
-            e.thumbnail_url,
-            e.published_at,
-            s.season_number
+            wc.id as episode_id,
+            wc.title as episode_title,
+            COALESCE(wc.sort_order, 0) as episode_number,
+            wc.thumbnail_url,
+            wc.published_at,
+            NULL::int as season_number
         FROM world_follows wf
         JOIN worlds w ON wf.world_id = w.id
-        JOIN episodes e ON e.world_id = w.id
-        LEFT JOIN seasons s ON e.season_id = s.id
+        JOIN world_content wc ON wc.world_id = w.id
         WHERE wf.user_id = :user_id
           AND w.status = 'active'
-          AND e.status = 'published'
-          AND e.published_at >= NOW() - INTERVAL '14 days'
+          AND wc.status = 'published'
+          AND wc.published_at >= NOW() - INTERVAL '14 days'
           AND NOT EXISTS (
               SELECT 1 FROM watch_history wh
               WHERE wh.user_id = :user_id
-                AND wh.episode_id = e.id
+                AND wh.world_content_id = wc.id
                 AND wh.completed = true
           )
-        ORDER BY e.published_at DESC
+        ORDER BY wc.published_at DESC
         LIMIT :limit
     """, {"user_id": user_id, "limit": limit})
 
@@ -864,25 +862,20 @@ async def _get_next_episode(current_episode: dict) -> Optional[dict]:
 
     next_ep = execute_single("""
         SELECT
-            e.id as episode_id,
-            e.title,
-            e.episode_number,
-            e.thumbnail_url,
-            e.duration_seconds,
-            s.season_number
-        FROM episodes e
-        JOIN seasons s ON e.season_id = s.id
-        WHERE e.world_id = :world_id
-          AND e.status = 'published'
-          AND (
-              (s.season_number = :season AND e.episode_number > :episode)
-              OR s.season_number > :season
-          )
-        ORDER BY s.season_number, e.episode_number
+            wc.id as episode_id,
+            wc.title,
+            COALESCE(wc.sort_order, 0) as episode_number,
+            wc.thumbnail_url,
+            wc.duration_seconds,
+            NULL::int as season_number
+        FROM world_content wc
+        WHERE wc.world_id = :world_id
+          AND wc.status = 'published'
+          AND COALESCE(wc.sort_order, 0) > :episode
+        ORDER BY wc.sort_order
         LIMIT 1
     """, {
         "world_id": str(current_episode["world_id"]),
-        "season": current_episode.get("season_number", 1),
         "episode": current_episode.get("episode_number", 0)
     })
 

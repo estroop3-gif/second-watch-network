@@ -2513,7 +2513,44 @@ async def email_inbound_webhook_handler(request: Request):
             break
 
     if not thread_id:
-        return {"status": "no_thread_match", "from": from_address}
+        # No reply+ address — check if email was sent directly to a CRM account
+        matched_account = None
+        for addr in to_addresses:
+            # Normalize: strip display name, lowercase
+            clean = addr.strip().lower()
+            if "<" in clean:
+                clean = clean.split("<")[-1].rstrip(">")
+            matched_account = execute_single(
+                "SELECT * FROM crm_email_accounts WHERE LOWER(email_address) = :email LIMIT 1",
+                {"email": clean},
+            )
+            if matched_account:
+                break
+
+        if not matched_account:
+            return {"status": "no_thread_match", "from": from_address}
+
+        # Auto-link contact by from_address
+        linked_contact = execute_single(
+            "SELECT id FROM crm_contacts WHERE LOWER(email) = LOWER(:email) LIMIT 1",
+            {"email": from_address},
+        )
+        contact_id = linked_contact["id"] if linked_contact else None
+
+        # Create a new thread for this direct inbound email
+        new_thread = execute_single(
+            """
+            INSERT INTO crm_email_threads (account_id, contact_id, contact_email, subject)
+            VALUES (:aid, :cid, :email, :subj) RETURNING *
+            """,
+            {
+                "aid": matched_account["id"],
+                "cid": contact_id,
+                "email": from_address,
+                "subj": subject,
+            },
+        )
+        thread_id = str(new_thread["id"])
 
     # Fetch full email content from Resend API (webhook only sends metadata)
     import logging as _logging

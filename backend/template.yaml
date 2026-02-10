@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Second Watch Network API - FastAPI on Lambda with WebSocket - Updated 2025-12-23
+Description: Second Watch Network API - FastAPI on Lambda with WebSocket - Updated 2026-02-09
 
 Globals:
   Function:
@@ -26,6 +26,11 @@ Parameters:
   CognitoRegion:
     Type: String
     Default: us-east-1
+  CognitoClientSecret:
+    Type: String
+    Description: AWS Cognito Client Secret (optional for public clients)
+    NoEcho: true
+    Default: ""
   S3AvatarsBucket:
     Type: String
     Description: S3 bucket for avatar uploads
@@ -35,6 +40,18 @@ Parameters:
   S3BacklotFilesBucket:
     Type: String
     Description: S3 bucket for backlot PDF files
+  S3VideoMastersBucket:
+    Type: String
+    Description: S3 bucket for video master files
+    Default: swn-video-masters-517220555400
+  S3VideoPublishBucket:
+    Type: String
+    Description: S3 bucket for published video files
+    Default: swn-video-publish-517220555400
+  S3DownloadsBucket:
+    Type: String
+    Description: S3 bucket for downloadable files
+    Default: swn-downloads-517220555400
   FrontendUrl:
     Type: String
     Default: https://www.secondwatchnetwork.com
@@ -46,23 +63,73 @@ Parameters:
     Type: String
     NoEcho: true
     Default: ""
+  StripePremiumPriceId:
+    Type: String
+    Description: Stripe price ID for premium monthly subscription
+    Default: ""
+  StripePremiumYearlyPriceId:
+    Type: String
+    Description: Stripe price ID for premium yearly subscription
+    Default: ""
+  StripeBacklotMonthlyPriceId:
+    Type: String
+    Description: Stripe price ID for Backlot monthly subscription
+    Default: ""
+  StripeBacklotYearlyPriceId:
+    Type: String
+    Description: Stripe price ID for Backlot yearly subscription
+    Default: ""
   AnthropicApiKey:
     Type: String
+    NoEcho: true
+    Default: ""
+  OpenAiApiKey:
+    Type: String
+    Description: OpenAI API key for AI features
     NoEcho: true
     Default: ""
   ResendApiKey:
     Type: String
     NoEcho: true
     Default: ""
-  WebSocketConnectionsTableName:
-    Type: String
-    Default: second-watch-websocket-connections
-    Description: DynamoDB table for WebSocket connections
   ResendWebhookSigningSecret:
     Type: String
     NoEcho: true
     Default: ""
     Description: Resend webhook signing secret for verifying inbound email webhooks
+  EmailFromAddress:
+    Type: String
+    Description: Email sender address
+    Default: noreply@secondwatch.network
+  EmailFromName:
+    Type: String
+    Description: Email sender display name
+    Default: Second Watch Network
+  SuperadminEmail:
+    Type: String
+    Description: Email address for auto-granted superadmin
+    Default: ""
+  WebSocketConnectionsTableName:
+    Type: String
+    Default: second-watch-websocket-connections
+    Description: DynamoDB table for WebSocket connections
+  CloudFrontVideoDomain:
+    Type: String
+    Description: CloudFront distribution domain for video CDN
+    Default: d1u4sv04wott56.cloudfront.net
+  CloudFrontVideoDistributionId:
+    Type: String
+    Description: CloudFront distribution ID for video CDN
+    Default: E17MNILTBIP3I2
+  CloudFrontKeyPairId:
+    Type: String
+    Description: CloudFront key pair ID for signed URLs
+    Default: ""
+  CloudFrontPrivateKey:
+    Type: String
+    Description: CloudFront private key PEM for signed URLs
+    NoEcho: true
+    Default: ""
 
 Resources:
   # ============================================================================
@@ -108,8 +175,8 @@ Resources:
         Variables:
           RESEND_API_KEY: !Ref ResendApiKey
           KMS_KEY_ARN: !GetAtt CognitoEmailSenderKmsKey.Arn
-          EMAIL_FROM_ADDRESS: noreply@secondwatch.network
-          EMAIL_FROM_NAME: Second Watch Network
+          EMAIL_FROM_ADDRESS: !Ref EmailFromAddress
+          EMAIL_FROM_NAME: !Ref EmailFromName
       Policies:
         - Statement:
             - Effect: Allow
@@ -166,22 +233,53 @@ Resources:
       MemorySize: 3008
       Architectures:
         - arm64
+      Layers:
+        - arn:aws:lambda:us-east-1:517220555400:layer:weasyprint-deps-arm64:3
       Environment:
         Variables:
+          # System libraries (WeasyPrint layer)
+          LD_LIBRARY_PATH: /opt/lib
+          # Database
           DATABASE_URL: !Ref DatabaseUrl
+          # Auth
           COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
           COGNITO_CLIENT_ID: !Ref CognitoClientId
           COGNITO_REGION: !Ref CognitoRegion
+          COGNITO_CLIENT_SECRET: !Ref CognitoClientSecret
+          SUPERADMIN_EMAIL: !Ref SuperadminEmail
+          # S3 Buckets
           AWS_S3_AVATARS_BUCKET: !Ref S3AvatarsBucket
           AWS_S3_BACKLOT_BUCKET: !Ref S3BacklotBucket
           AWS_S3_BACKLOT_FILES_BUCKET: !Ref S3BacklotFilesBucket
+          AWS_S3_VIDEO_MASTERS_BUCKET: !Ref S3VideoMastersBucket
+          AWS_S3_VIDEO_PUBLISH_BUCKET: !Ref S3VideoPublishBucket
+          S3_DOWNLOADS_BUCKET: !Ref S3DownloadsBucket
+          # Frontend
           FRONTEND_URL: !Ref FrontendUrl
+          # Stripe
           STRIPE_SECRET_KEY: !Ref StripeSecretKey
           STRIPE_WEBHOOK_SECRET: !Ref StripeWebhookSecret
+          STRIPE_PREMIUM_PRICE_ID: !Ref StripePremiumPriceId
+          STRIPE_PREMIUM_YEARLY_PRICE_ID: !Ref StripePremiumYearlyPriceId
+          STRIPE_BACKLOT_MONTHLY_PRICE_ID: !Ref StripeBacklotMonthlyPriceId
+          STRIPE_BACKLOT_YEARLY_PRICE_ID: !Ref StripeBacklotYearlyPriceId
+          # AI
           ANTHROPIC_API_KEY: !Ref AnthropicApiKey
+          OPENAI_API_KEY: !Ref OpenAiApiKey
+          # Email
+          EMAIL_PROVIDER: resend
           RESEND_API_KEY: !Ref ResendApiKey
           RESEND_WEBHOOK_SIGNING_SECRET: !Ref ResendWebhookSigningSecret
-          EMAIL_PROVIDER: resend
+          EMAIL_FROM_ADDRESS: !Ref EmailFromAddress
+          EMAIL_FROM_NAME: !Ref EmailFromName
+          # CloudFront / Video CDN
+          CLOUDFRONT_VIDEO_DOMAIN: !Ref CloudFrontVideoDomain
+          CLOUDFRONT_VIDEO_DISTRIBUTION_ID: !Ref CloudFrontVideoDistributionId
+          CLOUDFRONT_KEY_PAIR_ID: !Ref CloudFrontKeyPairId
+          CLOUDFRONT_PRIVATE_KEY: !Ref CloudFrontPrivateKey
+          # WebSocket
+          WEBSOCKET_API_ENDPOINT: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+          WEBSOCKET_CONNECTIONS_TABLE: !Ref WebSocketConnectionsTableName
       Events:
         ApiRoot:
           Type: HttpApi
@@ -206,11 +304,30 @@ Resources:
             BucketName: !Ref S3BacklotBucket
         - S3CrudPolicy:
             BucketName: !Ref S3BacklotFilesBucket
+        - S3CrudPolicy:
+            BucketName: !Ref S3VideoMastersBucket
+        - S3CrudPolicy:
+            BucketName: !Ref S3VideoPublishBucket
+        - S3CrudPolicy:
+            BucketName: !Ref S3DownloadsBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WebSocketConnectionsTableName
         - Statement:
             - Effect: Allow
               Action:
                 - cognito-idp:*
               Resource: !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}"
+            - Effect: Allow
+              Action:
+                - execute-api:ManageConnections
+              Resource:
+                - !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*"
+            - Effect: Allow
+              Action:
+                - geo:SearchPlaceIndexForText
+                - geo:SearchPlaceIndexForPosition
+                - geo:CalculateRoute
+              Resource: "*"
 
   # ============================================================================
   # WebSocket API for Real-Time Communications
