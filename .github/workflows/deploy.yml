@@ -46,7 +46,10 @@ jobs:
             --resolve-s3 \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
+            --no-progressbar \
             --capabilities CAPABILITY_IAM \
+            --config-env default \
+            --profile default \
             --parameter-overrides \
               "DatabaseUrl=${{ secrets.DATABASE_URL }}" \
               "CognitoUserPoolId=${{ secrets.COGNITO_USER_POOL_ID }}" \
