@@ -348,6 +348,25 @@ class WatchProgressUpdate(BaseModel):
     device_type: Optional[str] = None
 
 
+class WatchHistoryEpisode(BaseModel):
+    """Slim episode info returned by continue-watching query"""
+    id: str
+    title: str
+    episode_number: int
+    thumbnail_url: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    season_id: Optional[str] = None
+    world_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+class WatchHistoryWorld(BaseModel):
+    """Slim world info returned by continue-watching query"""
+    id: str
+    title: str
+    slug: str
+    thumbnail_url: Optional[str] = None
+    content_format: Optional[str] = None
+
 class WatchHistoryItem(BaseModel):
     id: str
     user_id: str
@@ -361,8 +380,8 @@ class WatchHistoryItem(BaseModel):
     device_type: Optional[str] = None
     last_watched_at: datetime
     # Enriched
-    episode: Optional[Episode] = None
-    world: Optional[WorldSummary] = None
+    episode: Optional[WatchHistoryEpisode] = None
+    world: Optional[WatchHistoryWorld] = None
 
     class Config:
         from_attributes = True
