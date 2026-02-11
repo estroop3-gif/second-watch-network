@@ -6,12 +6,14 @@ Role Hierarchy (highest to lowest priority):
 1. Superadmin - God mode, full system access
 2. Admin - Can manage users, content, and moderate
 3. Moderator - Can moderate content and users
-4. Lodge Officer - Order lodge leadership
-5. Order Member - Member of The Second Watch Order
-6. Partner - Business/sponsor partner
-7. Filmmaker - Content creator with verified profile
-8. Premium - Paid subscriber
-9. Free - Basic registered user
+4. Sales Admin - CRM management without platform-wide admin access
+5. Lodge Officer - Order lodge leadership
+6. Order Member - Member of The Second Watch Order
+7. Sales Agent - Sales team member with CRM access
+8. Partner - Business/sponsor partner
+9. Filmmaker - Content creator with verified profile
+10. Premium - Paid subscriber
+11. Free - Basic registered user
 
 Note: Users can have multiple flags set (e.g., is_admin AND is_order_member).
 The "primary role" for display purposes follows the hierarchy above.
@@ -25,6 +27,7 @@ class RoleType(str, Enum):
     SUPERADMIN = "superadmin"
     ADMIN = "admin"
     MODERATOR = "moderator"
+    SALES_ADMIN = "sales_admin"
     LODGE_OFFICER = "lodge_officer"
     ORDER_MEMBER = "order_member"
     SALES_AGENT = "sales_agent"
@@ -39,6 +42,7 @@ ROLE_HIERARCHY: List[RoleType] = [
     RoleType.SUPERADMIN,
     RoleType.ADMIN,
     RoleType.MODERATOR,
+    RoleType.SALES_ADMIN,
     RoleType.LODGE_OFFICER,
     RoleType.ORDER_MEMBER,
     RoleType.SALES_AGENT,
@@ -55,6 +59,7 @@ PROFILE_ROLE_FIELDS = {
     "is_superadmin": RoleType.SUPERADMIN,
     "is_admin": RoleType.ADMIN,
     "is_moderator": RoleType.MODERATOR,
+    "is_sales_admin": RoleType.SALES_ADMIN,
     "is_lodge_officer": RoleType.LODGE_OFFICER,
     "is_order_member": RoleType.ORDER_MEMBER,
     "is_sales_agent": RoleType.SALES_AGENT,

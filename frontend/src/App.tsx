@@ -145,6 +145,10 @@ import CRMDNCList from "./pages/crm/DNCList";
 import CRMEmail from "./pages/crm/Email";
 import CRMAdminLayout from "./pages/crm/AdminLayout";
 import CRMAdminEmail from "./pages/crm/AdminEmail";
+import CRMAdminBusinessCards from "./pages/crm/AdminBusinessCards";
+import CRMTraining from "./pages/crm/Training";
+import CRMDiscussions from "./pages/crm/Discussions";
+import CRMBusinessCardForm from "./components/crm/BusinessCardForm";
 import { EmailComposeProvider } from "./context/EmailComposeContext";
 
 // Backlot Production Hub Pages
@@ -470,7 +474,7 @@ const App = () => (
                     </Route>
 
                     {/* CRM Routes (sales agents and admin) */}
-                    <Route path="/crm" element={<PermissionRoute requiredRoles={['sales_agent', 'admin', 'superadmin']} redirectTo="/dashboard" />}>
+                    <Route path="/crm" element={<PermissionRoute requiredRoles={['sales_agent', 'sales_admin', 'admin', 'superadmin']} redirectTo="/dashboard" />}>
                       <Route element={<EmailComposeProvider><CRMLayout /></EmailComposeProvider>}>
                         <Route index element={<Navigate to="dashboard" replace />} />
                         <Route path="dashboard" element={<CRMDashboard />} />
@@ -484,6 +488,9 @@ const App = () => (
                         <Route path="goals" element={<CRMGoals />} />
                         <Route path="log" element={<CRMCustomerLog />} />
                         <Route path="reviews" element={<CRMRepReviews />} />
+                        <Route path="training" element={<CRMTraining />} />
+                        <Route path="discussions" element={<CRMDiscussions />} />
+                        <Route path="business-card" element={<CRMBusinessCardForm />} />
 
                         {/* Admin sub-layout with horizontal tabs */}
                         <Route path="admin" element={<CRMAdminLayout />}>
@@ -493,6 +500,7 @@ const App = () => (
                           <Route path="campaigns" element={<CRMCampaigns />} />
                           <Route path="campaigns/:id" element={<CRMCampaignDetail />} />
                           <Route path="email" element={<CRMAdminEmail />} />
+                          <Route path="business-cards" element={<CRMAdminBusinessCards />} />
                           <Route path="reviews" element={<CRMAdminReviews />} />
                           <Route path="dnc" element={<CRMDNCList />} />
                           <Route path="reports" element={<CRMReports />} />

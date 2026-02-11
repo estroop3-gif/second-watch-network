@@ -42,6 +42,7 @@ interface EnrichedProfileContextValue {
   isOrderMember: boolean;
   isLodgeOfficer: boolean;
   isModerator: boolean;
+  isSalesAdmin: boolean;
   isSalesAgent: boolean;
 
   // Profile existence checks
@@ -131,6 +132,7 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
       is_premium: base.is_premium || authRoles.has('premium'),
       is_order_member: base.is_order_member || orderData?.hasProfile || authRoles.has('order_member'),
       is_lodge_officer: base.is_lodge_officer || orderData?.isOfficer || authRoles.has('lodge_officer'),
+      is_sales_admin: base.is_sales_admin || authRoles.has('sales_admin'),
       is_sales_agent: base.is_sales_agent || authRoles.has('sales_agent'),
     };
   }, [baseProfile, user, authRoles, hasFilmmakerProfile, hasPartnerProfile, orderData]);
@@ -144,6 +146,7 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
   const isSuperadmin = hasRole(enrichedProfile, 'superadmin');
   const isAdmin = hasRole(enrichedProfile, 'admin');
   const isModerator = hasRole(enrichedProfile, 'moderator');
+  const isSalesAdmin = hasRole(enrichedProfile, 'sales_admin');
   const isFilmmaker = hasRole(enrichedProfile, 'filmmaker');
   const isPartner = hasRole(enrichedProfile, 'partner');
   const isPremium = hasRole(enrichedProfile, 'premium');
@@ -167,6 +170,7 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
     isSuperadmin,
     isAdmin,
     isModerator,
+    isSalesAdmin,
     isFilmmaker,
     isPartner,
     isPremium,
@@ -208,6 +212,7 @@ export function useEnrichedProfileSafe() {
       isSuperadmin: false,
       isAdmin: false,
       isModerator: false,
+      isSalesAdmin: false,
       isFilmmaker: false,
       isPartner: false,
       isPremium: false,

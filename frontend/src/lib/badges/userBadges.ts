@@ -18,6 +18,7 @@ export type RoleType =
   | 'superadmin'
   | 'admin'
   | 'moderator'
+  | 'sales_admin'
   | 'lodge_officer'
   | 'order_member'
   | 'sales_agent'
@@ -62,12 +63,20 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     priority: 3,
     description: 'Content and community moderator',
   },
+  sales_admin: {
+    role: 'sales_admin',
+    label: 'Sales Admin',
+    shortLabel: 'SALES ADMIN',
+    cssClass: 'bg-gradient-to-r from-teal-500 to-cyan-500 text-white font-bold',
+    priority: 4,
+    description: 'CRM management and sales team leadership',
+  },
   lodge_officer: {
     role: 'lodge_officer',
     label: 'Lodge Officer',
     shortLabel: 'LODGE OFFICER',
     cssClass: 'bg-gradient-to-r from-amber-600 to-yellow-400 text-charcoal-black font-bold',
-    priority: 4,
+    priority: 5,
     description: 'Order lodge leadership',
   },
   order_member: {
@@ -75,7 +84,7 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     label: 'Order Member',
     shortLabel: 'ORDER',
     cssClass: 'bg-emerald-600 text-white font-bold',
-    priority: 5,
+    priority: 6,
     description: 'Member of The Second Watch Order',
   },
   sales_agent: {
@@ -83,7 +92,7 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     label: 'Sales Agent',
     shortLabel: 'SALES',
     cssClass: 'bg-teal-500 text-white font-bold',
-    priority: 6,
+    priority: 7,
     description: 'Sales team member',
   },
   partner: {
@@ -91,7 +100,7 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     label: 'Partner',
     shortLabel: 'PARTNER',
     cssClass: 'bg-sky-500 text-white font-bold',
-    priority: 7,
+    priority: 8,
     description: 'Business partner or sponsor',
   },
   filmmaker: {
@@ -99,7 +108,7 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     label: 'Filmmaker',
     shortLabel: 'FILMMAKER',
     cssClass: 'bg-rose-500 text-white font-bold',
-    priority: 8,
+    priority: 9,
     description: 'Verified content creator',
   },
   premium: {
@@ -107,7 +116,7 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     label: 'Premium',
     shortLabel: 'PREMIUM',
     cssClass: 'bg-gradient-to-r from-indigo-500 to-purple-500 text-white font-bold',
-    priority: 9,
+    priority: 10,
     description: 'Premium subscriber',
   },
   free: {
@@ -115,7 +124,7 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     label: 'Free',
     shortLabel: 'FREE',
     cssClass: 'bg-slate-600 text-slate-200',
-    priority: 10,
+    priority: 11,
     description: 'Free tier member',
   },
 };
@@ -125,6 +134,7 @@ export const ROLE_HIERARCHY: RoleType[] = [
   'superadmin',
   'admin',
   'moderator',
+  'sales_admin',
   'lodge_officer',
   'order_member',
   'sales_agent',
@@ -139,6 +149,7 @@ export const PROFILE_ROLE_FIELDS: Record<string, RoleType> = {
   is_superadmin: 'superadmin',
   is_admin: 'admin',
   is_moderator: 'moderator',
+  is_sales_admin: 'sales_admin',
   is_lodge_officer: 'lodge_officer',
   is_order_member: 'order_member',
   is_sales_agent: 'sales_agent',
@@ -159,6 +170,7 @@ export interface ProfileWithRoles {
   is_superadmin?: boolean;
   is_admin?: boolean;
   is_moderator?: boolean;
+  is_sales_admin?: boolean;
   is_order_member?: boolean;
   is_lodge_officer?: boolean;
   is_sales_agent?: boolean;

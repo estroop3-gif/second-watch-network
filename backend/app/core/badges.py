@@ -6,12 +6,14 @@ Badge Hierarchy (descending priority):
 1. Superadmin - "SUPERADMIN" (red/gold)
 2. Admin - "ADMIN" (yellow)
 3. Moderator - "MOD" (purple)
-4. Lodge Officer - "LODGE OFFICER" (gold)
-5. Order Member - "ORDER" (emerald)
-6. Partner - "PARTNER" (blue)
-7. Filmmaker - "FILMMAKER" (accent-yellow)
-8. Premium - "PREMIUM" (gradient)
-9. Free - "FREE" (gray)
+4. Sales Admin - "SALES ADMIN" (teal-cyan gradient)
+5. Lodge Officer - "LODGE OFFICER" (gold)
+6. Order Member - "ORDER" (emerald)
+7. Sales Agent - "SALES" (teal)
+8. Partner - "PARTNER" (blue)
+9. Filmmaker - "FILMMAKER" (accent-yellow)
+10. Premium - "PREMIUM" (gradient)
+11. Free - "FREE" (gray)
 """
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
@@ -55,12 +57,20 @@ BADGE_CONFIGS: Dict[RoleType, BadgeConfig] = {
         priority=3,
         description="Content and community moderator"
     ),
+    RoleType.SALES_ADMIN: BadgeConfig(
+        role=RoleType.SALES_ADMIN,
+        label="Sales Admin",
+        short_label="SALES ADMIN",
+        css_class="bg-gradient-to-r from-teal-500 to-cyan-500 text-white font-bold",
+        priority=4,
+        description="CRM management and sales team leadership"
+    ),
     RoleType.LODGE_OFFICER: BadgeConfig(
         role=RoleType.LODGE_OFFICER,
         label="Lodge Officer",
         short_label="LODGE OFFICER",
         css_class="bg-gradient-to-r from-yellow-600 to-amber-500 text-white font-bold",
-        priority=4,
+        priority=5,
         description="Order lodge leadership"
     ),
     RoleType.ORDER_MEMBER: BadgeConfig(
@@ -68,15 +78,23 @@ BADGE_CONFIGS: Dict[RoleType, BadgeConfig] = {
         label="Order Member",
         short_label="ORDER",
         css_class="bg-emerald-600 text-white font-bold",
-        priority=5,
+        priority=6,
         description="Member of The Second Watch Order"
+    ),
+    RoleType.SALES_AGENT: BadgeConfig(
+        role=RoleType.SALES_AGENT,
+        label="Sales Agent",
+        short_label="SALES",
+        css_class="bg-teal-500 text-white font-bold",
+        priority=7,
+        description="Sales team member"
     ),
     RoleType.PARTNER: BadgeConfig(
         role=RoleType.PARTNER,
         label="Partner",
         short_label="PARTNER",
         css_class="bg-blue-500 text-white font-bold",
-        priority=6,
+        priority=8,
         description="Business partner or sponsor"
     ),
     RoleType.FILMMAKER: BadgeConfig(
@@ -84,7 +102,7 @@ BADGE_CONFIGS: Dict[RoleType, BadgeConfig] = {
         label="Filmmaker",
         short_label="FILMMAKER",
         css_class="bg-accent-yellow/80 text-charcoal-black font-bold",
-        priority=7,
+        priority=9,
         description="Verified content creator"
     ),
     RoleType.PREMIUM: BadgeConfig(
@@ -92,7 +110,7 @@ BADGE_CONFIGS: Dict[RoleType, BadgeConfig] = {
         label="Premium",
         short_label="PREMIUM",
         css_class="bg-gradient-to-r from-purple-500 to-pink-500 text-white font-bold",
-        priority=8,
+        priority=10,
         description="Premium subscriber"
     ),
     RoleType.FREE: BadgeConfig(
@@ -100,7 +118,7 @@ BADGE_CONFIGS: Dict[RoleType, BadgeConfig] = {
         label="Free",
         short_label="FREE",
         css_class="bg-muted-gray text-bone-white",
-        priority=9,
+        priority=11,
         description="Free tier member"
     ),
 }

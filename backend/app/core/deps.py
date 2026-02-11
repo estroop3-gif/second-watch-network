@@ -221,14 +221,29 @@ async def require_filmmaker(profile: Dict[str, Any] = Depends(get_user_profile))
     return profile
 
 
+async def require_sales_admin(profile: Dict[str, Any] = Depends(get_user_profile)) -> Dict[str, Any]:
+    """
+    Require sales admin, admin, or superadmin role for CRM management.
+
+    Raises:
+        HTTPException: If user is not a sales admin or higher
+    """
+    if not has_any_role(profile, [RoleType.SALES_ADMIN, RoleType.ADMIN, RoleType.SUPERADMIN]):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sales admin access required"
+        )
+    return profile
+
+
 async def require_sales_agent(profile: Dict[str, Any] = Depends(get_user_profile)) -> Dict[str, Any]:
     """
-    Require sales agent, admin, or superadmin role for CRM access.
+    Require sales agent, sales admin, admin, or superadmin role for CRM access.
 
     Raises:
         HTTPException: If user is not a sales agent or admin
     """
-    if not has_any_role(profile, [RoleType.SALES_AGENT, RoleType.ADMIN, RoleType.SUPERADMIN]):
+    if not has_any_role(profile, [RoleType.SALES_AGENT, RoleType.SALES_ADMIN, RoleType.ADMIN, RoleType.SUPERADMIN]):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Sales agent access required"

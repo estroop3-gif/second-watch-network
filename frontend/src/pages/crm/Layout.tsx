@@ -5,6 +5,7 @@ import {
   Activity, Kanban, Target,
   ClipboardList, Star, Shield, AtSign,
   PanelLeftClose, PanelLeftOpen,
+  GraduationCap, CreditCard, MessageSquare,
 } from 'lucide-react';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useUnreadCount } from '@/hooks/crm/useEmail';
@@ -16,7 +17,7 @@ import {
 
 const CRMLayout = () => {
   const { hasAnyRole } = usePermissions();
-  const isAdmin = hasAnyRole(['admin', 'superadmin']);
+  const isAdmin = hasAnyRole(['admin', 'superadmin', 'sales_admin']);
   const { data: unreadData } = useUnreadCount();
   const unreadCount = unreadData?.count || 0;
   const [collapsed, setCollapsed] = useState(false);
@@ -33,6 +34,9 @@ const CRMLayout = () => {
     { name: 'Goals', href: '/crm/goals', icon: Target },
     { name: 'Log', href: '/crm/log', icon: ClipboardList },
     { name: 'Reviews', href: '/crm/reviews', icon: Star },
+    { name: 'Training', href: '/crm/training', icon: GraduationCap },
+    { name: 'Discussions', href: '/crm/discussions', icon: MessageSquare },
+    { name: 'Business Card', href: '/crm/business-card', icon: CreditCard },
   ];
 
   const adminItems = [

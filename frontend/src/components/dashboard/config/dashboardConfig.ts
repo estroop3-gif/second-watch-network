@@ -66,16 +66,16 @@ export interface QuickAction {
 
 // Role groups for easier configuration
 const ALL_ROLES: RoleType[] = [
-  'superadmin', 'admin', 'moderator', 'lodge_officer',
+  'superadmin', 'admin', 'moderator', 'sales_admin', 'lodge_officer',
   'order_member', 'sales_agent', 'partner', 'filmmaker', 'premium', 'free'
 ];
 
 const AUTHENTICATED_ROLES: RoleType[] = [
-  'superadmin', 'admin', 'moderator', 'lodge_officer',
+  'superadmin', 'admin', 'moderator', 'sales_admin', 'lodge_officer',
   'order_member', 'sales_agent', 'partner', 'filmmaker', 'premium'
 ];
 
-const CRM_ROLES: RoleType[] = ['superadmin', 'admin', 'sales_agent'];
+const CRM_ROLES: RoleType[] = ['superadmin', 'admin', 'sales_admin', 'sales_agent'];
 
 const STAFF_ROLES: RoleType[] = ['superadmin', 'admin', 'moderator'];
 
@@ -563,13 +563,14 @@ export function getHighestRole(roles: RoleType[]): RoleType {
     superadmin: 1,
     admin: 2,
     moderator: 3,
-    lodge_officer: 4,
-    order_member: 5,
-    sales_agent: 6,
-    partner: 7,
-    filmmaker: 8,
-    premium: 9,
-    free: 10,
+    sales_admin: 4,
+    lodge_officer: 5,
+    order_member: 6,
+    sales_agent: 7,
+    partner: 8,
+    filmmaker: 9,
+    premium: 10,
+    free: 11,
   };
 
   return roles.reduce((highest, current) => {

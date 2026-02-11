@@ -205,6 +205,25 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         Permission.ADMIN_ANALYTICS,
     },
 
+    RoleType.SALES_ADMIN: {
+        Permission.USER_VIEW,
+        Permission.USER_EDIT,
+        Permission.CONTENT_VIEW,
+        Permission.WORLD_VIEW,
+        Permission.GREENROOM_VIEW,
+        Permission.FORUM_VIEW,
+        Permission.FORUM_POST,
+        Permission.MESSAGE_SEND,
+        Permission.CONNECTION_MANAGE,
+        Permission.EVENT_VIEW,
+        Permission.CRM_VIEW,
+        Permission.CRM_CREATE,
+        Permission.CRM_MANAGE,
+        Permission.CRM_ADMIN,
+        Permission.CRM_REPORTS,
+        Permission.CRM_EMAIL_ADMIN,
+    },
+
     RoleType.MODERATOR: {
         Permission.USER_VIEW,
         Permission.USER_EDIT,

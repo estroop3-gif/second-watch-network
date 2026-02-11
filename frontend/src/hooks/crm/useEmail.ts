@@ -531,3 +531,35 @@ export function useUpdateEmailAvatar() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['crm-email-account'] }),
   });
 }
+
+export function useUploadEmailAvatar() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: File) => api.uploadCRMEmailAvatar(file),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['crm-email-account'] }),
+  });
+}
+
+// ============================================================================
+// Email Notification Settings
+// ============================================================================
+
+export function useEmailNotificationSettings() {
+  return useQuery({
+    queryKey: ['crm-email-notifications'],
+    queryFn: () => api.getCRMEmailNotificationSettings(),
+  });
+}
+
+export function useUpdateEmailNotificationSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      account_id: string;
+      notification_email?: string;
+      notification_mode?: string;
+      notification_digest_interval?: string;
+    }) => api.updateCRMEmailNotificationSettings(data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['crm-email-notifications'] }),
+  });
+}

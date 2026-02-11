@@ -4,7 +4,7 @@ Contacts, activities, interaction counts, and follow-ups.
 """
 import json
 from psycopg2.extras import Json as PgJson
-from fastapi import APIRouter, HTTPException, Depends, Query, Response
+from fastapi import APIRouter, HTTPException, Depends, Query, Response, UploadFile, File
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List, Dict, Any
 from datetime import date, datetime
@@ -2697,6 +2697,55 @@ async def email_inbound_webhook_handler(request: Request):
         except Exception:
             pass
 
+    # Email notification (best-effort, after WebSocket)
+    if account and message:
+        try:
+            notif_mode = account.get("notification_mode", "off")
+            notif_email = account.get("notification_email")
+            if notif_mode != "off" and notif_email:
+                # Prevent loops: don't notify to the CRM work email itself
+                account_email = account.get("email_address", "")
+                if notif_email.lower() != account_email.lower():
+                    if notif_mode == "instant":
+                        from app.services.email_templates import build_instant_notification_email
+                        from app.services.email_service import EmailService
+                        thread_url = f"https://www.secondwatchnetwork.com/crm/email?thread={thread_id}"
+                        html = build_instant_notification_email(
+                            account_email=account_email,
+                            from_address=from_address or "Unknown",
+                            subject=subject or "(no subject)",
+                            preview=(text_body or "")[:300],
+                            thread_url=thread_url,
+                        )
+                        await EmailService.send_email(
+                            to_emails=[notif_email],
+                            subject=f"New email from {from_address or 'Unknown'}: {subject or '(no subject)'}",
+                            html_content=html,
+                            email_type="crm_notification",
+                            source_service="crm",
+                            source_action="inbound_notification",
+                        )
+                    elif notif_mode == "digest":
+                        # Queue for digest
+                        execute_insert(
+                            """
+                            INSERT INTO crm_email_notification_queue
+                            (account_id, thread_id, message_id, from_address, subject, preview_text)
+                            VALUES (:account_id, :thread_id, :message_id, :from_addr, :subject, :preview)
+                            RETURNING id
+                            """,
+                            {
+                                "account_id": account["id"],
+                                "thread_id": thread_id,
+                                "message_id": message["id"],
+                                "from_addr": from_address or "Unknown",
+                                "subject": subject or "(no subject)",
+                                "preview": (text_body or "")[:300],
+                            },
+                        )
+        except Exception:
+            pass  # Best-effort notification
+
     return {"status": "stored", "message_id": message["id"] if message else None}
 
 
@@ -3629,3 +3678,881 @@ async def get_contact_sequences(
         {"cid": contact_id},
     )
     return {"enrollments": rows}
+
+
+# ============================================================================
+# CRM Email — Notification Settings
+# ============================================================================
+
+@router.get("/email/account/notifications")
+async def get_email_notification_settings(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get notification settings for current user's email account."""
+    row = execute_single(
+        """
+        SELECT id, email_address, notification_email, notification_mode,
+               notification_digest_interval, last_digest_sent_at
+        FROM crm_email_accounts
+        WHERE profile_id = :pid AND is_active = true
+        LIMIT 1
+        """,
+        {"pid": profile["id"]},
+    )
+    if not row:
+        return {"settings": None}
+    return {"settings": row}
+
+
+@router.put("/email/account/notifications")
+async def update_email_notification_settings(
+    payload: dict,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """
+    Update notification settings for an email account.
+    Only sales_admin/admin/superadmin can configure.
+    """
+    account_id = payload.get("account_id")
+    notification_email = payload.get("notification_email", "").strip()
+    notification_mode = payload.get("notification_mode", "off")
+    digest_interval = payload.get("notification_digest_interval", "hourly")
+
+    if notification_mode not in ("off", "instant", "digest"):
+        raise HTTPException(status_code=400, detail="Invalid notification_mode")
+    if digest_interval not in ("hourly", "daily"):
+        raise HTTPException(status_code=400, detail="Invalid digest interval")
+
+    # Fetch the account
+    account = execute_single(
+        "SELECT id, email_address FROM crm_email_accounts WHERE id = :aid",
+        {"aid": account_id},
+    )
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    # Prevent loops: notification email must NOT be a CRM work email
+    if notification_email and notification_mode != "off":
+        existing = execute_single(
+            "SELECT id FROM crm_email_accounts WHERE LOWER(email_address) = LOWER(:email) AND is_active = true",
+            {"email": notification_email},
+        )
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail="Notification email cannot be a CRM work email (would cause loops)"
+            )
+
+    execute_query(
+        """
+        UPDATE crm_email_accounts
+        SET notification_email = :email,
+            notification_mode = :mode,
+            notification_digest_interval = :interval
+        WHERE id = :aid
+        """,
+        {
+            "email": notification_email or None,
+            "mode": notification_mode,
+            "interval": digest_interval,
+            "aid": account_id,
+        },
+    )
+    return {"status": "updated"}
+
+
+# ============================================================================
+# CRM Email — Avatar Upload
+# ============================================================================
+
+@router.post("/email/account/avatar/upload")
+async def upload_email_avatar(
+    file: UploadFile = File(...),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Upload an avatar for the CRM email account."""
+    import io
+    import uuid
+    from app.core.storage import storage_client
+
+    # Validate file type
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File must be an image")
+
+    # Find user's email account
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true LIMIT 1",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(status_code=404, detail="No active email account found")
+
+    ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "jpg"
+    unique_filename = f"avatars/email/{account['id']}/{uuid.uuid4()}.{ext}"
+
+    file_content = await file.read()
+    file_obj = io.BytesIO(file_content)
+
+    storage_client.from_("avatars").upload(
+        unique_filename,
+        file_obj,
+        {"content_type": file.content_type},
+    )
+    avatar_url = storage_client.from_("avatars").get_public_url(unique_filename)
+
+    execute_query(
+        "UPDATE crm_email_accounts SET avatar_url = :url WHERE id = :aid",
+        {"url": avatar_url, "aid": account["id"]},
+    )
+
+    return {"success": True, "avatar_url": avatar_url}
+
+
+# ============================================================================
+# CRM — Business Cards
+# ============================================================================
+
+@router.get("/business-card")
+async def get_my_business_card(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get the current user's business card."""
+    row = execute_single(
+        "SELECT * FROM crm_business_cards WHERE profile_id = :pid ORDER BY created_at DESC LIMIT 1",
+        {"pid": profile["id"]},
+    )
+    return {"card": row}
+
+
+@router.post("/business-card")
+async def create_or_update_business_card(
+    payload: dict,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Create or update the current user's business card."""
+    existing = execute_single(
+        "SELECT id, status FROM crm_business_cards WHERE profile_id = :pid ORDER BY created_at DESC LIMIT 1",
+        {"pid": profile["id"]},
+    )
+
+    fields = {
+        "swn_name": payload.get("swn_name", profile.get("full_name", "")),
+        "swn_title": payload.get("swn_title"),
+        "swn_email": payload.get("swn_email"),
+        "swn_phone": payload.get("swn_phone"),
+        "personal_name": payload.get("personal_name"),
+        "personal_title": payload.get("personal_title"),
+        "personal_email": payload.get("personal_email"),
+        "personal_phone": payload.get("personal_phone"),
+        "personal_website": payload.get("personal_website"),
+        "personal_social_links": json.dumps(payload.get("personal_social_links", {})),
+    }
+
+    if existing:
+        # Can only edit in draft or rejected status
+        if existing["status"] not in ("draft", "rejected"):
+            raise HTTPException(status_code=400, detail="Card can only be edited in draft or rejected status")
+        set_clauses = ", ".join(f"{k} = :{k}" for k in fields)
+        execute_query(
+            f"UPDATE crm_business_cards SET {set_clauses}, status = 'draft', updated_at = NOW() WHERE id = :card_id",
+            {**fields, "card_id": existing["id"]},
+        )
+        card_id = existing["id"]
+    else:
+        result = execute_insert(
+            """
+            INSERT INTO crm_business_cards (profile_id, swn_name, swn_title, swn_email, swn_phone,
+                personal_name, personal_title, personal_email, personal_phone, personal_website,
+                personal_social_links)
+            VALUES (:pid, :swn_name, :swn_title, :swn_email, :swn_phone,
+                :personal_name, :personal_title, :personal_email, :personal_phone, :personal_website,
+                :personal_social_links::jsonb)
+            RETURNING id
+            """,
+            {**fields, "pid": profile["id"]},
+        )
+        card_id = result["id"]
+
+    card = execute_single("SELECT * FROM crm_business_cards WHERE id = :cid", {"cid": card_id})
+    return {"card": card}
+
+
+@router.post("/business-card/logo")
+async def upload_business_card_logo(
+    file: UploadFile = File(...),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Upload a personal logo for the business card."""
+    import io
+    import uuid
+    from app.core.storage import storage_client
+
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File must be an image")
+
+    ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "png"
+    unique_filename = f"business-cards/logos/{profile['id']}/{uuid.uuid4()}.{ext}"
+
+    file_content = await file.read()
+    file_obj = io.BytesIO(file_content)
+
+    storage_client.from_("avatars").upload(
+        unique_filename,
+        file_obj,
+        {"content_type": file.content_type},
+    )
+    logo_url = storage_client.from_("avatars").get_public_url(unique_filename)
+
+    # Update the card
+    execute_query(
+        """
+        UPDATE crm_business_cards SET personal_logo_url = :url, updated_at = NOW()
+        WHERE profile_id = :pid AND status IN ('draft', 'rejected')
+        """,
+        {"url": logo_url, "pid": profile["id"]},
+    )
+    return {"success": True, "logo_url": logo_url}
+
+
+@router.put("/business-card/submit")
+async def submit_business_card(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Submit business card for approval."""
+    card = execute_single(
+        "SELECT id, status FROM crm_business_cards WHERE profile_id = :pid ORDER BY created_at DESC LIMIT 1",
+        {"pid": profile["id"]},
+    )
+    if not card:
+        raise HTTPException(status_code=404, detail="No business card found")
+    if card["status"] not in ("draft", "rejected"):
+        raise HTTPException(status_code=400, detail="Card can only be submitted from draft or rejected status")
+
+    execute_query(
+        "UPDATE crm_business_cards SET status = 'submitted', submitted_at = NOW(), updated_at = NOW() WHERE id = :cid",
+        {"cid": card["id"]},
+    )
+    return {"status": "submitted"}
+
+
+# Business Card Admin Endpoints
+
+@router.get("/business-cards")
+async def list_business_cards(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    search: Optional[str] = Query(None),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """List all business cards (admin)."""
+    conditions = []
+    params: Dict[str, Any] = {}
+
+    if status_filter:
+        conditions.append("bc.status = :status")
+        params["status"] = status_filter
+    if search:
+        conditions.append("(bc.swn_name ILIKE :search OR bc.personal_name ILIKE :search)")
+        params["search"] = f"%{search}%"
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    rows = execute_query(
+        f"""
+        SELECT bc.*, p.full_name as profile_name, p.avatar_url as profile_avatar
+        FROM crm_business_cards bc
+        JOIN profiles p ON p.id = bc.profile_id
+        {where}
+        ORDER BY bc.submitted_at DESC NULLS LAST, bc.created_at DESC
+        """,
+        params,
+    )
+    return {"cards": rows}
+
+
+@router.get("/business-cards/{card_id}")
+async def get_business_card(
+    card_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Get a specific business card (admin)."""
+    row = execute_single(
+        """
+        SELECT bc.*, p.full_name as profile_name, p.avatar_url as profile_avatar
+        FROM crm_business_cards bc
+        JOIN profiles p ON p.id = bc.profile_id
+        WHERE bc.id = :cid
+        """,
+        {"cid": card_id},
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Card not found")
+    return {"card": row}
+
+
+@router.put("/business-cards/{card_id}/status")
+async def update_business_card_status(
+    card_id: str,
+    payload: dict,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Approve or reject a business card (admin)."""
+    new_status = payload.get("status")
+    admin_notes = payload.get("admin_notes", "")
+
+    if new_status not in ("approved", "rejected", "printed"):
+        raise HTTPException(status_code=400, detail="Invalid status")
+
+    card = execute_single(
+        "SELECT id, status FROM crm_business_cards WHERE id = :cid",
+        {"cid": card_id},
+    )
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+
+    update_fields = "status = :status, admin_notes = :notes, updated_at = NOW()"
+    if new_status == "approved":
+        update_fields += ", approved_at = NOW()"
+
+    execute_query(
+        f"UPDATE crm_business_cards SET {update_fields} WHERE id = :cid",
+        {"status": new_status, "notes": admin_notes, "cid": card_id},
+    )
+    return {"status": new_status}
+
+
+@router.get("/business-cards/export")
+async def export_business_cards(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Export approved business cards data for printing."""
+    rows = execute_query(
+        """
+        SELECT bc.*, p.full_name as profile_name, p.avatar_url as profile_avatar
+        FROM crm_business_cards bc
+        JOIN profiles p ON p.id = bc.profile_id
+        WHERE bc.status = 'approved'
+        ORDER BY bc.approved_at DESC
+        """,
+        {},
+    )
+    return {"cards": rows}
+
+
+# ============================================================================
+# CRM — Training Resources
+# ============================================================================
+
+@router.get("/training/resources")
+async def list_training_resources(
+    resource_type: Optional[str] = Query(None, alias="type"),
+    category: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """List training resources with optional filters."""
+    conditions = []
+    params: Dict[str, Any] = {}
+
+    if resource_type:
+        conditions.append("resource_type = :rtype")
+        params["rtype"] = resource_type
+    if category:
+        conditions.append("category = :cat")
+        params["cat"] = category
+    if search:
+        conditions.append("(title ILIKE :search OR description ILIKE :search)")
+        params["search"] = f"%{search}%"
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    rows = execute_query(
+        f"""
+        SELECT tr.*, p.full_name as author_name, p.avatar_url as author_avatar
+        FROM crm_training_resources tr
+        JOIN profiles p ON p.id = tr.author_id
+        {where}
+        ORDER BY tr.is_pinned DESC, tr.created_at DESC
+        """,
+        params,
+    )
+    return {"resources": rows}
+
+
+@router.get("/training/resources/{resource_id}")
+async def get_training_resource(
+    resource_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get a single training resource and increment view count."""
+    row = execute_single(
+        """
+        SELECT tr.*, p.full_name as author_name, p.avatar_url as author_avatar
+        FROM crm_training_resources tr
+        JOIN profiles p ON p.id = tr.author_id
+        WHERE tr.id = :rid
+        """,
+        {"rid": resource_id},
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Resource not found")
+
+    execute_query(
+        "UPDATE crm_training_resources SET view_count = view_count + 1 WHERE id = :rid",
+        {"rid": resource_id},
+    )
+    return {"resource": row}
+
+
+@router.post("/training/resources")
+async def create_training_resource(
+    payload: dict,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Create a new training resource (admin/sales_admin only)."""
+    resource_type = payload.get("resource_type")
+    if resource_type not in ("video", "presentation"):
+        raise HTTPException(status_code=400, detail="resource_type must be 'video' or 'presentation'")
+
+    result = execute_insert(
+        """
+        INSERT INTO crm_training_resources
+        (author_id, title, description, resource_type, url, thumbnail_url,
+         file_size_bytes, duration_seconds, category, is_pinned)
+        VALUES (:author_id, :title, :description, :rtype, :url, :thumbnail,
+                :file_size, :duration, :category, :pinned)
+        RETURNING *
+        """,
+        {
+            "author_id": profile["id"],
+            "title": payload.get("title", ""),
+            "description": payload.get("description"),
+            "rtype": resource_type,
+            "url": payload.get("url", ""),
+            "thumbnail": payload.get("thumbnail_url"),
+            "file_size": payload.get("file_size_bytes"),
+            "duration": payload.get("duration_seconds"),
+            "category": payload.get("category", "general"),
+            "pinned": payload.get("is_pinned", False),
+        },
+    )
+    return {"resource": result}
+
+
+@router.put("/training/resources/{resource_id}")
+async def update_training_resource(
+    resource_id: str,
+    payload: dict,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Update a training resource."""
+    fields = {}
+    for key in ["title", "description", "url", "thumbnail_url", "file_size_bytes",
+                 "duration_seconds", "category", "is_pinned"]:
+        if key in payload:
+            fields[key] = payload[key]
+
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    set_clauses = ", ".join(f"{k} = :{k}" for k in fields)
+    execute_query(
+        f"UPDATE crm_training_resources SET {set_clauses}, updated_at = NOW() WHERE id = :rid",
+        {**fields, "rid": resource_id},
+    )
+    return {"status": "updated"}
+
+
+@router.delete("/training/resources/{resource_id}")
+async def delete_training_resource(
+    resource_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Delete a training resource."""
+    execute_query("DELETE FROM crm_training_resources WHERE id = :rid", {"rid": resource_id})
+    return {"status": "deleted"}
+
+
+@router.post("/training/resources/upload")
+async def upload_training_file(
+    file: UploadFile = File(...),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Upload a training video or presentation file to S3."""
+    import io
+    import uuid
+    from app.core.storage import storage_client
+
+    ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "bin"
+    unique_filename = f"training/{profile['id']}/{uuid.uuid4()}.{ext}"
+
+    file_content = await file.read()
+    file_obj = io.BytesIO(file_content)
+
+    storage_client.from_("avatars").upload(
+        unique_filename,
+        file_obj,
+        {"content_type": file.content_type or "application/octet-stream"},
+    )
+    file_url = storage_client.from_("avatars").get_public_url(unique_filename)
+
+    return {"success": True, "url": file_url, "file_size_bytes": len(file_content), "filename": file.filename}
+
+
+# ============================================================================
+# CRM — Discussion Board
+# ============================================================================
+
+@router.get("/discussions/categories")
+async def list_discussion_categories(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """List all discussion categories."""
+    rows = execute_query(
+        """
+        SELECT dc.*, p.full_name as created_by_name,
+               (SELECT COUNT(*) FROM crm_discussion_threads WHERE category_id = dc.id) as thread_count
+        FROM crm_discussion_categories dc
+        LEFT JOIN profiles p ON p.id = dc.created_by
+        ORDER BY dc.sort_order, dc.created_at
+        """,
+        {},
+    )
+    return {"categories": rows}
+
+
+@router.post("/discussions/categories")
+async def create_discussion_category(
+    payload: dict,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Create a new discussion category (any CRM user can create)."""
+    import re
+    name = payload.get("name", "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+
+    slug = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+
+    result = execute_insert(
+        """
+        INSERT INTO crm_discussion_categories (name, description, slug, created_by, sort_order)
+        VALUES (:name, :description, :slug, :created_by,
+                COALESCE((SELECT MAX(sort_order) + 1 FROM crm_discussion_categories), 1))
+        RETURNING *
+        """,
+        {
+            "name": name,
+            "description": payload.get("description"),
+            "slug": slug,
+            "created_by": profile["id"],
+        },
+    )
+    return {"category": result}
+
+
+@router.put("/discussions/categories/{category_id}")
+async def update_discussion_category(
+    category_id: str,
+    payload: dict,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Edit a discussion category (author or admin)."""
+    cat = execute_single(
+        "SELECT id, created_by FROM crm_discussion_categories WHERE id = :cid",
+        {"cid": category_id},
+    )
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+    if cat["created_by"] != profile["id"] and not has_permission(profile, Permission.CRM_ADMIN):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    fields = {}
+    for key in ["name", "description"]:
+        if key in payload:
+            fields[key] = payload[key]
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    set_clauses = ", ".join(f"{k} = :{k}" for k in fields)
+    execute_query(
+        f"UPDATE crm_discussion_categories SET {set_clauses} WHERE id = :cid",
+        {**fields, "cid": category_id},
+    )
+    return {"status": "updated"}
+
+
+@router.delete("/discussions/categories/{category_id}")
+async def delete_discussion_category(
+    category_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Delete a discussion category (admin only, must be empty)."""
+    count = execute_single(
+        "SELECT COUNT(*) as cnt FROM crm_discussion_threads WHERE category_id = :cid",
+        {"cid": category_id},
+    )
+    if count and count["cnt"] > 0:
+        raise HTTPException(status_code=400, detail="Category must be empty before deletion")
+
+    execute_query("DELETE FROM crm_discussion_categories WHERE id = :cid", {"cid": category_id})
+    return {"status": "deleted"}
+
+
+@router.get("/discussions/threads")
+async def list_discussion_threads(
+    category_slug: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    sort: Optional[str] = Query("recent"),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """List discussion threads with filters."""
+    conditions = []
+    params: Dict[str, Any] = {}
+
+    if category_slug:
+        conditions.append("dc.slug = :slug")
+        params["slug"] = category_slug
+    if search:
+        conditions.append("(dt.title ILIKE :search OR dt.content ILIKE :search)")
+        params["search"] = f"%{search}%"
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    order = "dt.is_pinned DESC, dt.last_reply_at DESC NULLS LAST, dt.created_at DESC"
+    if sort == "popular":
+        order = "dt.is_pinned DESC, dt.reply_count DESC, dt.created_at DESC"
+
+    rows = execute_query(
+        f"""
+        SELECT dt.*, dc.name as category_name, dc.slug as category_slug,
+               p.full_name as author_name, p.avatar_url as author_avatar
+        FROM crm_discussion_threads dt
+        JOIN crm_discussion_categories dc ON dc.id = dt.category_id
+        JOIN profiles p ON p.id = dt.author_id
+        {where}
+        ORDER BY {order}
+        """,
+        params,
+    )
+    return {"threads": rows}
+
+
+@router.get("/discussions/threads/{thread_id}")
+async def get_discussion_thread(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get a single discussion thread with author details."""
+    row = execute_single(
+        """
+        SELECT dt.*, dc.name as category_name, dc.slug as category_slug,
+               p.full_name as author_name, p.avatar_url as author_avatar
+        FROM crm_discussion_threads dt
+        JOIN crm_discussion_categories dc ON dc.id = dt.category_id
+        JOIN profiles p ON p.id = dt.author_id
+        WHERE dt.id = :tid
+        """,
+        {"tid": thread_id},
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    return {"thread": row}
+
+
+@router.post("/discussions/threads")
+async def create_discussion_thread(
+    payload: dict,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Create a new discussion thread."""
+    category_id = payload.get("category_id")
+    title = payload.get("title", "").strip()
+    content = payload.get("content", "").strip()
+
+    if not title or not content:
+        raise HTTPException(status_code=400, detail="Title and content are required")
+    if not category_id:
+        raise HTTPException(status_code=400, detail="category_id is required")
+
+    result = execute_insert(
+        """
+        INSERT INTO crm_discussion_threads (category_id, author_id, title, content, resource_id)
+        VALUES (:cat_id, :author_id, :title, :content, :resource_id)
+        RETURNING *
+        """,
+        {
+            "cat_id": category_id,
+            "author_id": profile["id"],
+            "title": title,
+            "content": content,
+            "resource_id": payload.get("resource_id"),
+        },
+    )
+    return {"thread": result}
+
+
+@router.put("/discussions/threads/{thread_id}")
+async def update_discussion_thread(
+    thread_id: str,
+    payload: dict,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Edit a discussion thread (author or admin)."""
+    thread = execute_single(
+        "SELECT id, author_id FROM crm_discussion_threads WHERE id = :tid",
+        {"tid": thread_id},
+    )
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    if thread["author_id"] != profile["id"] and not has_permission(profile, Permission.CRM_ADMIN):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    fields = {}
+    for key in ["title", "content"]:
+        if key in payload:
+            fields[key] = payload[key]
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    set_clauses = ", ".join(f"{k} = :{k}" for k in fields)
+    execute_query(
+        f"UPDATE crm_discussion_threads SET {set_clauses}, updated_at = NOW() WHERE id = :tid",
+        {**fields, "tid": thread_id},
+    )
+    return {"status": "updated"}
+
+
+@router.delete("/discussions/threads/{thread_id}")
+async def delete_discussion_thread(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Delete a discussion thread (author or admin)."""
+    thread = execute_single(
+        "SELECT id, author_id FROM crm_discussion_threads WHERE id = :tid",
+        {"tid": thread_id},
+    )
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    if thread["author_id"] != profile["id"] and not has_permission(profile, Permission.CRM_ADMIN):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    execute_query("DELETE FROM crm_discussion_threads WHERE id = :tid", {"tid": thread_id})
+    return {"status": "deleted"}
+
+
+@router.post("/discussions/threads/{thread_id}/pin")
+async def pin_discussion_thread(
+    thread_id: str,
+    payload: dict,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Pin or unpin a discussion thread (admin only)."""
+    pinned = payload.get("is_pinned", True)
+    execute_query(
+        "UPDATE crm_discussion_threads SET is_pinned = :pinned WHERE id = :tid",
+        {"pinned": pinned, "tid": thread_id},
+    )
+    return {"status": "pinned" if pinned else "unpinned"}
+
+
+@router.get("/discussions/threads/{thread_id}/replies")
+async def list_discussion_replies(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """List replies for a discussion thread."""
+    rows = execute_query(
+        """
+        SELECT dr.*, p.full_name as author_name, p.avatar_url as author_avatar
+        FROM crm_discussion_replies dr
+        JOIN profiles p ON p.id = dr.author_id
+        WHERE dr.thread_id = :tid
+        ORDER BY dr.created_at
+        """,
+        {"tid": thread_id},
+    )
+    return {"replies": rows}
+
+
+@router.post("/discussions/replies")
+async def create_discussion_reply(
+    payload: dict,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Create a reply to a discussion thread."""
+    thread_id = payload.get("thread_id")
+    content = payload.get("content", "").strip()
+
+    if not thread_id or not content:
+        raise HTTPException(status_code=400, detail="thread_id and content are required")
+
+    # Check thread exists and isn't locked
+    thread = execute_single(
+        "SELECT id, is_locked FROM crm_discussion_threads WHERE id = :tid",
+        {"tid": thread_id},
+    )
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    if thread.get("is_locked"):
+        raise HTTPException(status_code=400, detail="Thread is locked")
+
+    result = execute_insert(
+        """
+        INSERT INTO crm_discussion_replies (thread_id, author_id, content)
+        VALUES (:tid, :author_id, :content)
+        RETURNING *
+        """,
+        {
+            "tid": thread_id,
+            "author_id": profile["id"],
+            "content": content,
+        },
+    )
+    return {"reply": result}
+
+
+@router.put("/discussions/replies/{reply_id}")
+async def update_discussion_reply(
+    reply_id: str,
+    payload: dict,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Edit a discussion reply (author or admin)."""
+    reply = execute_single(
+        "SELECT id, author_id FROM crm_discussion_replies WHERE id = :rid",
+        {"rid": reply_id},
+    )
+    if not reply:
+        raise HTTPException(status_code=404, detail="Reply not found")
+    if reply["author_id"] != profile["id"] and not has_permission(profile, Permission.CRM_ADMIN):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    content = payload.get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Content is required")
+
+    execute_query(
+        "UPDATE crm_discussion_replies SET content = :content, updated_at = NOW() WHERE id = :rid",
+        {"content": content, "rid": reply_id},
+    )
+    return {"status": "updated"}
+
+
+@router.delete("/discussions/replies/{reply_id}")
+async def delete_discussion_reply(
+    reply_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Delete a discussion reply (author or admin)."""
+    reply = execute_single(
+        "SELECT id, author_id FROM crm_discussion_replies WHERE id = :rid",
+        {"rid": reply_id},
+    )
+    if not reply:
+        raise HTTPException(status_code=404, detail="Reply not found")
+    if reply["author_id"] != profile["id"] and not has_permission(profile, Permission.CRM_ADMIN):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    execute_query("DELETE FROM crm_discussion_replies WHERE id = :rid", {"rid": reply_id})
+    return {"status": "deleted"}

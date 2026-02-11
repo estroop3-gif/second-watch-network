@@ -558,6 +558,97 @@ async def process_campaign_sends():
         logger.error(f"process_campaign_sends error: {e}")
 
 
+async def process_notification_digests():
+    """
+    Process queued email notification digests.
+    Runs every 900 seconds (15 minutes). Checks accounts with digest mode enabled,
+    groups unsent queue items, sends digest email, and marks items as sent.
+    """
+    try:
+        from app.core.database import execute_query, execute_single
+        from app.services.email_templates import build_digest_notification_email
+        from app.services.email_service import EmailService
+        from datetime import datetime, timedelta
+
+        # Find accounts with unsent digest items
+        accounts = execute_query(
+            """
+            SELECT DISTINCT a.id, a.email_address, a.notification_email,
+                   a.notification_digest_interval, a.last_digest_sent_at
+            FROM crm_email_accounts a
+            JOIN crm_email_notification_queue q ON q.account_id = a.id AND q.sent_at IS NULL
+            WHERE a.notification_mode = 'digest'
+              AND a.notification_email IS NOT NULL
+              AND a.is_active = true
+            """,
+            {},
+        )
+
+        for account in accounts:
+            try:
+                # Check if enough time has elapsed since last digest
+                interval = account.get("notification_digest_interval", "hourly")
+                last_sent = account.get("last_digest_sent_at")
+
+                if last_sent:
+                    threshold = timedelta(hours=1) if interval == "hourly" else timedelta(hours=24)
+                    if isinstance(last_sent, str):
+                        last_sent = datetime.fromisoformat(last_sent.replace("Z", "+00:00"))
+                    if datetime.utcnow().replace(tzinfo=last_sent.tzinfo) - last_sent < threshold:
+                        continue
+
+                # Get unsent messages for this account
+                messages = execute_query(
+                    """
+                    SELECT from_address, subject, preview_text, created_at
+                    FROM crm_email_notification_queue
+                    WHERE account_id = :aid AND sent_at IS NULL
+                    ORDER BY created_at
+                    """,
+                    {"aid": account["id"]},
+                )
+
+                if not messages:
+                    continue
+
+                # Build and send digest
+                crm_url = "https://www.secondwatchnetwork.com/crm/email"
+                html = build_digest_notification_email(
+                    account_email=account["email_address"],
+                    messages=messages,
+                    crm_url=crm_url,
+                )
+                count = len(messages)
+                await EmailService.send_email(
+                    to_emails=[account["notification_email"]],
+                    subject=f"{count} new email{'s' if count != 1 else ''} in {account['email_address']}",
+                    html_content=html,
+                    email_type="crm_digest",
+                    source_service="crm",
+                    source_action="digest_notification",
+                )
+
+                # Mark queue items as sent
+                execute_query(
+                    "UPDATE crm_email_notification_queue SET sent_at = NOW() WHERE account_id = :aid AND sent_at IS NULL",
+                    {"aid": account["id"]},
+                )
+
+                # Update last digest sent timestamp
+                execute_query(
+                    "UPDATE crm_email_accounts SET last_digest_sent_at = NOW() WHERE id = :aid",
+                    {"aid": account["id"]},
+                )
+
+                logger.info(f"Sent digest with {count} messages for {account['email_address']}")
+
+            except Exception as e:
+                logger.error(f"Digest for account {account['id']}: {e}")
+
+    except Exception as e:
+        logger.error(f"process_notification_digests error: {e}")
+
+
 def start_email_scheduler():
     """Initialize and start the APScheduler for email jobs."""
     try:
@@ -568,8 +659,9 @@ def start_email_scheduler():
         scheduler.add_job(process_unsnoozed_threads, "interval", seconds=60, id="unsnoozed_threads")
         scheduler.add_job(process_sequence_sends, "interval", seconds=300, id="sequence_sends")
         scheduler.add_job(process_campaign_sends, "interval", seconds=120, id="campaign_sends")
+        scheduler.add_job(process_notification_digests, "interval", seconds=900, id="notification_digests")
         scheduler.start()
-        logger.info("Email scheduler started with 4 jobs")
+        logger.info("Email scheduler started with 5 jobs")
         return scheduler
     except ImportError:
         logger.warning("APScheduler not installed — email scheduler disabled. Install with: pip install apscheduler")

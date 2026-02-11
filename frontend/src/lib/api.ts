@@ -5260,6 +5260,199 @@ class APIClient {
       `/api/v1/admin/crm/dnc-list${qs ? `?${qs}` : ''}`
     )
   }
+
+  // ==========================================================================
+  // CRM Email Notification Settings
+  // ==========================================================================
+
+  async getCRMEmailNotificationSettings() {
+    return this.get<{ settings: any }>('/api/v1/crm/email/account/notifications')
+  }
+
+  async updateCRMEmailNotificationSettings(data: {
+    account_id: string;
+    notification_email?: string;
+    notification_mode?: string;
+    notification_digest_interval?: string;
+  }) {
+    return this.put<{ status: string }>('/api/v1/crm/email/account/notifications', data)
+  }
+
+  // ==========================================================================
+  // CRM Email Avatar Upload
+  // ==========================================================================
+
+  async uploadCRMEmailAvatar(file: File) {
+    const formData = new FormData()
+    formData.append('file', file)
+    const token = await this.getToken()
+    const baseUrl = this.getBaseUrl()
+    const res = await fetch(`${baseUrl}/api/v1/crm/email/account/avatar/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    })
+    if (!res.ok) throw new Error('Failed to upload avatar')
+    return res.json() as Promise<{ success: boolean; avatar_url: string }>
+  }
+
+  // ==========================================================================
+  // CRM Business Cards
+  // ==========================================================================
+
+  async getCRMBusinessCard() {
+    return this.get<{ card: any }>('/api/v1/crm/business-card')
+  }
+
+  async createOrUpdateCRMBusinessCard(data: any) {
+    return this.post<{ card: any }>('/api/v1/crm/business-card', data)
+  }
+
+  async uploadCRMBusinessCardLogo(file: File) {
+    const formData = new FormData()
+    formData.append('file', file)
+    const token = await this.getToken()
+    const baseUrl = this.getBaseUrl()
+    const res = await fetch(`${baseUrl}/api/v1/crm/business-card/logo`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    })
+    if (!res.ok) throw new Error('Failed to upload logo')
+    return res.json() as Promise<{ success: boolean; logo_url: string }>
+  }
+
+  async submitCRMBusinessCard() {
+    return this.put<{ status: string }>('/api/v1/crm/business-card/submit', {})
+  }
+
+  async getCRMBusinessCards(params?: { status?: string; search?: string }) {
+    const query = new URLSearchParams()
+    if (params?.status) query.append('status', params.status)
+    if (params?.search) query.append('search', params.search)
+    const qs = query.toString()
+    return this.get<{ cards: any[] }>(`/api/v1/crm/business-cards${qs ? `?${qs}` : ''}`)
+  }
+
+  async getCRMBusinessCardById(id: string) {
+    return this.get<{ card: any }>(`/api/v1/crm/business-cards/${id}`)
+  }
+
+  async updateCRMBusinessCardStatus(id: string, data: { status: string; admin_notes?: string }) {
+    return this.put<{ status: string }>(`/api/v1/crm/business-cards/${id}/status`, data)
+  }
+
+  async exportCRMBusinessCards() {
+    return this.get<{ cards: any[] }>('/api/v1/crm/business-cards/export')
+  }
+
+  // ==========================================================================
+  // CRM Training Resources
+  // ==========================================================================
+
+  async getCRMTrainingResources(params?: { type?: string; category?: string; search?: string }) {
+    const query = new URLSearchParams()
+    if (params?.type) query.append('type', params.type)
+    if (params?.category) query.append('category', params.category)
+    if (params?.search) query.append('search', params.search)
+    const qs = query.toString()
+    return this.get<{ resources: any[] }>(`/api/v1/crm/training/resources${qs ? `?${qs}` : ''}`)
+  }
+
+  async getCRMTrainingResource(id: string) {
+    return this.get<{ resource: any }>(`/api/v1/crm/training/resources/${id}`)
+  }
+
+  async createCRMTrainingResource(data: any) {
+    return this.post<{ resource: any }>('/api/v1/crm/training/resources', data)
+  }
+
+  async updateCRMTrainingResource(id: string, data: any) {
+    return this.put<{ status: string }>(`/api/v1/crm/training/resources/${id}`, data)
+  }
+
+  async deleteCRMTrainingResource(id: string) {
+    return this.delete<any>(`/api/v1/crm/training/resources/${id}`)
+  }
+
+  async uploadCRMTrainingFile(file: File) {
+    const formData = new FormData()
+    formData.append('file', file)
+    const token = await this.getToken()
+    const baseUrl = this.getBaseUrl()
+    const res = await fetch(`${baseUrl}/api/v1/crm/training/resources/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    })
+    if (!res.ok) throw new Error('Failed to upload file')
+    return res.json() as Promise<{ success: boolean; url: string; file_size_bytes: number; filename: string }>
+  }
+
+  // ==========================================================================
+  // CRM Discussion Board
+  // ==========================================================================
+
+  async getCRMDiscussionCategories() {
+    return this.get<{ categories: any[] }>('/api/v1/crm/discussions/categories')
+  }
+
+  async createCRMDiscussionCategory(data: { name: string; description?: string }) {
+    return this.post<{ category: any }>('/api/v1/crm/discussions/categories', data)
+  }
+
+  async updateCRMDiscussionCategory(id: string, data: { name?: string; description?: string }) {
+    return this.put<{ status: string }>(`/api/v1/crm/discussions/categories/${id}`, data)
+  }
+
+  async deleteCRMDiscussionCategory(id: string) {
+    return this.delete<any>(`/api/v1/crm/discussions/categories/${id}`)
+  }
+
+  async getCRMDiscussionThreads(params?: { category_slug?: string; search?: string; sort?: string }) {
+    const query = new URLSearchParams()
+    if (params?.category_slug) query.append('category_slug', params.category_slug)
+    if (params?.search) query.append('search', params.search)
+    if (params?.sort) query.append('sort', params.sort)
+    const qs = query.toString()
+    return this.get<{ threads: any[] }>(`/api/v1/crm/discussions/threads${qs ? `?${qs}` : ''}`)
+  }
+
+  async getCRMDiscussionThread(id: string) {
+    return this.get<{ thread: any }>(`/api/v1/crm/discussions/threads/${id}`)
+  }
+
+  async createCRMDiscussionThread(data: { category_id: string; title: string; content: string; resource_id?: string }) {
+    return this.post<{ thread: any }>('/api/v1/crm/discussions/threads', data)
+  }
+
+  async updateCRMDiscussionThread(id: string, data: { title?: string; content?: string }) {
+    return this.put<{ status: string }>(`/api/v1/crm/discussions/threads/${id}`, data)
+  }
+
+  async deleteCRMDiscussionThread(id: string) {
+    return this.delete<any>(`/api/v1/crm/discussions/threads/${id}`)
+  }
+
+  async pinCRMDiscussionThread(id: string, is_pinned: boolean) {
+    return this.post<{ status: string }>(`/api/v1/crm/discussions/threads/${id}/pin`, { is_pinned })
+  }
+
+  async getCRMDiscussionReplies(threadId: string) {
+    return this.get<{ replies: any[] }>(`/api/v1/crm/discussions/threads/${threadId}/replies`)
+  }
+
+  async createCRMDiscussionReply(data: { thread_id: string; content: string }) {
+    return this.post<{ reply: any }>('/api/v1/crm/discussions/replies', data)
+  }
+
+  async updateCRMDiscussionReply(id: string, data: { content: string }) {
+    return this.put<{ status: string }>(`/api/v1/crm/discussions/replies/${id}`, data)
+  }
+
+  async deleteCRMDiscussionReply(id: string) {
+    return this.delete<any>(`/api/v1/crm/discussions/replies/${id}`)
+  }
 }
 
 // Export singleton instance
