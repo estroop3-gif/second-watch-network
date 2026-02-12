@@ -10,10 +10,11 @@ Badge Hierarchy (descending priority):
 5. Lodge Officer - "LODGE OFFICER" (gold)
 6. Order Member - "ORDER" (emerald)
 7. Sales Agent - "SALES" (teal)
-8. Partner - "PARTNER" (blue)
-9. Filmmaker - "FILMMAKER" (accent-yellow)
-10. Premium - "PREMIUM" (gradient)
-11. Free - "FREE" (gray)
+8. Sales Rep - "SALES REP" (teal-green gradient)
+9. Partner - "PARTNER" (blue)
+10. Filmmaker - "FILMMAKER" (accent-yellow)
+11. Premium - "PREMIUM" (gradient)
+12. Free - "FREE" (gray)
 """
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
@@ -89,12 +90,20 @@ BADGE_CONFIGS: Dict[RoleType, BadgeConfig] = {
         priority=7,
         description="Sales team member"
     ),
+    RoleType.SALES_REP: BadgeConfig(
+        role=RoleType.SALES_REP,
+        label="Sales Rep",
+        short_label="SALES REP",
+        css_class="bg-gradient-to-r from-teal-400 to-green-500 text-white font-bold",
+        priority=8,
+        description="Sales representative with platform access"
+    ),
     RoleType.PARTNER: BadgeConfig(
         role=RoleType.PARTNER,
         label="Partner",
         short_label="PARTNER",
         css_class="bg-blue-500 text-white font-bold",
-        priority=8,
+        priority=9,
         description="Business partner or sponsor"
     ),
     RoleType.FILMMAKER: BadgeConfig(
@@ -102,7 +111,7 @@ BADGE_CONFIGS: Dict[RoleType, BadgeConfig] = {
         label="Filmmaker",
         short_label="FILMMAKER",
         css_class="bg-accent-yellow/80 text-charcoal-black font-bold",
-        priority=9,
+        priority=10,
         description="Verified content creator"
     ),
     RoleType.PREMIUM: BadgeConfig(
@@ -110,7 +119,7 @@ BADGE_CONFIGS: Dict[RoleType, BadgeConfig] = {
         label="Premium",
         short_label="PREMIUM",
         css_class="bg-gradient-to-r from-purple-500 to-pink-500 text-white font-bold",
-        priority=10,
+        priority=11,
         description="Premium subscriber"
     ),
     RoleType.FREE: BadgeConfig(
@@ -118,7 +127,7 @@ BADGE_CONFIGS: Dict[RoleType, BadgeConfig] = {
         label="Free",
         short_label="FREE",
         css_class="bg-muted-gray text-bone-white",
-        priority=11,
+        priority=12,
         description="Free tier member"
     ),
 }
