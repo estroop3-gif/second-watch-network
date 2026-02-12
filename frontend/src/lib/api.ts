@@ -180,7 +180,7 @@ class APIClient {
         // Only log errors for non-expected failures (skip 401/403 for optional features)
         const isExpectedFailure = response.status === 401 || response.status === 403 || response.status === 404
         if (!isExpectedFailure) {
-          console.error(`[API] Error response (${response.status}):`, error)
+          console.error(`[API] Error response (${response.status}) ${options.method || 'GET'} ${endpoint}:`, error)
         }
         // Support structured error details: { code: "...", message: "..." }
         const detail = error.detail
