@@ -19,8 +19,11 @@ const BADGE_PRIORITY = [
   'superadmin',
   'admin',
   'moderator',
+  'sales_admin',
   'lodge_officer',
   'order_member',
+  'sales_agent',
+  'sales_rep',
   'partner',
   'filmmaker',
   'premium',
@@ -80,8 +83,11 @@ export const useLivePermissions = () => {
     if (flags.is_superadmin) return 'superadmin';
     if (flags.is_admin) return 'admin';
     if (flags.is_moderator) return 'moderator';
+    if (flags.is_sales_admin) return 'sales_admin';
     if (flags.is_lodge_officer) return 'lodge_officer';
     if (flags.is_order_member) return 'order_member';
+    if (flags.is_sales_agent) return 'sales_agent';
+    if (flags.is_sales_rep) return 'sales_rep';
     if (flags.is_partner) return 'partner';
     if (flags.is_filmmaker) return 'filmmaker';
     if (flags.is_premium) return 'premium';
@@ -133,6 +139,10 @@ export const BADGE_CONFIG: Record<BadgeType, { label: string; className: string 
     label: 'Mod',
     className: 'bg-purple-600 text-white',
   },
+  sales_admin: {
+    label: 'Sales Admin',
+    className: 'bg-gradient-to-r from-teal-500 to-cyan-500 text-white',
+  },
   lodge_officer: {
     label: 'Officer',
     className: 'bg-gradient-to-r from-amber-400 to-amber-600 text-black',
@@ -140,6 +150,14 @@ export const BADGE_CONFIG: Record<BadgeType, { label: string; className: string 
   order_member: {
     label: 'Order',
     className: 'bg-emerald-600 text-white',
+  },
+  sales_agent: {
+    label: 'Sales',
+    className: 'bg-teal-500 text-white',
+  },
+  sales_rep: {
+    label: 'Sales Rep',
+    className: 'bg-gradient-to-r from-teal-400 to-green-500 text-white',
   },
   partner: {
     label: 'Partner',
