@@ -3928,6 +3928,7 @@ class APIClient {
     display_name: string
     full_name?: string
     role_ids?: string[]
+    platform_roles?: string[]
     custom_quota_bytes?: number
     send_welcome_email?: boolean
     custom_password?: string

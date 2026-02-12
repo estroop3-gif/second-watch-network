@@ -56,7 +56,22 @@ import {
   Trash2,
   AlertTriangle,
   RefreshCw,
+  Copy,
+  Check,
+  Mail,
+  MailX,
+  KeyRound,
+  Eye,
+  EyeOff,
+  CheckCircle2,
+  Crown,
+  Star,
+  Sparkles,
+  Film,
+  Briefcase,
+  FlaskConical,
 } from 'lucide-react';
+import { Separator } from '@/components/ui/separator';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -255,6 +270,22 @@ interface User {
 
 const PAGE_SIZES = [25, 50, 100];
 
+// Platform role definitions (boolean flags on profiles)
+const PLATFORM_ROLE_DEFINITIONS = [
+  { id: 'superadmin', label: 'Superadmin', icon: Crown, description: 'Full system access', color: 'text-red-500' },
+  { id: 'admin', label: 'Admin', icon: Shield, description: 'Manage users, content, and moderate', color: 'text-orange-500' },
+  { id: 'moderator', label: 'Moderator', icon: Users, description: 'Moderate content and users', color: 'text-yellow-500' },
+  { id: 'sales_admin', label: 'Sales Admin', icon: Briefcase, description: 'Full CRM access and management', color: 'text-emerald-500' },
+  { id: 'sales_agent', label: 'Sales Agent', icon: Briefcase, description: 'CRM view and create access', color: 'text-teal-500' },
+  { id: 'sales_rep', label: 'Sales Rep', icon: Briefcase, description: 'Platform + CRM access', color: 'text-cyan-500' },
+  { id: 'lodge_officer', label: 'Lodge Officer', icon: Star, description: 'Order lodge leadership', color: 'text-purple-500' },
+  { id: 'order_member', label: 'Order Member', icon: Sparkles, description: 'Member of The Second Watch Order', color: 'text-blue-500' },
+  { id: 'partner', label: 'Partner', icon: Briefcase, description: 'Business/sponsor partner', color: 'text-green-500' },
+  { id: 'filmmaker', label: 'Filmmaker', icon: Film, description: 'Content creator with verified profile', color: 'text-cyan-500' },
+  { id: 'premium', label: 'Premium', icon: Star, description: 'Paid subscriber', color: 'text-amber-500' },
+  { id: 'alpha_tester', label: 'Alpha Tester', icon: FlaskConical, description: 'Test new features', color: 'text-purple-500' },
+];
+
 // =====================================================
 // Create User Dialog
 // =====================================================
@@ -271,10 +302,22 @@ function CreateUserDialog({
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
+  const [platformRoles, setPlatformRoles] = useState<string[]>([]);
   const [customQuota, setCustomQuota] = useState<number | null>(null);
   const [sendEmail, setSendEmail] = useState(true);
   const [useCustomPassword, setUseCustomPassword] = useState(false);
   const [customPassword, setCustomPassword] = useState('');
+
+  // Success screen state
+  const [createdUser, setCreatedUser] = useState<{
+    email: string;
+    displayName: string;
+    password: string;
+    emailSent: boolean;
+    emailError: string | null;
+  } | null>(null);
+  const [showCreatedPassword, setShowCreatedPassword] = useState(false);
+  const [copiedField, setCopiedField] = useState<'password' | 'all' | null>(null);
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -282,29 +325,20 @@ function CreateUserDialog({
         email,
         display_name: displayName,
         role_ids: selectedRoles,
+        platform_roles: platformRoles.length > 0 ? platformRoles : undefined,
         custom_quota_bytes: customQuota || undefined,
         send_welcome_email: sendEmail,
         custom_password: useCustomPassword && customPassword ? customPassword : undefined,
       }),
     onSuccess: (data) => {
-      // Show appropriate toast based on email status
-      if (data.email_sent) {
-        toast.success(data.message);
-      } else if (data.email_error) {
-        toast.warning(data.message, { duration: 8000 });
-      } else {
-        toast.success(data.message);
-      }
-      // Always show temp password so admin has it as backup
-      if (data.temp_password) {
-        toast.info(`Temporary password: ${data.temp_password}`, {
-          duration: 30000,
-          description: 'Copy this password now — it will not be shown again in this toast.',
-        });
-      }
+      setCreatedUser({
+        email,
+        displayName,
+        password: data.temp_password || customPassword || '',
+        emailSent: data.email_sent || false,
+        emailError: data.email_error || null,
+      });
       queryClient.invalidateQueries({ queryKey: ['admin-users'] });
-      onClose();
-      resetForm();
     },
     onError: (error: any) => {
       toast.error(error.message || 'Failed to create user');
@@ -315,52 +349,298 @@ function CreateUserDialog({
     setEmail('');
     setDisplayName('');
     setSelectedRoles([]);
+    setPlatformRoles([]);
     setCustomQuota(null);
     setSendEmail(true);
     setUseCustomPassword(false);
     setCustomPassword('');
+    setCreatedUser(null);
+    setShowCreatedPassword(false);
+    setCopiedField(null);
   };
 
+  const handleClose = () => {
+    resetForm();
+    onClose();
+  };
+
+  const handleCreateAnother = () => {
+    resetForm();
+  };
+
+  const handleCopy = async (text: string, field: 'password' | 'all') => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 2000);
+    } catch {
+      toast.error('Failed to copy to clipboard');
+    }
+  };
+
+  const getDescription = () => {
+    if (sendEmail && !useCustomPassword) {
+      return 'A welcome email with login credentials will be sent.';
+    }
+    if (sendEmail && useCustomPassword) {
+      return "A welcome email will be sent. You're setting the password manually.";
+    }
+    return "No email will be sent. You'll need to share credentials manually.";
+  };
+
+  // Success screen
+  if (createdUser) {
+    return (
+      <Dialog open={open} onOpenChange={handleClose}>
+        <DialogContent className="bg-charcoal-black border-muted-gray max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-bone-white flex items-center gap-2">
+              <CheckCircle2 className="h-5 w-5 text-green-500" />
+              User Created Successfully
+            </DialogTitle>
+            <DialogDescription>
+              {createdUser.displayName} has been added to the platform.
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* Credentials card */}
+          <div className="rounded-lg border border-muted-gray bg-muted-gray/10 p-4 space-y-3">
+            <div className="flex items-center gap-2 text-sm text-muted-gray">
+              <Mail className="h-4 w-4" />
+              <span>Email</span>
+            </div>
+            <p className="font-mono text-sm text-bone-white pl-6">{createdUser.email}</p>
+
+            <Separator className="bg-muted-gray/30" />
+
+            <div className="flex items-center gap-2 text-sm text-muted-gray">
+              <KeyRound className="h-4 w-4" />
+              <span>Password</span>
+            </div>
+            <div className="flex items-center gap-2 pl-6">
+              <code className="font-mono text-sm text-bone-white flex-1 break-all">
+                {showCreatedPassword ? createdUser.password : '\u2022'.repeat(Math.min(createdUser.password.length, 20))}
+              </code>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0 text-muted-gray hover:text-bone-white"
+                onClick={() => setShowCreatedPassword(!showCreatedPassword)}
+              >
+                {showCreatedPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </Button>
+            </div>
+          </div>
+
+          {/* Copy buttons */}
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1"
+              onClick={() => handleCopy(createdUser.password, 'password')}
+            >
+              {copiedField === 'password' ? (
+                <Check className="h-3.5 w-3.5 mr-2 text-green-500" />
+              ) : (
+                <Copy className="h-3.5 w-3.5 mr-2" />
+              )}
+              {copiedField === 'password' ? 'Copied!' : 'Copy Password'}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1"
+              onClick={() =>
+                handleCopy(
+                  `Email: ${createdUser.email}\nPassword: ${createdUser.password}`,
+                  'all'
+                )
+              }
+            >
+              {copiedField === 'all' ? (
+                <Check className="h-3.5 w-3.5 mr-2 text-green-500" />
+              ) : (
+                <Copy className="h-3.5 w-3.5 mr-2" />
+              )}
+              {copiedField === 'all' ? 'Copied!' : 'Copy All Credentials'}
+            </Button>
+          </div>
+
+          {/* Email status */}
+          <div className="flex items-center gap-2 text-sm">
+            {createdUser.emailSent ? (
+              <>
+                <Mail className="h-4 w-4 text-green-500" />
+                <span className="text-green-500">Welcome email sent</span>
+              </>
+            ) : createdUser.emailError ? (
+              <>
+                <MailX className="h-4 w-4 text-primary-red" />
+                <span className="text-primary-red">Email failed: {createdUser.emailError}</span>
+              </>
+            ) : (
+              <>
+                <MailX className="h-4 w-4 text-muted-gray" />
+                <span className="text-muted-gray">Welcome email not requested</span>
+              </>
+            )}
+          </div>
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={handleCreateAnother}>
+              <UserPlus className="h-4 w-4 mr-2" />
+              Create Another
+            </Button>
+            <Button onClick={handleClose}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  // Form screen
   return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="bg-charcoal-black border-muted-gray max-w-md">
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent className="bg-charcoal-black border-muted-gray max-w-lg max-h-[90vh]">
         <DialogHeader>
           <DialogTitle className="text-bone-white flex items-center gap-2">
             <UserPlus className="h-5 w-5" />
             Create New User
           </DialogTitle>
-          <DialogDescription>
-            Create a new user account. They will receive an email with login instructions.
-          </DialogDescription>
+          <DialogDescription>{getDescription()}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
-          <div>
-            <Label htmlFor="email">Email *</Label>
-            <Input
-              id="email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="user@example.com"
-              className="bg-muted-gray/20 border-muted-gray"
-            />
+        <ScrollArea className="max-h-[60vh]">
+        <div className="space-y-5 pr-4">
+          {/* Account Info Section */}
+          <div className="space-y-3">
+            <p className="text-xs font-medium text-muted-gray uppercase tracking-wider">Account Info</p>
+            <div>
+              <Label htmlFor="email">Email *</Label>
+              <Input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="user@example.com"
+                className="bg-muted-gray/20 border-muted-gray"
+              />
+            </div>
+            <div>
+              <Label htmlFor="displayName">Display Name *</Label>
+              <Input
+                id="displayName"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="John Doe"
+                className="bg-muted-gray/20 border-muted-gray"
+              />
+            </div>
           </div>
 
-          <div>
-            <Label htmlFor="displayName">Display Name *</Label>
-            <Input
-              id="displayName"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="John Doe"
-              className="bg-muted-gray/20 border-muted-gray"
-            />
+          <Separator className="bg-muted-gray/30" />
+
+          {/* Password Section */}
+          <div className="space-y-3">
+            <p className="text-xs font-medium text-muted-gray uppercase tracking-wider">Password</p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant={!useCustomPassword ? 'default' : 'outline'}
+                size="sm"
+                className={!useCustomPassword ? 'bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90' : ''}
+                onClick={() => {
+                  setUseCustomPassword(false);
+                  setCustomPassword('');
+                }}
+              >
+                <KeyRound className="h-3.5 w-3.5 mr-1.5" />
+                Temporary password
+              </Button>
+              <Button
+                type="button"
+                variant={useCustomPassword ? 'default' : 'outline'}
+                size="sm"
+                className={useCustomPassword ? 'bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90' : ''}
+                onClick={() => setUseCustomPassword(true)}
+              >
+                <Pencil className="h-3.5 w-3.5 mr-1.5" />
+                Specific password
+              </Button>
+            </div>
+            {!useCustomPassword && (
+              <p className="text-xs text-muted-gray">
+                User must change this password on first login.
+              </p>
+            )}
+            {useCustomPassword && (
+              <div>
+                <Input
+                  type="text"
+                  value={customPassword}
+                  onChange={(e) => setCustomPassword(e.target.value)}
+                  placeholder="Enter custom password"
+                  className="bg-muted-gray/20 border-muted-gray font-mono"
+                />
+                <p className="text-xs text-muted-gray mt-1.5">
+                  Min 8 characters, must include uppercase, lowercase, and a number
+                </p>
+              </div>
+            )}
           </div>
 
-          <div>
-            <Label>Assign Roles</Label>
-            <div className="mt-2 space-y-2 max-h-32 overflow-y-auto">
+          <Separator className="bg-muted-gray/30" />
+
+          {/* Platform Roles Section */}
+          <div className="space-y-3">
+            <p className="text-xs font-medium text-muted-gray uppercase tracking-wider">Platform Roles</p>
+            <div className="grid grid-cols-2 gap-2">
+              {PLATFORM_ROLE_DEFINITIONS.map((role) => {
+                const IconComponent = role.icon;
+                const isChecked = platformRoles.includes(role.id);
+                return (
+                  <div
+                    key={role.id}
+                    className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors ${
+                      isChecked
+                        ? 'border-accent-yellow/50 bg-accent-yellow/10'
+                        : 'border-muted-gray/30 hover:border-muted-gray/50'
+                    }`}
+                    onClick={() =>
+                      setPlatformRoles((prev) =>
+                        isChecked ? prev.filter((r) => r !== role.id) : [...prev, role.id]
+                      )
+                    }
+                  >
+                    <Checkbox
+                      checked={isChecked}
+                      onCheckedChange={(checked) =>
+                        setPlatformRoles((prev) =>
+                          checked ? [...prev, role.id] : prev.filter((r) => r !== role.id)
+                        )
+                      }
+                      className="data-[state=checked]:bg-accent-yellow data-[state=checked]:text-charcoal-black border-muted-gray"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <IconComponent className={`w-3.5 h-3.5 flex-shrink-0 ${role.color}`} />
+                        <span className="text-xs font-medium text-bone-white truncate">{role.label}</span>
+                      </div>
+                      <p className="text-[10px] text-muted-gray truncate">{role.description}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <Separator className="bg-muted-gray/30" />
+
+          {/* Custom Roles & Storage Section */}
+          <div className="space-y-3">
+            <p className="text-xs font-medium text-muted-gray uppercase tracking-wider">Custom Roles (storage tiers)</p>
+            <div className="space-y-2">
               {roles.map((role) => (
                 <div key={role.id} className="flex items-center space-x-2">
                   <Checkbox
@@ -384,67 +664,54 @@ function CreateUserDialog({
                 </div>
               ))}
             </div>
+
+            <div>
+              <Label>Custom Storage Quota (optional)</Label>
+              <Select
+                value={customQuota?.toString() || 'default'}
+                onValueChange={(val) => setCustomQuota(val === 'default' ? null : parseInt(val))}
+              >
+                <SelectTrigger className="bg-muted-gray/20 border-muted-gray">
+                  <SelectValue placeholder="Use role default" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">Use role default</SelectItem>
+                  {QUOTA_PRESETS.map((preset) => (
+                    <SelectItem key={preset.value} value={preset.value.toString()}>
+                      {preset.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
-          <div>
-            <Label>Custom Storage Quota (optional)</Label>
-            <Select
-              value={customQuota?.toString() || 'default'}
-              onValueChange={(val) => setCustomQuota(val === 'default' ? null : parseInt(val))}
-            >
-              <SelectTrigger className="bg-muted-gray/20 border-muted-gray">
-                <SelectValue placeholder="Use role default" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="default">Use role default</SelectItem>
-                {QUOTA_PRESETS.map((preset) => (
-                  <SelectItem key={preset.value} value={preset.value.toString()}>
-                    {preset.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <Separator className="bg-muted-gray/30" />
 
-          <div className="flex items-center space-x-2">
-            <Checkbox
-              id="sendEmail"
-              checked={sendEmail}
-              onCheckedChange={(checked) => setSendEmail(checked as boolean)}
-            />
-            <label htmlFor="sendEmail" className="text-sm">
-              Send welcome email with login instructions
-            </label>
-          </div>
-
+          {/* Email Notification Section */}
           <div className="space-y-2">
+            <p className="text-xs font-medium text-muted-gray uppercase tracking-wider">Email Notification</p>
             <div className="flex items-center space-x-2">
-              <Checkbox
-                id="useCustomPassword"
-                checked={useCustomPassword}
-                onCheckedChange={(checked) => {
-                  setUseCustomPassword(checked as boolean);
-                  if (!checked) setCustomPassword('');
-                }}
+              <Switch
+                id="sendEmail"
+                checked={sendEmail}
+                onCheckedChange={setSendEmail}
               />
-              <label htmlFor="useCustomPassword" className="text-sm">
-                Set custom password (instead of auto-generated)
+              <label htmlFor="sendEmail" className="text-sm">
+                Send welcome email with credentials
               </label>
             </div>
-            {useCustomPassword && (
-              <Input
-                type="text"
-                value={customPassword}
-                onChange={(e) => setCustomPassword(e.target.value)}
-                placeholder="Enter custom password"
-                className="bg-muted-gray/20 border-muted-gray font-mono"
-              />
-            )}
+            <p className="text-xs text-muted-gray pl-11">
+              {sendEmail
+                ? 'Email will include the login URL and password.'
+                : "You'll need to share the credentials manually after creation."}
+            </p>
           </div>
         </div>
+        </ScrollArea>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={handleClose}>
             Cancel
           </Button>
           <Button

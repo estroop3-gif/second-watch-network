@@ -55,6 +55,7 @@ class CreateUserRequest(BaseModel):
     display_name: str
     full_name: Optional[str] = None
     role_ids: List[str] = []
+    platform_roles: List[str] = []
     custom_quota_bytes: Optional[int] = None
     send_welcome_email: bool = True
     custom_password: Optional[str] = None
@@ -163,6 +164,9 @@ async def admin_create_user(data: CreateUserRequest, authorization: str = Header
                     "superadmin": "is_superadmin",
                     "admin": "is_admin",
                     "moderator": "is_moderator",
+                    "sales_admin": "is_sales_admin",
+                    "sales_agent": "is_sales_agent",
+                    "sales_rep": "is_sales_rep",
                     "lodge_officer": "is_lodge_officer",
                     "order_member": "is_order_member",
                     "partner": "is_partner",
@@ -179,6 +183,30 @@ async def admin_create_user(data: CreateUserRequest, authorization: str = Header
 
                 if role_flags:
                     client.table("profiles").update(role_flags).eq("id", user_id).execute()
+
+        # Handle platform roles (boolean flags on profiles)
+        if data.platform_roles:
+            platform_flags = {}
+            platform_role_to_flag = {
+                "superadmin": "is_superadmin",
+                "admin": "is_admin",
+                "moderator": "is_moderator",
+                "sales_admin": "is_sales_admin",
+                "sales_agent": "is_sales_agent",
+                "sales_rep": "is_sales_rep",
+                "lodge_officer": "is_lodge_officer",
+                "order_member": "is_order_member",
+                "partner": "is_partner",
+                "filmmaker": "is_filmmaker",
+                "premium": "is_premium",
+                "alpha_tester": "is_alpha_tester",
+            }
+            for role_name in data.platform_roles:
+                flag = platform_role_to_flag.get(role_name)
+                if flag:
+                    platform_flags[flag] = True
+            if platform_flags:
+                client.table("profiles").update(platform_flags).eq("id", user_id).execute()
 
         # Initialize storage tracking
         storage_data = {
