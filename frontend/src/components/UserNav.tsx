@@ -49,6 +49,7 @@ export const UserNav = () => {
     isPartner,
     isOrderMember,
     isLodgeOfficer,
+    isSalesAdmin,
     isSalesAgent,
     isSalesRep,
   } = useEnrichedProfile();
@@ -83,7 +84,7 @@ export const UserNav = () => {
   const showAdminLink = isAdmin || isSuperadmin;
   const showPartnerLink = isPartner || isSalesRep || isAdmin || isSuperadmin;
   const showOrderLink = isOrderMember || isLodgeOfficer || isSalesRep || isAdmin || isSuperadmin;
-  const showCRMLink = isSalesAgent || isSalesRep || isAdmin || isSuperadmin;
+  const showCRMLink = isSalesAdmin || isSalesAgent || isSalesRep || isAdmin || isSuperadmin;
   const canSubmitAndManageSubmissions = isFilmmaker || isSalesRep || isAdmin || isSuperadmin;
 
   // Check for filmmaker onboarding

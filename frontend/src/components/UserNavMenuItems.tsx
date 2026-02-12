@@ -37,6 +37,7 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
   const isFilmmaker = isFilmmakerRole || isFilmmakerProfile;
   const hasOnboarded = profile?.has_completed_filmmaker_onboarding === true;
 
+  const isSalesAdmin = hasRole('sales_admin');
   const isSalesAgent = hasRole('sales_agent');
   const isSalesRep = hasRole('sales_rep');
   const showAdminLink = isAdmin || isSuperadmin;
@@ -44,7 +45,7 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
   const showOnboardingLink = isFilmmaker && !hasOnboarded;
   const canSubmitAndManageSubmissions = isFilmmakerRole || isSalesRep || isAdmin || isSuperadmin;
   const showOrderLink = isOrderMember || isLodgeOfficer || isSalesRep || isAdmin || isSuperadmin;
-  const showCRMLink = isSalesAgent || isSalesRep || isAdmin || isSuperadmin;
+  const showCRMLink = isSalesAdmin || isSalesAgent || isSalesRep || isAdmin || isSuperadmin;
 
   // Full Gear House is for non-free users (filmmaker, premium, admin, etc.)
   // Free users use My Gear (lite) instead
