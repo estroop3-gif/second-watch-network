@@ -4673,6 +4673,18 @@ class APIClient {
     })
   }
 
+  async addCRMTeamMember(userId: string, role: string) {
+    return this.post<any>('/api/v1/admin/crm/team/add', { user_id: userId, role })
+  }
+
+  async removeCRMTeamMember(userId: string) {
+    return this.post<any>('/api/v1/admin/crm/team/remove', { user_id: userId })
+  }
+
+  async updateCRMTeamMemberRole(userId: string, role: string) {
+    return this.put<any>(`/api/v1/admin/crm/team/${userId}/role`, { role })
+  }
+
   // ============================================================================
   // CRM — Deals & Pipeline
   // ============================================================================

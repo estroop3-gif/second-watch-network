@@ -69,3 +69,35 @@ export function useBulkAssignContacts() {
     },
   });
 }
+
+export function useAddCRMTeamMember() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: string }) =>
+      api.addCRMTeamMember(userId, role),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-reps'] });
+    },
+  });
+}
+
+export function useRemoveCRMTeamMember() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) => api.removeCRMTeamMember(userId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-reps'] });
+    },
+  });
+}
+
+export function useUpdateCRMTeamMemberRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: string }) =>
+      api.updateCRMTeamMemberRole(userId, role),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-reps'] });
+    },
+  });
+}

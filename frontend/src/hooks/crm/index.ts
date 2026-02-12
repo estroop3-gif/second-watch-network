@@ -24,6 +24,9 @@ export {
   useCRMAdminInteractions,
   useAssignContact,
   useBulkAssignContacts,
+  useAddCRMTeamMember,
+  useRemoveCRMTeamMember,
+  useUpdateCRMTeamMemberRole,
 } from './useInteractions';
 
 export {

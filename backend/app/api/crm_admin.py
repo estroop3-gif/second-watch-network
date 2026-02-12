@@ -16,6 +16,19 @@ router = APIRouter()
 # Schemas
 # ============================================================================
 
+class TeamAddRequest(BaseModel):
+    user_id: str
+    role: str  # sales_rep, sales_agent, or sales_admin
+
+
+class TeamRoleUpdateRequest(BaseModel):
+    role: str  # sales_rep, sales_agent, or sales_admin
+
+
+class TeamRemoveRequest(BaseModel):
+    user_id: str
+
+
 class AssignContactRequest(BaseModel):
     rep_id: str
 
@@ -57,6 +70,8 @@ async def list_sales_reps(
     reps = execute_query(
         """
         SELECT p.id, p.full_name, p.email, p.avatar_url,
+               p.is_sales_agent, p.is_sales_rep, p.is_sales_admin,
+               p.is_admin, p.is_superadmin,
                (SELECT COUNT(*) FROM crm_contacts c WHERE c.assigned_rep_id = p.id AND c.status = 'active') as contact_count,
                (SELECT COUNT(*) FROM crm_activities a WHERE a.rep_id = p.id AND a.activity_date >= CURRENT_DATE - INTERVAL '30 days') as activities_30d,
                (SELECT COUNT(*) FROM crm_activities a WHERE a.rep_id = p.id AND a.activity_date::date = CURRENT_DATE) as activities_today,
@@ -68,12 +83,95 @@ async def list_sales_reps(
                ic.other_interactions as today_other
         FROM profiles p
         LEFT JOIN crm_interaction_counts ic ON ic.rep_id = p.id AND ic.count_date = CURRENT_DATE
-        WHERE p.is_sales_agent = true OR p.is_admin = true OR p.is_superadmin = true
+        WHERE p.is_sales_agent = true OR p.is_sales_rep = true OR p.is_sales_admin = true
+            OR p.is_admin = true OR p.is_superadmin = true
         ORDER BY p.full_name ASC
         """,
         {},
     )
     return {"reps": reps}
+
+
+VALID_CRM_ROLES = {"sales_rep", "sales_agent", "sales_admin"}
+CRM_ROLE_FLAGS = ["is_sales_rep", "is_sales_agent", "is_sales_admin"]
+
+
+@router.post("/team/add")
+async def add_team_member(
+    data: TeamAddRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """Add a user to the CRM sales team with a specific role."""
+    if data.role not in VALID_CRM_ROLES:
+        raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(VALID_CRM_ROLES)}")
+
+    user = execute_single(
+        "SELECT id, full_name FROM profiles WHERE id = :id",
+        {"id": data.user_id},
+    )
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    flag = f"is_{data.role}"
+    result = execute_single(
+        f"UPDATE profiles SET {flag} = true, updated_at = NOW() WHERE id = :id RETURNING id, full_name",
+        {"id": data.user_id},
+    )
+    return result
+
+
+@router.post("/team/remove")
+async def remove_team_member(
+    data: TeamRemoveRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """Remove a user from the CRM sales team (clears all CRM role flags)."""
+    user = execute_single(
+        "SELECT id, full_name FROM profiles WHERE id = :id",
+        {"id": data.user_id},
+    )
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    result = execute_single(
+        """
+        UPDATE profiles
+        SET is_sales_rep = false, is_sales_agent = false, is_sales_admin = false, updated_at = NOW()
+        WHERE id = :id RETURNING id, full_name
+        """,
+        {"id": data.user_id},
+    )
+    return result
+
+
+@router.put("/team/{user_id}/role")
+async def update_team_member_role(
+    user_id: str,
+    data: TeamRoleUpdateRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """Change a team member's CRM role (clears old flags, sets new one)."""
+    if data.role not in VALID_CRM_ROLES:
+        raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(VALID_CRM_ROLES)}")
+
+    user = execute_single(
+        "SELECT id, full_name FROM profiles WHERE id = :id",
+        {"id": user_id},
+    )
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    flag = f"is_{data.role}"
+    result = execute_single(
+        f"""
+        UPDATE profiles
+        SET is_sales_rep = false, is_sales_agent = false, is_sales_admin = false,
+            {flag} = true, updated_at = NOW()
+        WHERE id = :id RETURNING id, full_name
+        """,
+        {"id": user_id},
+    )
+    return result
 
 
 # ============================================================================
