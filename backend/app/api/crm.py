@@ -4062,11 +4062,10 @@ async def get_email_notification_settings(
 @router.put("/email/account/notifications")
 async def update_email_notification_settings(
     payload: dict,
-    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
 ):
     """
-    Update notification settings for an email account.
-    Only sales_admin/admin/superadmin can configure.
+    Update notification settings for the current user's email account.
     """
     account_id = payload.get("account_id")
     notification_email = payload.get("notification_email", "").strip()
@@ -4078,10 +4077,10 @@ async def update_email_notification_settings(
     if digest_interval not in ("hourly", "daily"):
         raise HTTPException(status_code=400, detail="Invalid digest interval")
 
-    # Fetch the account
+    # Verify the account belongs to the current user
     account = execute_single(
-        "SELECT id, email_address FROM crm_email_accounts WHERE id = :aid",
-        {"aid": account_id},
+        "SELECT id, email_address FROM crm_email_accounts WHERE id = :aid AND profile_id = :pid AND is_active = true",
+        {"aid": account_id, "pid": profile["id"]},
     )
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")

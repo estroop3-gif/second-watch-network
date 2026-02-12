@@ -13,7 +13,6 @@ import {
   useEmailAccount, useUpdateEmailSignature, useUpdateEmailAvatar,
   useUploadEmailAvatar, useEmailNotificationSettings, useUpdateEmailNotificationSettings,
 } from '@/hooks/crm/useEmail';
-import { usePermissions } from '@/hooks/usePermissions';
 import { useToast } from '@/hooks/use-toast';
 import RichTextEditor from './RichTextEditor';
 import {
@@ -32,8 +31,6 @@ const EmailSignatureEditor = ({ open, onOpenChange }: EmailSignatureEditorProps)
   const uploadAvatar = useUploadEmailAvatar();
   const { data: notifData } = useEmailNotificationSettings();
   const updateNotifSettings = useUpdateEmailNotificationSettings();
-  const { hasAnyRole } = usePermissions();
-  const isNotifAdmin = hasAnyRole(['sales_admin', 'admin', 'superadmin']);
   const { toast } = useToast();
 
   const [signatureHtml, setSignatureHtml] = useState('');
@@ -118,7 +115,7 @@ const EmailSignatureEditor = ({ open, onOpenChange }: EmailSignatureEditorProps)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="bg-charcoal-black border-muted-gray max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="bg-charcoal-black border-muted-gray max-w-2xl max-h-[90vh] flex flex-col !top-[5vh] !translate-y-0">
         <DialogHeader>
           <DialogTitle className="text-bone-white">Email Settings</DialogTitle>
           <DialogDescription className="text-muted-gray">
@@ -126,7 +123,7 @@ const EmailSignatureEditor = ({ open, onOpenChange }: EmailSignatureEditorProps)
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-6">
+        <div className="space-y-6 overflow-y-auto flex-1 pr-1">
           {/* Avatar Section - File Upload */}
           <div className="p-4 rounded-lg border border-muted-gray/20">
             <Label className="text-sm text-muted-gray mb-3 block">Profile Photo</Label>
@@ -216,8 +213,8 @@ const EmailSignatureEditor = ({ open, onOpenChange }: EmailSignatureEditorProps)
             </div>
           </div>
 
-          {/* Notification Settings (admin/sales_admin only) */}
-          {isNotifAdmin && notifData?.settings && (
+          {/* Notification Settings */}
+          {notifData?.settings && (
             <div className="p-4 rounded-lg border border-muted-gray/20">
               <div className="flex items-center gap-2 mb-3">
                 <Bell className="h-4 w-4 text-accent-yellow" />
