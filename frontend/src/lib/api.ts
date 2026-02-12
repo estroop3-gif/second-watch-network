@@ -3916,6 +3916,7 @@ class APIClient {
     role_ids?: string[]
     custom_quota_bytes?: number
     send_welcome_email?: boolean
+    custom_password?: string
   }) {
     return this.request<{
       success: boolean
@@ -3926,6 +3927,8 @@ class APIClient {
         roles_assigned: number
       }
       temp_password?: string
+      email_sent?: boolean
+      email_error?: string | null
       message: string
     }>('/api/v1/admin/users/create', {
       method: 'POST',

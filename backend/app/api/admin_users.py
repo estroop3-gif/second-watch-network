@@ -57,6 +57,7 @@ class CreateUserRequest(BaseModel):
     role_ids: List[str] = []
     custom_quota_bytes: Optional[int] = None
     send_welcome_email: bool = True
+    custom_password: Optional[str] = None
 
 
 class UpdateUserRequest(BaseModel):
@@ -98,8 +99,8 @@ async def admin_create_user(data: CreateUserRequest, authorization: str = Header
         from app.core.cognito import CognitoAuth
         import boto3
 
-        # Generate temporary password
-        temp_password = generate_temp_password()
+        # Use custom password if provided, otherwise generate one
+        temp_password = data.custom_password if data.custom_password else generate_temp_password()
 
         # Create Cognito user
         cognito_result = CognitoAuth.admin_create_user(
@@ -193,16 +194,30 @@ async def admin_create_user(data: CreateUserRequest, authorization: str = Header
         client.table("user_storage_usage").insert(storage_data).execute()
 
         # Send welcome email if requested
+        email_sent = False
+        email_error = None
         if data.send_welcome_email:
             try:
                 from app.services.email_service import send_welcome_email
-                await send_welcome_email(
+                result = await send_welcome_email(
                     email=data.email,
                     name=data.display_name,
                     temp_password=temp_password
                 )
+                email_sent = result.get("success", False) if isinstance(result, dict) else False
             except Exception as e:
-                print(f"Warning: Failed to send welcome email: {e}")
+                email_error = str(e)
+
+        # Build response message
+        if data.send_welcome_email:
+            if email_sent:
+                message = "User created successfully. Welcome email sent with login instructions."
+            elif email_error:
+                message = f"User created successfully. Warning: Welcome email failed to send ({email_error}). Temp password is included below."
+            else:
+                message = "User created successfully. Welcome email may not have been delivered. Temp password is included below."
+        else:
+            message = "User created successfully. Temporary password provided - share securely with user."
 
         return {
             "success": True,
@@ -212,12 +227,10 @@ async def admin_create_user(data: CreateUserRequest, authorization: str = Header
                 "display_name": data.display_name,
                 "roles_assigned": len(data.role_ids)
             },
-            "temp_password": temp_password if not data.send_welcome_email else None,
-            "message": "User created successfully. " + (
-                "Welcome email sent with login instructions."
-                if data.send_welcome_email
-                else "Temporary password provided - share securely with user."
-            )
+            "temp_password": temp_password,
+            "email_sent": email_sent,
+            "email_error": email_error,
+            "message": message
         }
 
     except HTTPException:

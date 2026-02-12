@@ -273,6 +273,8 @@ function CreateUserDialog({
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [customQuota, setCustomQuota] = useState<number | null>(null);
   const [sendEmail, setSendEmail] = useState(true);
+  const [useCustomPassword, setUseCustomPassword] = useState(false);
+  const [customPassword, setCustomPassword] = useState('');
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -282,11 +284,23 @@ function CreateUserDialog({
         role_ids: selectedRoles,
         custom_quota_bytes: customQuota || undefined,
         send_welcome_email: sendEmail,
+        custom_password: useCustomPassword && customPassword ? customPassword : undefined,
       }),
     onSuccess: (data) => {
-      toast.success(data.message);
+      // Show appropriate toast based on email status
+      if (data.email_sent) {
+        toast.success(data.message);
+      } else if (data.email_error) {
+        toast.warning(data.message, { duration: 8000 });
+      } else {
+        toast.success(data.message);
+      }
+      // Always show temp password so admin has it as backup
       if (data.temp_password) {
-        toast.info(`Temporary password: ${data.temp_password}`, { duration: 10000 });
+        toast.info(`Temporary password: ${data.temp_password}`, {
+          duration: 30000,
+          description: 'Copy this password now — it will not be shown again in this toast.',
+        });
       }
       queryClient.invalidateQueries({ queryKey: ['admin-users'] });
       onClose();
@@ -303,6 +317,8 @@ function CreateUserDialog({
     setSelectedRoles([]);
     setCustomQuota(null);
     setSendEmail(true);
+    setUseCustomPassword(false);
+    setCustomPassword('');
   };
 
   return (
@@ -399,6 +415,31 @@ function CreateUserDialog({
             <label htmlFor="sendEmail" className="text-sm">
               Send welcome email with login instructions
             </label>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id="useCustomPassword"
+                checked={useCustomPassword}
+                onCheckedChange={(checked) => {
+                  setUseCustomPassword(checked as boolean);
+                  if (!checked) setCustomPassword('');
+                }}
+              />
+              <label htmlFor="useCustomPassword" className="text-sm">
+                Set custom password (instead of auto-generated)
+              </label>
+            </div>
+            {useCustomPassword && (
+              <Input
+                type="text"
+                value={customPassword}
+                onChange={(e) => setCustomPassword(e.target.value)}
+                placeholder="Enter custom password"
+                className="bg-muted-gray/20 border-muted-gray font-mono"
+              />
+            )}
           </div>
         </div>
 

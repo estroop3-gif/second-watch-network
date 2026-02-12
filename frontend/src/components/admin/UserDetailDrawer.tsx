@@ -47,6 +47,10 @@ import {
   Send,
   Pencil,
   Save,
+  Copy,
+  Eye,
+  EyeOff,
+  Clock,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -86,6 +90,7 @@ export const UserDetailDrawer = ({ userId, onClose }: UserDetailDrawerProps) => 
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showResetPasswordDialog, setShowResetPasswordDialog] = useState(false);
   const [showResendTempPasswordDialog, setShowResendTempPasswordDialog] = useState(false);
+  const [showTempPassword, setShowTempPassword] = useState(false);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['admin-user-details', userId],
@@ -226,6 +231,55 @@ export const UserDetailDrawer = ({ userId, onClose }: UserDetailDrawerProps) => 
                   Delete
                 </Button>
               </div>
+
+              {/* Temp Password Display */}
+              {profile.temp_password && (
+                <div className="mb-6 p-3 bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <Key className="h-4 w-4 text-accent-yellow" />
+                      <span className="text-xs text-accent-yellow uppercase font-medium">Temporary Password</span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 text-muted-gray hover:text-bone-white"
+                        onClick={() => setShowTempPassword(!showTempPassword)}
+                      >
+                        {showTempPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 text-muted-gray hover:text-bone-white"
+                        onClick={() => {
+                          navigator.clipboard.writeText(profile.temp_password);
+                          toast.success('Password copied to clipboard');
+                        }}
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                  <p className="text-bone-white font-mono text-sm bg-charcoal-black/50 px-3 py-2 rounded select-all">
+                    {showTempPassword ? profile.temp_password : '\u2022'.repeat(16)}
+                  </p>
+                  {profile.temp_password_set_at && (
+                    <div className="flex items-center gap-1 mt-2">
+                      <Clock className="h-3 w-3 text-muted-gray" />
+                      <span className="text-xs text-muted-gray">
+                        Set {format(new Date(profile.temp_password_set_at), 'PPp')}
+                      </span>
+                    </div>
+                  )}
+                  {profile.created_by_admin && (
+                    <p className="text-xs text-muted-gray mt-1">
+                      Account created by admin
+                    </p>
+                  )}
+                </div>
+              )}
 
               <Separator className="bg-muted-gray mb-6" />
 

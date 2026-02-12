@@ -1036,25 +1036,25 @@ def generate_welcome_email_html(
                         <td style="padding: 8px 0; vertical-align: top; width: 30px;">
                             <span style="display: inline-block; width: 24px; height: 24px; background-color: {accent_yellow}; color: #121212; border-radius: 50%; text-align: center; line-height: 24px; font-weight: bold; font-size: 12px;">1</span>
                         </td>
-                        <td style="padding: 8px 0; color: #a0a0a0; font-size: 14px;">Log in and change your password</td>
+                        <td style="padding: 8px 0; color: #a0a0a0; font-size: 14px;">Go to <a href="{login_url}" style="color: {accent_yellow}; text-decoration: none;">secondwatchnetwork.com/login</a> and enter your email and temporary password above</td>
                     </tr>
                     <tr>
                         <td style="padding: 8px 0; vertical-align: top;">
                             <span style="display: inline-block; width: 24px; height: 24px; background-color: {accent_yellow}; color: #121212; border-radius: 50%; text-align: center; line-height: 24px; font-weight: bold; font-size: 12px;">2</span>
                         </td>
-                        <td style="padding: 8px 0; color: #a0a0a0; font-size: 14px;">Complete your profile with bio, skills, and experience</td>
+                        <td style="padding: 8px 0; color: #a0a0a0; font-size: 14px;">You'll be prompted to set a new password &mdash; choose something secure</td>
                     </tr>
                     <tr>
                         <td style="padding: 8px 0; vertical-align: top;">
                             <span style="display: inline-block; width: 24px; height: 24px; background-color: {accent_yellow}; color: #121212; border-radius: 50%; text-align: center; line-height: 24px; font-weight: bold; font-size: 12px;">3</span>
                         </td>
-                        <td style="padding: 8px 0; color: #a0a0a0; font-size: 14px;">Explore the platform and connect with other filmmakers</td>
+                        <td style="padding: 8px 0; color: #a0a0a0; font-size: 14px;">Complete your profile with bio, skills, and experience</td>
                     </tr>
                     <tr>
                         <td style="padding: 8px 0; vertical-align: top;">
                             <span style="display: inline-block; width: 24px; height: 24px; background-color: {accent_yellow}; color: #121212; border-radius: 50%; text-align: center; line-height: 24px; font-weight: bold; font-size: 12px;">4</span>
                         </td>
-                        <td style="padding: 8px 0; color: #a0a0a0; font-size: 14px;">Start collaborating and bringing your vision to life!</td>
+                        <td style="padding: 8px 0; color: #a0a0a0; font-size: 14px;">Explore the platform and connect with other filmmakers</td>
                     </tr>
                 </table>
             </div>
@@ -1167,10 +1167,10 @@ def generate_welcome_email_text(
         "QUICK START GUIDE",
         "-" * 60,
         "",
-        "1. Log in and change your password",
-        "2. Complete your profile with bio, skills, and experience",
-        "3. Explore the platform and connect with other filmmakers",
-        "4. Start collaborating and bringing your vision to life!",
+        f"1. Go to {login_url} and enter your email and temporary password above",
+        "2. You'll be prompted to set a new password - choose something secure",
+        "3. Complete your profile with bio, skills, and experience",
+        "4. Explore the platform and connect with other filmmakers",
         "",
         "-" * 60,
         "NEED HELP?",

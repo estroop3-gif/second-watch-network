@@ -55,7 +55,11 @@ jobs:
               "S3AvatarsBucket=${{ secrets.S3_AVATARS_BUCKET }}" \
               "S3BacklotBucket=${{ secrets.S3_BACKLOT_BUCKET }}" \
               "S3BacklotFilesBucket=${{ secrets.S3_BACKLOT_FILES_BUCKET }}" \
-              "FrontendUrl=https://www.secondwatchnetwork.com"
+              "FrontendUrl=https://www.secondwatchnetwork.com" \
+              "ResendApiKey=${{ secrets.RESEND_API_KEY }}" \
+              "ResendWebhookSigningSecret=${{ secrets.RESEND_WEBHOOK_SIGNING_SECRET }}" \
+              "EmailFromAddress=noreply@secondwatch.network" \
+              "EmailFromName=Second Watch Network"
 
   deploy-frontend:
     name: Deploy Frontend (S3/CloudFront)
