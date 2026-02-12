@@ -416,7 +416,7 @@ const App = () => (
                     <Route path="/church/:tool" element={<ChurchToolPage />} />
 
                     {/* Gear House Routes - restricted to non-free users */}
-                    <Route element={<PermissionRoute requiredRoles={['filmmaker', 'admin', 'superadmin', 'moderator', 'partner', 'order_member', 'premium']} redirectTo="/my-gear" />}>
+                    <Route element={<PermissionRoute requiredRoles={['filmmaker', 'admin', 'superadmin', 'moderator', 'partner', 'order_member', 'premium', 'sales_rep']} redirectTo="/my-gear" />}>
                       <Route path="/gear" element={<GearHousePage />} />
                       <Route path="/gear/:orgId" element={<GearWorkspacePage />} />
                       <Route path="/gear/:orgId/incidents/:incidentId" element={<IncidentDetailPage />} />
@@ -426,7 +426,7 @@ const App = () => (
                     <Route path="/gear/verify/:token" element={<AsyncVerificationPage />} />
 
                     {/* Set House Routes - restricted to non-free users */}
-                    <Route element={<PermissionRoute requiredRoles={['filmmaker', 'admin', 'superadmin', 'moderator', 'partner', 'order_member', 'premium']} redirectTo="/dashboard" />}>
+                    <Route element={<PermissionRoute requiredRoles={['filmmaker', 'admin', 'superadmin', 'moderator', 'partner', 'order_member', 'premium', 'sales_rep']} redirectTo="/dashboard" />}>
                       <Route path="/set-house" element={<SetHousePage />} />
                       <Route path="/set-house/:orgId" element={<SetHouseWorkspacePage />} />
                     </Route>
@@ -456,14 +456,14 @@ const App = () => (
                     <Route path="/order/governance" element={<OrderGovernance />} />
 
                     {/* Filmmaker-only Routes (also accessible by admin) */}
-                    <Route element={<PermissionRoute requiredRoles={['filmmaker', 'admin']} />}>
+                    <Route element={<PermissionRoute requiredRoles={['filmmaker', 'admin', 'sales_rep']} />}>
                       <Route path="/submit-project" element={<FilmmakerSubmissions />} />
                       <Route path="/my-submissions" element={<MySubmissions />} />
                       <Route path="/submissions/:submissionId" element={<SubmissionDetail />} />
                     </Route>
 
                     {/* Partner Routes (also accessible by admin) */}
-                    <Route path="/partner" element={<PermissionRoute requiredRoles={['partner', 'admin']} redirectTo="/dashboard" />}>
+                    <Route path="/partner" element={<PermissionRoute requiredRoles={['partner', 'admin', 'sales_rep']} redirectTo="/dashboard" />}>
                       <Route element={<PartnerLayout />}>
                         <Route index element={<Navigate to="dashboard" replace />} />
                         <Route path="dashboard" element={<PartnerDashboard />} />
@@ -474,7 +474,7 @@ const App = () => (
                     </Route>
 
                     {/* CRM Routes (sales agents and admin) */}
-                    <Route path="/crm" element={<PermissionRoute requiredRoles={['sales_agent', 'sales_admin', 'admin', 'superadmin']} redirectTo="/dashboard" />}>
+                    <Route path="/crm" element={<PermissionRoute requiredRoles={['sales_agent', 'sales_rep', 'sales_admin', 'admin', 'superadmin']} redirectTo="/dashboard" />}>
                       <Route element={<EmailComposeProvider><CRMLayout /></EmailComposeProvider>}>
                         <Route index element={<Navigate to="dashboard" replace />} />
                         <Route path="dashboard" element={<CRMDashboard />} />

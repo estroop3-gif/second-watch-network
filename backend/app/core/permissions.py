@@ -306,6 +306,39 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         Permission.CRM_CREATE,
     },
 
+    RoleType.SALES_REP: {
+        # User
+        Permission.USER_VIEW,
+        Permission.USER_EDIT,
+        # Content
+        Permission.CONTENT_VIEW,
+        Permission.CONTENT_CREATE,
+        Permission.CONTENT_EDIT,
+        # World
+        Permission.WORLD_VIEW,
+        # Backlot
+        Permission.BACKLOT_VIEW,
+        Permission.BACKLOT_CREATE,
+        # Green Room
+        Permission.GREENROOM_VIEW,
+        Permission.GREENROOM_SUBMIT,
+        Permission.GREENROOM_VOTE,
+        # Order
+        Permission.ORDER_VIEW,
+        Permission.ORDER_ACCESS,
+        # Community
+        Permission.FORUM_VIEW,
+        Permission.FORUM_POST,
+        Permission.MESSAGE_SEND,
+        Permission.CONNECTION_MANAGE,
+        # Events
+        Permission.EVENT_VIEW,
+        Permission.EVENT_CREATE,
+        # CRM (no MANAGE/ADMIN/REPORTS/EMAIL_ADMIN)
+        Permission.CRM_VIEW,
+        Permission.CRM_CREATE,
+    },
+
     RoleType.PARTNER: {
         Permission.USER_VIEW,
         Permission.USER_EDIT,

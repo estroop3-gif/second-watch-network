@@ -10,10 +10,11 @@ Role Hierarchy (highest to lowest priority):
 5. Lodge Officer - Order lodge leadership
 6. Order Member - Member of The Second Watch Order
 7. Sales Agent - Sales team member with CRM access
-8. Partner - Business/sponsor partner
-9. Filmmaker - Content creator with verified profile
-10. Premium - Paid subscriber
-11. Free - Basic registered user
+8. Sales Rep - Sales representative with broad platform + CRM access
+9. Partner - Business/sponsor partner
+10. Filmmaker - Content creator with verified profile
+11. Premium - Paid subscriber
+12. Free - Basic registered user
 
 Note: Users can have multiple flags set (e.g., is_admin AND is_order_member).
 The "primary role" for display purposes follows the hierarchy above.
@@ -31,6 +32,7 @@ class RoleType(str, Enum):
     LODGE_OFFICER = "lodge_officer"
     ORDER_MEMBER = "order_member"
     SALES_AGENT = "sales_agent"
+    SALES_REP = "sales_rep"
     PARTNER = "partner"
     FILMMAKER = "filmmaker"
     PREMIUM = "premium"
@@ -46,6 +48,7 @@ ROLE_HIERARCHY: List[RoleType] = [
     RoleType.LODGE_OFFICER,
     RoleType.ORDER_MEMBER,
     RoleType.SALES_AGENT,
+    RoleType.SALES_REP,
     RoleType.PARTNER,
     RoleType.FILMMAKER,
     RoleType.PREMIUM,
@@ -63,6 +66,7 @@ PROFILE_ROLE_FIELDS = {
     "is_lodge_officer": RoleType.LODGE_OFFICER,
     "is_order_member": RoleType.ORDER_MEMBER,
     "is_sales_agent": RoleType.SALES_AGENT,
+    "is_sales_rep": RoleType.SALES_REP,
     "is_partner": RoleType.PARTNER,
     "is_filmmaker": RoleType.FILMMAKER,
     "is_premium": RoleType.PREMIUM,

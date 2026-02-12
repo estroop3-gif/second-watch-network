@@ -44,6 +44,7 @@ interface EnrichedProfileContextValue {
   isModerator: boolean;
   isSalesAdmin: boolean;
   isSalesAgent: boolean;
+  isSalesRep: boolean;
 
   // Profile existence checks
   hasFilmmakerProfile: boolean;
@@ -134,6 +135,7 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
       is_lodge_officer: base.is_lodge_officer || orderData?.isOfficer || authRoles.has('lodge_officer'),
       is_sales_admin: base.is_sales_admin || authRoles.has('sales_admin'),
       is_sales_agent: base.is_sales_agent || authRoles.has('sales_agent'),
+      is_sales_rep: base.is_sales_rep || authRoles.has('sales_rep'),
     };
   }, [baseProfile, user, authRoles, hasFilmmakerProfile, hasPartnerProfile, orderData]);
 
@@ -153,6 +155,7 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
   const isOrderMember = hasRole(enrichedProfile, 'order_member');
   const isLodgeOfficer = hasRole(enrichedProfile, 'lodge_officer');
   const isSalesAgent = hasRole(enrichedProfile, 'sales_agent');
+  const isSalesRep = hasRole(enrichedProfile, 'sales_rep');
 
   // Only block on profile loading - the enrichment queries (filmmaker, order) can
   // complete in the background. We have enough data from base profile to render.
@@ -177,6 +180,7 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
     isOrderMember,
     isLodgeOfficer,
     isSalesAgent,
+    isSalesRep,
     hasFilmmakerProfile: hasFilmmakerProfile || false,
     hasPartnerProfile: hasPartnerProfile || false,
     hasOrderProfile: orderData?.hasProfile || false,
@@ -213,12 +217,14 @@ export function useEnrichedProfileSafe() {
       isAdmin: false,
       isModerator: false,
       isSalesAdmin: false,
+      isSalesRep: false,
       isFilmmaker: false,
       isPartner: false,
       isPremium: false,
       isOrderMember: false,
       isLodgeOfficer: false,
       isSalesAgent: false,
+      isSalesRep: false,
       hasFilmmakerProfile: false,
       hasPartnerProfile: false,
       hasOrderProfile: false,

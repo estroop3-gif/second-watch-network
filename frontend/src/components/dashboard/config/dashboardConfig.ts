@@ -67,21 +67,21 @@ export interface QuickAction {
 // Role groups for easier configuration
 const ALL_ROLES: RoleType[] = [
   'superadmin', 'admin', 'moderator', 'sales_admin', 'lodge_officer',
-  'order_member', 'sales_agent', 'partner', 'filmmaker', 'premium', 'free'
+  'order_member', 'sales_agent', 'sales_rep', 'partner', 'filmmaker', 'premium', 'free'
 ];
 
 const AUTHENTICATED_ROLES: RoleType[] = [
   'superadmin', 'admin', 'moderator', 'sales_admin', 'lodge_officer',
-  'order_member', 'sales_agent', 'partner', 'filmmaker', 'premium'
+  'order_member', 'sales_agent', 'sales_rep', 'partner', 'filmmaker', 'premium'
 ];
 
-const CRM_ROLES: RoleType[] = ['superadmin', 'admin', 'sales_admin', 'sales_agent'];
+const CRM_ROLES: RoleType[] = ['superadmin', 'admin', 'sales_admin', 'sales_agent', 'sales_rep'];
 
 const STAFF_ROLES: RoleType[] = ['superadmin', 'admin', 'moderator'];
 
-const ORDER_ROLES: RoleType[] = ['superadmin', 'admin', 'moderator', 'lodge_officer', 'order_member'];
+const ORDER_ROLES: RoleType[] = ['superadmin', 'admin', 'moderator', 'lodge_officer', 'order_member', 'sales_rep'];
 
-const CREATOR_ROLES: RoleType[] = ['superadmin', 'admin', 'moderator', 'filmmaker', 'partner'];
+const CREATOR_ROLES: RoleType[] = ['superadmin', 'admin', 'moderator', 'filmmaker', 'partner', 'sales_rep'];
 
 /**
  * Dashboard Section Configurations
@@ -567,10 +567,11 @@ export function getHighestRole(roles: RoleType[]): RoleType {
     lodge_officer: 5,
     order_member: 6,
     sales_agent: 7,
-    partner: 8,
-    filmmaker: 9,
-    premium: 10,
-    free: 11,
+    sales_rep: 8,
+    partner: 9,
+    filmmaker: 10,
+    premium: 11,
+    free: 12,
   };
 
   return roles.reduce((highest, current) => {

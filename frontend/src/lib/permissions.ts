@@ -8,6 +8,9 @@ export type Role =
   | 'moderator'
   | 'order_member'
   | 'lodge_officer'
+  | 'sales_agent'
+  | 'sales_admin'
+  | 'sales_rep'
   // legacy/compat
   | 'filmmaker';
 
@@ -44,7 +47,7 @@ export type PermKey =
 type PermToRoles = Record<PermKey, Role[]>;
 
 // All roles for convenience
-const ALL_ROLES: Role[] = ['free', 'premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator', 'order_member', 'lodge_officer', 'filmmaker'];
+const ALL_ROLES: Role[] = ['free', 'premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator', 'order_member', 'lodge_officer', 'filmmaker', 'sales_agent', 'sales_admin', 'sales_rep'];
 const STAFF_ROLES: Role[] = ['admin', 'superadmin', 'moderator'];
 const ADMIN_ROLES: Role[] = ['admin', 'superadmin'];
 
@@ -55,17 +58,17 @@ export const PERMISSIONS: PermToRoles = {
   forum_read: ALL_ROLES,
 
   // Premium or higher features
-  forum_post: ['premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator', 'filmmaker', 'order_member', 'lodge_officer'],
-  forum_reply: ['premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator', 'filmmaker', 'order_member', 'lodge_officer'],
-  forum_react: ['premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator', 'filmmaker', 'order_member', 'lodge_officer'],
+  forum_post: ['premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator', 'filmmaker', 'order_member', 'lodge_officer', 'sales_agent', 'sales_admin', 'sales_rep'],
+  forum_reply: ['premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator', 'filmmaker', 'order_member', 'lodge_officer', 'sales_agent', 'sales_admin', 'sales_rep'],
+  forum_react: ['premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator', 'filmmaker', 'order_member', 'lodge_officer', 'sales_agent', 'sales_admin', 'sales_rep'],
 
   // Creator/partner/admin only
-  submit_content: ['creator', 'partner', 'admin', 'superadmin', 'filmmaker'],
+  submit_content: ['creator', 'partner', 'admin', 'superadmin', 'filmmaker', 'sales_rep'],
 
-  access_partner_tools: ['partner', 'admin', 'superadmin'],
+  access_partner_tools: ['partner', 'admin', 'superadmin', 'sales_rep'],
 
-  start_group_chat: ['premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator'],
-  dm_attachments: ['premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator'],
+  start_group_chat: ['premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator', 'sales_rep'],
+  dm_attachments: ['premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator', 'sales_rep'],
 
   view_creator_partner_directory: ALL_ROLES,
   connection_request: ALL_ROLES,
