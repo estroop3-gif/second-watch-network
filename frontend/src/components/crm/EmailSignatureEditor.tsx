@@ -93,7 +93,22 @@ const EmailSignatureEditor = ({ open, onOpenChange }: EmailSignatureEditorProps)
   };
 
   const handleNotifSave = () => {
-    if (!notifData?.settings?.id) return;
+    if (!notifData?.settings?.id) {
+      toast({
+        title: 'Error',
+        description: 'No email account found. Please contact an admin to set up your CRM email account.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (notifMode !== 'off' && !notifEmail.trim()) {
+      toast({
+        title: 'Email required',
+        description: 'Please enter your personal email address to receive notifications.',
+        variant: 'destructive',
+      });
+      return;
+    }
     updateNotifSettings.mutate({
       account_id: notifData.settings.id,
       notification_email: notifEmail,
@@ -101,12 +116,14 @@ const EmailSignatureEditor = ({ open, onOpenChange }: EmailSignatureEditorProps)
       notification_digest_interval: notifInterval,
     }, {
       onSuccess: () => {
-        toast({ title: 'Notification settings saved' });
+        toast({ title: 'Notification settings saved', description: notifMode === 'off' ? 'Notifications are now off.' : `Notifications will be sent to ${notifEmail}.` });
       },
       onError: (err: any) => {
+        const message = err?.message || 'Failed to save notification settings.';
+        const status = err?.status;
         toast({
-          title: 'Error',
-          description: err?.message || 'Failed to save notification settings.',
+          title: status === 400 ? 'Invalid settings' : status === 404 ? 'Account not found' : 'Error saving notifications',
+          description: message,
           variant: 'destructive',
         });
       },

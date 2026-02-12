@@ -4097,7 +4097,7 @@ async def update_email_notification_settings(
                 detail="Notification email cannot be a CRM work email (would cause loops)"
             )
 
-    execute_query(
+    execute_update(
         """
         UPDATE crm_email_accounts
         SET notification_email = :email,

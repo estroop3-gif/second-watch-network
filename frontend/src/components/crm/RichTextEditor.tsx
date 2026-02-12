@@ -46,6 +46,7 @@ const RichTextEditor = ({
         code: false,
         horizontalRule: false,
         blockquote: false,
+        link: false, // Disable StarterKit's built-in Link; we configure it separately below
       }),
       Link.configure({
         openOnClick: false,
