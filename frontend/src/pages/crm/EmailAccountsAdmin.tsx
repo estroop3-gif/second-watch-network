@@ -154,7 +154,7 @@ const EmailAccountsAdmin = () => {
                 value={emailAddress}
                 onChange={(e) => setEmailAddress(e.target.value)}
                 className="bg-charcoal-black border-muted-gray/30"
-                placeholder="john.doe@secondwatch.network"
+                placeholder="john.doe@theswn.com"
               />
             </div>
             <div className="flex justify-end gap-3 pt-2">

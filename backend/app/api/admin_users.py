@@ -233,6 +233,8 @@ async def admin_create_user(data: CreateUserRequest, authorization: str = Header
                     temp_password=temp_password
                 )
                 email_sent = result.get("success", False) if isinstance(result, dict) else False
+                if not email_sent and isinstance(result, dict):
+                    email_error = result.get("error")
             except Exception as e:
                 email_error = str(e)
 

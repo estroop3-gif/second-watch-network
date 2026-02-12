@@ -7,7 +7,7 @@ const corsHeaders = {
 };
 
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
-const FROM_EMAIL = "noreply@secondwatch.network";
+const FROM_EMAIL = "noreply@theswn.com";
 const APP_BASE_URL = Deno.env.get("APP_BASE_URL") || "https://secondwatch.network";
 
 type Prefs = {

@@ -440,7 +440,7 @@ export function InlineAuthModal({
                 <div className="text-sm">
                   <p className="text-muted-gray">Look for an email from:</p>
                   <p className="text-bone-white font-medium">Second Watch Network</p>
-                  <p className="text-accent-yellow font-mono text-xs">noreply@secondwatch.network</p>
+                  <p className="text-accent-yellow font-mono text-xs">noreply@theswn.com</p>
                   <p className="text-muted-gray text-xs mt-1">Check your spam folder if you don't see it. Code expires in 24 hours.</p>
                 </div>
               </div>

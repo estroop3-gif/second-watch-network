@@ -100,7 +100,7 @@ Parameters:
   EmailFromAddress:
     Type: String
     Description: Email sender address
-    Default: noreply@secondwatch.network
+    Default: noreply@theswn.com
   EmailFromName:
     Type: String
     Description: Email sender display name

@@ -122,14 +122,12 @@ class EmailService:
 
             # Get email from address
             from_name = getattr(settings, 'EMAIL_FROM_NAME', 'Second Watch Network')
-            from_address = getattr(settings, 'EMAIL_FROM_ADDRESS', None) or os.getenv('SES_FROM_EMAIL', 'noreply@secondwatchnetwork.com')
+            from_address = getattr(settings, 'EMAIL_FROM_ADDRESS', None) or os.getenv('SES_FROM_EMAIL', 'noreply@theswn.com')
 
-            # Create SES client
+            # Create SES client — use default credential chain for Lambda compatibility
             ses_client = boto3.client(
                 'ses',
                 region_name=aws_region,
-                aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-                aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
             )
 
             # Build email message
@@ -1067,7 +1065,7 @@ def generate_welcome_email_html(
                 Our team is here to support you on your filmmaking journey.
             </p>
             <p style="margin: 0;">
-                <a href="mailto:support@secondwatch.network" style="color: {accent_yellow}; text-decoration: none; font-size: 14px;">support@secondwatch.network</a>
+                <a href="mailto:support@theswn.com" style="color: {accent_yellow}; text-decoration: none; font-size: 14px;">support@theswn.com</a>
             </p>
         </div>
 
@@ -1177,7 +1175,7 @@ def generate_welcome_email_text(
         "-" * 60,
         "",
         "Our team is here to support you on your filmmaking journey.",
-        "Contact us: support@secondwatch.network",
+        "Contact us: support@theswn.com",
         "",
         "=" * 60,
         "www.secondwatchnetwork.com",

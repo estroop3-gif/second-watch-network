@@ -313,6 +313,7 @@ function CreateUserDialog({
     email: string;
     displayName: string;
     password: string;
+    emailRequested: boolean;
     emailSent: boolean;
     emailError: string | null;
   } | null>(null);
@@ -335,6 +336,7 @@ function CreateUserDialog({
         email,
         displayName,
         password: data.temp_password || customPassword || '',
+        emailRequested: sendEmail,
         emailSent: data.email_sent || false,
         emailError: data.email_error || null,
       });
@@ -478,6 +480,11 @@ function CreateUserDialog({
               <>
                 <MailX className="h-4 w-4 text-primary-red" />
                 <span className="text-primary-red">Email failed: {createdUser.emailError}</span>
+              </>
+            ) : createdUser.emailRequested ? (
+              <>
+                <MailX className="h-4 w-4 text-amber-500" />
+                <span className="text-amber-500">Email may not have been delivered — share credentials manually</span>
               </>
             ) : (
               <>

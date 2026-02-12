@@ -361,7 +361,7 @@ export function SignupForm() {
           <div className="bg-muted-gray/10 border border-muted-gray/30 rounded-lg p-3 text-sm">
             <p className="text-muted-gray mb-1">Look for an email from:</p>
             <p className="text-bone-white font-medium">Second Watch Network</p>
-            <p className="text-accent-yellow font-mono text-xs">noreply@secondwatch.network</p>
+            <p className="text-accent-yellow font-mono text-xs">noreply@theswn.com</p>
             <p className="text-muted-gray text-xs mt-2">The code expires in 24 hours.</p>
           </div>
 
@@ -395,7 +395,7 @@ export function SignupForm() {
               <summary className="cursor-pointer text-muted-gray">Didn't get it?</summary>
               <ul className="list-disc pl-6 mt-2 text-muted-gray">
                 <li>Check your spam or junk folder.</li>
-                <li>Look for an email from <span className="text-bone-white">noreply@secondwatch.network</span></li>
+                <li>Look for an email from <span className="text-bone-white">noreply@theswn.com</span></li>
                 <li>Wait a minute and try "Resend code".</li>
                 <li>Make sure you entered the correct email address.</li>
               </ul>

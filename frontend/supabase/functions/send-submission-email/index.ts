@@ -1,10 +1,9 @@
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts"
 
-// NOTE: You need to add and verify 'secondwatch.network' as a domain in your Resend account.
 // The RESEND_API_KEY secret is already configured for you.
 const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY')
-const ADMIN_EMAIL = "secondwatchnetwork@gmail.com" 
-const FROM_EMAIL = "noreply@secondwatch.network" // This must be a verified domain in Resend
+const ADMIN_EMAIL = "secondwatchnetwork@gmail.com"
+const FROM_EMAIL = "noreply@theswn.com" // This must be a verified domain in Resend
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',

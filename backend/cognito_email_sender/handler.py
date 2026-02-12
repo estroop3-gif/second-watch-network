@@ -7,7 +7,7 @@ using AWS Encryption SDK + KMS, and sends SWN-branded emails via Resend.
 Environment variables:
   - RESEND_API_KEY: Resend API key
   - KMS_KEY_ARN: KMS key ARN for decrypting Cognito codes
-  - EMAIL_FROM_ADDRESS: From address (default: noreply@secondwatch.network)
+  - EMAIL_FROM_ADDRESS: From address (default: noreply@theswn.com)
   - EMAIL_FROM_NAME: From display name (default: Second Watch Network)
 """
 import os
@@ -33,7 +33,7 @@ logger.setLevel(logging.INFO)
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 KMS_KEY_ARN = os.environ.get("KMS_KEY_ARN", "")
-FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS", "noreply@secondwatch.network")
+FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS", "noreply@theswn.com")
 FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Second Watch Network")
 
 # Initialise Encryption SDK client (module-level for Lambda warm starts)

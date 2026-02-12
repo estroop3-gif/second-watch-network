@@ -1381,7 +1381,7 @@ class EmailTemplateUpdate(BaseModel):
 
 class CreateEmailAccountRequest(BaseModel):
     profile_id: str
-    email_address: str     # firstname.lastname@secondwatch.network
+    email_address: str     # firstname.lastname@theswn.com
     display_name: str      # "John Smith"
 
 

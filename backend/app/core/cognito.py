@@ -31,12 +31,12 @@ COGNITO_CLIENT_SECRET = os.getenv('COGNITO_CLIENT_SECRET', None)  # Optional
 COGNITO_ISSUER = f"https://cognito-idp.{AWS_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}"
 COGNITO_JWKS_URL = f"{COGNITO_ISSUER}/.well-known/jwks.json"
 
-# Cognito client
+# Cognito client — use default credential chain (Lambda execution role, env vars, or ~/.aws)
+# Do NOT pass explicit aws_access_key_id/aws_secret_access_key as that skips
+# the session token needed for Lambda's temporary credentials.
 cognito_client = boto3.client(
     'cognito-idp',
     region_name=AWS_REGION,
-    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
 )
 
 # JWT token verification

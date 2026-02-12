@@ -58,7 +58,7 @@ jobs:
               "FrontendUrl=https://www.secondwatchnetwork.com" \
               "ResendApiKey=${{ secrets.RESEND_API_KEY }}" \
               "ResendWebhookSigningSecret=${{ secrets.RESEND_WEBHOOK_SIGNING_SECRET }}" \
-              "EmailFromAddress=noreply@secondwatch.network" \
+              "EmailFromAddress=noreply@theswn.com" \
               "EmailFromName=Second Watch Network"
 
   deploy-frontend:
