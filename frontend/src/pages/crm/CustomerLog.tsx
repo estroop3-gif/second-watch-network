@@ -13,6 +13,7 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import { useEmailCompose } from '@/context/EmailComposeContext';
 import { ClipboardList, CheckCircle, Send } from 'lucide-react';
+import { formatDate } from '@/lib/dateUtils';
 
 const LOG_TYPE_LABELS: Record<string, string> = {
   complaint: 'Complaint',
@@ -100,7 +101,7 @@ const CustomerLog = () => {
                         </button>
                       )}
                       {entry.company && <span>{entry.company}</span>}
-                      <span>{new Date(entry.created_at).toLocaleDateString()}</span>
+                      <span>{formatDate(entry.created_at)}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 ml-4">

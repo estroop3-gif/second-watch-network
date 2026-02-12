@@ -1,4 +1,5 @@
 import { DollarSign, Calendar, User, ChevronLeft, ChevronRight, Pencil, Send } from 'lucide-react';
+import { formatDate } from '@/lib/dateUtils';
 
 const STAGE_COLORS: Record<string, string> = {
   lead: 'bg-slate-600',
@@ -81,7 +82,7 @@ const DealCard = ({ deal, onClick, compact, onStageChange, onEdit, onEmail }: De
         </div>
         {deal.expected_close_date && (
           <p className="text-xs text-muted-gray mt-1">
-            Close: {new Date(deal.expected_close_date).toLocaleDateString()}
+            Close: {formatDate(deal.expected_close_date)}
           </p>
         )}
         {onStageChange && deal.stage !== 'closed_won' && deal.stage !== 'closed_lost' && (
@@ -140,7 +141,7 @@ const DealCard = ({ deal, onClick, compact, onStageChange, onEdit, onEmail }: De
         {deal.expected_close_date && (
           <div className="flex items-center gap-2 text-xs text-muted-gray">
             <Calendar className="h-3.5 w-3.5" />
-            <span>{new Date(deal.expected_close_date).toLocaleDateString()}</span>
+            <span>{formatDate(deal.expected_close_date)}</span>
           </div>
         )}
       </div>

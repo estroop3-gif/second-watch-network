@@ -9,6 +9,7 @@ import { useMyInteractionsToday, useIncrementInteraction, useDecrementInteractio
 import { useFollowUps, useActivities } from '@/hooks/crm';
 import { useUnreadCount, useEmailInbox } from '@/hooks/crm/useEmail';
 import { useEmailCompose } from '@/context/EmailComposeContext';
+import { formatDate } from '@/lib/dateUtils';
 
 const CRMDashboard = () => {
   const { data: interactions } = useMyInteractionsToday();
@@ -78,7 +79,7 @@ const CRMDashboard = () => {
                         </div>
                       </div>
                       <div className="text-xs text-accent-yellow">
-                        {new Date(fu.follow_up_date).toLocaleDateString()}
+                        {formatDate(fu.follow_up_date)}
                       </div>
                     </div>
                   </Link>
@@ -127,7 +128,7 @@ const CRMDashboard = () => {
                         </div>
                       </div>
                       <div className="text-xs text-muted-gray ml-2 flex-shrink-0">
-                        {thread.last_message_at ? new Date(thread.last_message_at).toLocaleDateString() : ''}
+                        {thread.last_message_at ? formatDate(thread.last_message_at) : ''}
                       </div>
                     </div>
                   </Link>

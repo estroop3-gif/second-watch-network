@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Edit, Link2, Phone, Mail, Building2,
   MapPin, Tag, Trash2, PhoneOff, ClipboardList,
-  MessageSquare,
+  MessageSquare, UserPlus,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -22,17 +22,22 @@ import CopyableEmail from '@/components/crm/CopyableEmail';
 import SequenceEnrollButton from '@/components/crm/SequenceEnrollButton';
 import CalendarActivityDialog from '@/components/crm/CalendarActivityDialog';
 import ContactNotes from '@/components/crm/ContactNotes';
+import ContactAssignmentDialog from '@/components/crm/ContactAssignmentDialog';
+import AssignmentHistoryTimeline from '@/components/crm/AssignmentHistoryTimeline';
 import { useContact, useUpdateContact, useDeleteContact, useLinkProfile } from '@/hooks/crm';
 import { useCreateActivity, useUpdateContactDNC } from '@/hooks/crm';
 import { useContactThreads } from '@/hooks/crm/useEmail';
 import { useEmailCompose } from '@/context/EmailComposeContext';
 import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
+import { usePermissions } from '@/hooks/usePermissions';
 import { toast } from 'sonner';
 
 const ContactDetail = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { profile: currentProfile } = useEnrichedProfile();
+  const { hasAnyRole } = usePermissions();
+  const isAdmin = hasAnyRole(['admin', 'superadmin', 'sales_admin']);
   const { data: contact, isLoading } = useContact(id);
   const updateContact = useUpdateContact();
   const deleteContact = useDeleteContact();
@@ -48,6 +53,7 @@ const ContactDetail = () => {
   const [showLink, setShowLink] = useState(false);
   const [showLogActivity, setShowLogActivity] = useState(false);
   const [showDNC, setShowDNC] = useState(false);
+  const [showAssign, setShowAssign] = useState(false);
   const [dncForm, setDncForm] = useState({
     do_not_email: false,
     do_not_call: false,
@@ -174,7 +180,7 @@ const ContactDetail = () => {
             )}
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap justify-end">
           <Button
             variant="outline"
             size="sm"
@@ -200,6 +206,17 @@ const ContactDetail = () => {
               className="border-accent-yellow text-accent-yellow hover:bg-accent-yellow/10"
             >
               <Mail className="h-4 w-4 mr-1" /> Send Email
+            </Button>
+          )}
+          {isAdmin && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowAssign(true)}
+              className="border-blue-500/50 text-blue-400 hover:bg-blue-500/10"
+            >
+              <UserPlus className="h-4 w-4 mr-1" />
+              {contact.assigned_rep_id ? 'Reassign' : 'Assign Rep'}
             </Button>
           )}
           <Button
@@ -303,13 +320,14 @@ const ContactDetail = () => {
         </div>
       </div>
 
-      {/* Activities */}
+      {/* Tabs */}
       <Tabs defaultValue="timeline">
         <div className="flex items-center justify-between">
           <TabsList className="bg-muted-gray/10">
             <TabsTrigger value="timeline">Activity Timeline</TabsTrigger>
             <TabsTrigger value="emails">Emails</TabsTrigger>
             <TabsTrigger value="sequences">Sequences</TabsTrigger>
+            {isAdmin && <TabsTrigger value="assignments">Assignment History</TabsTrigger>}
           </TabsList>
         </div>
 
@@ -368,6 +386,19 @@ const ContactDetail = () => {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {isAdmin && (
+          <TabsContent value="assignments" className="mt-4">
+            <Card className="bg-charcoal-black border-muted-gray/30">
+              <CardHeader>
+                <CardTitle className="text-bone-white text-base">Assignment History</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <AssignmentHistoryTimeline contactId={id!} />
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
       </Tabs>
 
       {/* Edit Dialog */}
@@ -402,6 +433,13 @@ const ContactDetail = () => {
         onSubmit={handleLogActivity}
         isSubmitting={createActivity.isPending}
         defaultDate={new Date().toISOString().split('T')[0]}
+      />
+
+      {/* Assign Contact Dialog (admin) */}
+      <ContactAssignmentDialog
+        open={showAssign}
+        onOpenChange={setShowAssign}
+        contact={contact}
       />
 
       {/* DNC Dialog */}

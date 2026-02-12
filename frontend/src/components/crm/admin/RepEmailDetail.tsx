@@ -4,7 +4,7 @@ import { useRepEmailMessages } from '@/hooks/crm/useEmail';
 import { normalizeSubject } from '@/lib/emailUtils';
 import { X, Send, Inbox, Mail } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { format } from 'date-fns';
+import { formatDateTime } from '@/lib/dateUtils';
 
 interface RepEmailDetailProps {
   repId: string;
@@ -77,7 +77,7 @@ const RepEmailDetail = ({ repId, repName, days, onClose }: RepEmailDetailProps) 
                     </span>
                   </div>
                   <span className="text-xs text-muted-gray whitespace-nowrap">
-                    {format(new Date(msg.created_at), 'MMM d, h:mm a')}
+                    {formatDateTime(msg.created_at, 'MMM d, h:mm a')}
                   </span>
                 </div>
                 <div className="flex items-center gap-2 mt-1 text-xs text-muted-gray pl-5">

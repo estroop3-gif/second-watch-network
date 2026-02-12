@@ -1,4 +1,5 @@
 import { ArrowRight, Clock } from 'lucide-react';
+import { formatDateTime } from '@/lib/dateUtils';
 
 const STAGE_COLORS: Record<string, string> = {
   lead: 'text-slate-400',
@@ -42,7 +43,7 @@ const StageHistory = ({ history }: StageHistoryProps) => {
             )}
             <div className="flex items-center gap-2 text-xs text-muted-gray mt-1">
               <Clock className="h-3 w-3" />
-              <span>{new Date(entry.changed_at).toLocaleString()}</span>
+              <span>{formatDateTime(entry.changed_at)}</span>
               {entry.changed_by_name && <span>by {entry.changed_by_name}</span>}
             </div>
           </div>

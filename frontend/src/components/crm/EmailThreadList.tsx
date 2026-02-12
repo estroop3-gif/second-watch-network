@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { formatDistanceToNow } from 'date-fns';
-import { Mail, MailOpen, Archive, Star, CheckSquare, Square, Paperclip } from 'lucide-react';
+import { Mail, MailOpen, Archive, Star, CheckSquare, Square, Paperclip, Trash2, ArchiveRestore } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { normalizeSubject } from '@/lib/emailUtils';
@@ -34,11 +34,15 @@ interface EmailThreadListProps {
   selectedThreadIds?: string[];
   onToggleSelect?: (threadId: string) => void;
   selectedIndex?: number;
+  onDeleteThread?: (threadId: string) => void;
+  onRestoreThread?: (threadId: string) => void;
+  isTrash?: boolean;
 }
 
 const EmailThreadList = ({
   threads, selectedThreadId, onSelectThread, isLoading,
   bulkMode, selectedThreadIds = [], onToggleSelect, selectedIndex = -1,
+  onDeleteThread, onRestoreThread, isTrash,
 }: EmailThreadListProps) => {
   const listRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -100,7 +104,7 @@ const EmailThreadList = ({
               }
             }}
             className={cn(
-              'w-full text-left px-4 py-3 transition-colors hover:bg-muted-gray/20',
+              'group w-full text-left px-4 py-3 transition-colors hover:bg-muted-gray/20',
               isSelected && 'bg-accent-yellow/10 border-l-2 border-accent-yellow',
               !isSelected && isKeyboardHighlighted && 'bg-muted-gray/10 border-l-2 border-muted-gray',
               !isSelected && !isKeyboardHighlighted && 'border-l-2 border-transparent'
@@ -142,6 +146,29 @@ const EmailThreadList = ({
                     )}
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0 ml-auto">
+                    {/* Hover delete/restore action */}
+                    {!bulkMode && (isTrash ? onRestoreThread : onDeleteThread) && (
+                      <span
+                        role="button"
+                        tabIndex={-1}
+                        className="hidden group-hover:inline-flex items-center justify-center h-6 w-6 rounded hover:bg-muted-gray/30 transition-colors"
+                        title={isTrash ? 'Restore' : 'Delete'}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (isTrash && onRestoreThread) {
+                            onRestoreThread(thread.id);
+                          } else if (onDeleteThread) {
+                            onDeleteThread(thread.id);
+                          }
+                        }}
+                      >
+                        {isTrash ? (
+                          <ArchiveRestore className="h-3.5 w-3.5 text-accent-yellow" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5 text-muted-gray hover:text-red-400" />
+                        )}
+                      </span>
+                    )}
                     {thread.has_attachments && (
                       <Paperclip className="h-3 w-3 text-muted-gray" />
                     )}

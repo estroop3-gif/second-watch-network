@@ -17,8 +17,10 @@ const ADMIN_TABS = [
 
 const AdminLayout = () => {
   const location = useLocation();
-  // Hide tabs on campaign detail pages to reduce clutter
+  // Hide tabs on campaign detail and rep detail pages to reduce clutter
   const isCampaignDetail = /\/crm\/admin\/campaigns\/.+/.test(location.pathname);
+  const isRepDetail = /\/crm\/admin\/team\/.+/.test(location.pathname);
+  const hideNav = isCampaignDetail || isRepDetail;
 
   return (
     <div>
@@ -27,7 +29,7 @@ const AdminLayout = () => {
         <h1 className="text-2xl font-heading text-bone-white">Admin</h1>
       </div>
 
-      {!isCampaignDetail && (
+      {!hideNav && (
         <nav className="flex gap-1 mb-6 overflow-x-auto border-b border-muted-gray/30 pb-0">
           {ADMIN_TABS.map((tab) => (
             <NavLink

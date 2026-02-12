@@ -212,7 +212,16 @@ async def get_sidebar_badges(
             -- Business Card: cards with actionable status
             (SELECT COUNT(*) FROM crm_business_cards bc
              WHERE bc.profile_id = :rep_id
-             AND bc.status IN ('approved', 'rejected', 'printed')) as card_updates
+             AND bc.status IN ('approved', 'rejected', 'printed')) as card_updates,
+
+            -- My Contacts: contacts assigned to this rep
+            (SELECT COUNT(*) FROM crm_contacts c
+             WHERE c.assigned_rep_id = :rep_id AND c.status = 'active') as my_contacts,
+
+            -- New Leads: unviewed assignments for this rep
+            (SELECT COUNT(DISTINCT cal.contact_id) FROM crm_contact_assignment_log cal
+             JOIN crm_contacts c2 ON c2.id = cal.contact_id AND c2.status != 'inactive'
+             WHERE cal.to_rep_id = :rep_id AND cal.viewed_at IS NULL) as new_leads
         """,
         params,
     )
@@ -229,7 +238,62 @@ async def get_sidebar_badges(
         "training": row["new_training"] if row else 0,
         "discussions": row["new_discussions"] if row else 0,
         "business_card": row["card_updates"] if row else 0,
+        "my_contacts": row["my_contacts"] if row else 0,
+        "new_leads": row["new_leads"] if row else 0,
     }
+
+
+# ============================================================================
+# New Leads (recently assigned, not yet viewed by rep)
+# ============================================================================
+
+@router.get("/new-leads")
+async def get_new_leads(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get contacts recently assigned to this rep that haven't been viewed yet."""
+    rep_id = profile["id"]
+    rows = execute_query(
+        """
+        SELECT DISTINCT ON (c.id) c.*,
+               p.full_name as assigned_rep_name,
+               cal.assigned_at as assignment_date,
+               cal.assignment_type,
+               cal.notes as assignment_notes,
+               ap.full_name as assigned_by_name,
+               (SELECT COUNT(*) FROM crm_activities a WHERE a.contact_id = c.id) as activity_count,
+               (SELECT MAX(a.activity_date) FROM crm_activities a WHERE a.contact_id = c.id) as last_activity_date,
+               (SELECT COUNT(*) FROM crm_email_threads et WHERE et.contact_id = c.id) as email_thread_count
+        FROM crm_contact_assignment_log cal
+        JOIN crm_contacts c ON c.id = cal.contact_id
+        LEFT JOIN profiles p ON p.id = c.assigned_rep_id
+        LEFT JOIN profiles ap ON ap.id = cal.assigned_by
+        WHERE cal.to_rep_id = :rep_id
+          AND cal.viewed_at IS NULL
+          AND c.status != 'inactive'
+        ORDER BY c.id, cal.assigned_at DESC
+        """,
+        {"rep_id": rep_id},
+    )
+    return {"contacts": rows, "total": len(rows)}
+
+
+@router.post("/new-leads/mark-viewed")
+async def mark_new_leads_viewed(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Mark all unviewed lead assignments as viewed for this rep."""
+    rep_id = profile["id"]
+    execute_query(
+        """
+        UPDATE crm_contact_assignment_log
+        SET viewed_at = NOW()
+        WHERE to_rep_id = :rep_id AND viewed_at IS NULL
+        RETURNING id
+        """,
+        {"rep_id": rep_id},
+    )
+    return {"success": True}
 
 
 # ============================================================================
@@ -243,6 +307,7 @@ async def list_contacts(
     status: Optional[str] = Query(None),
     tag: Optional[str] = Query(None),
     assigned_rep_id: Optional[str] = Query(None),
+    unassigned: Optional[bool] = Query(None),
     sort_by: Optional[str] = Query("created_at"),
     sort_order: Optional[str] = Query("desc"),
     limit: int = Query(50, ge=1, le=200),
@@ -258,6 +323,9 @@ async def list_contacts(
     if not is_admin:
         conditions.append("c.assigned_rep_id = :rep_id")
         params["rep_id"] = profile["id"]
+
+    if unassigned and is_admin:
+        conditions.append("c.assigned_rep_id IS NULL")
 
     if search:
         conditions.append(
@@ -2207,6 +2275,31 @@ async def archive_thread(
     return result
 
 
+@router.patch("/email/threads/{thread_id}/delete")
+async def delete_thread(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Toggle delete (trash) status on a thread."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": profile["id"]},
+    )
+    if not account:
+        raise HTTPException(404, "No email account")
+
+    result = execute_single(
+        """
+        UPDATE crm_email_threads SET is_deleted = NOT COALESCE(is_deleted, false)
+        WHERE id = :tid AND account_id = :aid RETURNING *
+        """,
+        {"tid": thread_id, "aid": account["id"]},
+    )
+    if not result:
+        raise HTTPException(404, "Thread not found")
+    return result
+
+
 @router.get("/email/contacts/{contact_id}/threads")
 async def get_contact_threads(
     contact_id: str,
@@ -3101,7 +3194,7 @@ async def snooze_thread(
 
 class BulkActionRequest(BaseModel):
     thread_ids: List[str]
-    action: str  # archive, read, unread, star, delete
+    action: str  # archive, read, unread, star, delete, restore
 
 
 @router.post("/email/threads/bulk")
@@ -3143,6 +3236,11 @@ async def bulk_thread_action(
     elif data.action == "delete":
         execute_query(
             "UPDATE crm_email_threads SET is_deleted = true WHERE id = ANY(:ids) AND account_id = :aid RETURNING id",
+            {"ids": data.thread_ids, "aid": account["id"]},
+        )
+    elif data.action == "restore":
+        execute_query(
+            "UPDATE crm_email_threads SET is_deleted = false WHERE id = ANY(:ids) AND account_id = :aid RETURNING id",
             {"ids": data.thread_ids, "aid": account["id"]},
         )
     else:

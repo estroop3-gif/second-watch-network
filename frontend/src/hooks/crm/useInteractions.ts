@@ -47,14 +47,26 @@ export function useCRMAdminInteractions(params?: {
   });
 }
 
+export function useRepSummary(repId: string) {
+  return useQuery({
+    queryKey: ['crm-rep-summary', repId],
+    queryFn: () => api.getCRMRepSummary(repId),
+    enabled: !!repId,
+  });
+}
+
 export function useAssignContact() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ contactId, repId }: { contactId: string; repId: string }) =>
-      api.assignCRMContact(contactId, repId),
+    mutationFn: ({ contactId, repId, notes }: { contactId: string; repId: string; notes?: string }) =>
+      api.assignCRMContact(contactId, repId, notes),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['crm-contacts'] });
       qc.invalidateQueries({ queryKey: ['crm-contact'] });
+      qc.invalidateQueries({ queryKey: ['crm-unassigned-contacts'] });
+      qc.invalidateQueries({ queryKey: ['crm-new-leads'] });
+      qc.invalidateQueries({ queryKey: ['crm-contact-assignment-history'] });
+      qc.invalidateQueries({ queryKey: ['crm-sidebar-badges'] });
     },
   });
 }
@@ -62,10 +74,14 @@ export function useAssignContact() {
 export function useBulkAssignContacts() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ contactIds, repId }: { contactIds: string[]; repId: string }) =>
-      api.bulkAssignCRMContacts(contactIds, repId),
+    mutationFn: ({ contactIds, repId, notes }: { contactIds: string[]; repId: string; notes?: string }) =>
+      api.bulkAssignCRMContacts(contactIds, repId, notes),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['crm-contacts'] });
+      qc.invalidateQueries({ queryKey: ['crm-unassigned-contacts'] });
+      qc.invalidateQueries({ queryKey: ['crm-new-leads'] });
+      qc.invalidateQueries({ queryKey: ['crm-contact-assignment-history'] });
+      qc.invalidateQueries({ queryKey: ['crm-sidebar-badges'] });
     },
   });
 }

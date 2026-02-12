@@ -1,4 +1,5 @@
 import { Phone, Mail, MessageSquare, Users, Monitor, CalendarCheck, FileText, StickyNote, MoreHorizontal, Inbox, Megaphone, Zap, UserPlus, UserMinus } from 'lucide-react';
+import { formatDateTime, formatDate } from '@/lib/dateUtils';
 
 const ACTIVITY_ICONS: Record<string, any> = {
   call: Phone,
@@ -64,7 +65,7 @@ const ActivityTimeline = ({ activities }: ActivityTimelineProps) => {
                   )}
                 </div>
                 <span className="text-xs text-muted-gray whitespace-nowrap">
-                  {date.toLocaleDateString()} {date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {formatDateTime(activity.activity_date)}
                 </span>
               </div>
 
@@ -88,7 +89,7 @@ const ActivityTimeline = ({ activities }: ActivityTimelineProps) => {
 
               {activity.follow_up_date && (
                 <div className="mt-2 text-xs text-blue-400">
-                  Follow up: {new Date(activity.follow_up_date).toLocaleDateString()}
+                  Follow up: {formatDate(activity.follow_up_date)}
                   {activity.follow_up_notes && ` - ${activity.follow_up_notes}`}
                 </div>
               )}

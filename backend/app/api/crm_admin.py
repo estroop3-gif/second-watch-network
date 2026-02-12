@@ -31,11 +31,13 @@ class TeamRemoveRequest(BaseModel):
 
 class AssignContactRequest(BaseModel):
     rep_id: str
+    notes: Optional[str] = None
 
 
 class BulkAssignRequest(BaseModel):
     contact_ids: List[str]
     rep_id: str
+    notes: Optional[str] = None
 
 
 class AssignDealRequest(BaseModel):
@@ -90,6 +92,116 @@ async def list_sales_reps(
         {},
     )
     return {"reps": reps}
+
+
+@router.get("/reps/{rep_id}/summary")
+async def get_rep_summary(
+    rep_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """Get a consolidated summary of a rep's CRM data for admin drill-down."""
+    # Profile info
+    rep = execute_single(
+        """
+        SELECT id, full_name, email, avatar_url,
+               is_sales_agent, is_sales_rep, is_sales_admin, is_admin, is_superadmin
+        FROM profiles WHERE id = :rid
+        """,
+        {"rid": rep_id},
+    )
+    if not rep:
+        raise HTTPException(404, "Rep not found")
+
+    # Contact stats
+    contact_stats = execute_single(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE status = 'active') as active_contacts,
+            COUNT(*) as total_contacts,
+            COUNT(*) FILTER (WHERE do_not_email = true OR do_not_call = true OR do_not_text = true) as dnc_count
+        FROM crm_contacts WHERE assigned_rep_id = :rid
+        """,
+        {"rid": rep_id},
+    )
+
+    # Deal stats
+    deal_stats = execute_single(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE stage NOT IN ('closed_won', 'closed_lost')) as open_deals,
+            COUNT(*) FILTER (WHERE stage = 'closed_won') as won_deals,
+            COUNT(*) FILTER (WHERE stage = 'closed_lost') as lost_deals,
+            COALESCE(SUM(value) FILTER (WHERE stage NOT IN ('closed_won', 'closed_lost')), 0) as pipeline_value
+        FROM crm_deals WHERE assigned_rep_id = :rid
+        """,
+        {"rid": rep_id},
+    )
+
+    # Activity stats
+    activity_stats = execute_single(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE activity_date::date = CURRENT_DATE) as today,
+            COUNT(*) FILTER (WHERE activity_date >= CURRENT_DATE - INTERVAL '7 days') as last_7d,
+            COUNT(*) FILTER (WHERE activity_date >= CURRENT_DATE - INTERVAL '30 days') as last_30d
+        FROM crm_activities WHERE rep_id = :rid
+        """,
+        {"rid": rep_id},
+    )
+
+    # Interaction totals (today)
+    interactions = execute_single(
+        """
+        SELECT COALESCE(calls, 0) as calls, COALESCE(emails, 0) as emails,
+               COALESCE(texts, 0) as texts, COALESCE(meetings, 0) as meetings,
+               COALESCE(demos, 0) as demos, COALESCE(other_interactions, 0) as other
+        FROM crm_interaction_counts WHERE rep_id = :rid AND count_date = CURRENT_DATE
+        """,
+        {"rid": rep_id},
+    )
+
+    # Email stats (last 30d)
+    email_stats = execute_single(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE m.direction = 'outbound') as sent_30d,
+            COUNT(*) FILTER (WHERE m.direction = 'inbound') as received_30d
+        FROM crm_email_messages m
+        JOIN crm_email_threads t ON t.id = m.thread_id
+        JOIN crm_email_accounts a ON a.id = t.account_id
+        WHERE a.profile_id = :rid AND m.created_at >= CURRENT_DATE - INTERVAL '30 days'
+        """,
+        {"rid": rep_id},
+    )
+
+    # Goal count
+    goal_count = execute_single(
+        """
+        SELECT COUNT(*) as active_goals
+        FROM crm_sales_goals WHERE rep_id = :rid AND period_end >= CURRENT_DATE
+        """,
+        {"rid": rep_id},
+    )
+
+    # Review count (last 90d)
+    review_count = execute_single(
+        """
+        SELECT COUNT(*) as recent_reviews
+        FROM crm_rep_reviews WHERE rep_id = :rid AND review_date >= CURRENT_DATE - INTERVAL '90 days'
+        """,
+        {"rid": rep_id},
+    )
+
+    return {
+        "profile": rep,
+        "contacts": contact_stats or {"active_contacts": 0, "total_contacts": 0, "dnc_count": 0},
+        "deals": deal_stats or {"open_deals": 0, "won_deals": 0, "lost_deals": 0, "pipeline_value": 0},
+        "activities": activity_stats or {"today": 0, "last_7d": 0, "last_30d": 0},
+        "interactions": interactions or {"calls": 0, "emails": 0, "texts": 0, "meetings": 0, "demos": 0, "other": 0},
+        "email": email_stats or {"sent_30d": 0, "received_30d": 0},
+        "goals": {"active_goals": (goal_count or {}).get("active_goals", 0)},
+        "reviews": {"recent_reviews": (review_count or {}).get("recent_reviews", 0)},
+    }
 
 
 VALID_CRM_ROLES = {"sales_rep", "sales_agent", "sales_admin"}
@@ -254,26 +366,56 @@ async def assign_contact(
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
 ):
     """Assign a contact to a specific rep."""
-    # Verify contact exists
+    # Verify contact exists and get current assignment
     contact = execute_single(
-        "SELECT id FROM crm_contacts WHERE id = :id",
+        "SELECT id, assigned_rep_id FROM crm_contacts WHERE id = :id",
         {"id": contact_id},
     )
     if not contact:
         raise HTTPException(404, "Contact not found")
 
-    # Verify rep exists and is a sales agent
+    # Verify rep exists and is a sales team member
     rep = execute_single(
-        "SELECT id, full_name FROM profiles WHERE id = :id AND (is_sales_agent = true OR is_admin = true OR is_superadmin = true)",
+        "SELECT id, full_name FROM profiles WHERE id = :id AND (is_sales_agent = true OR is_sales_rep = true OR is_sales_admin = true OR is_admin = true OR is_superadmin = true)",
         {"id": data.rep_id},
     )
     if not rep:
         raise HTTPException(404, "Sales rep not found")
 
+    from_rep_id = contact.get("assigned_rep_id")
+    assignment_type = "transfer" if from_rep_id else "assign"
+
     result = execute_single(
         "UPDATE crm_contacts SET assigned_rep_id = :rep_id, updated_at = NOW() WHERE id = :id RETURNING *",
         {"rep_id": data.rep_id, "id": contact_id},
     )
+
+    # Log assignment
+    log_params = {
+        "contact_id": contact_id,
+        "to_rep_id": data.rep_id,
+        "assigned_by": profile["id"],
+        "assignment_type": assignment_type,
+        "notes": data.notes,
+    }
+    if from_rep_id:
+        log_params["from_rep_id"] = from_rep_id
+        execute_insert(
+            """INSERT INTO crm_contact_assignment_log
+               (contact_id, from_rep_id, to_rep_id, assigned_by, assignment_type, notes)
+               VALUES (:contact_id, :from_rep_id, :to_rep_id, :assigned_by, :assignment_type, :notes)
+               RETURNING id""",
+            log_params,
+        )
+    else:
+        execute_insert(
+            """INSERT INTO crm_contact_assignment_log
+               (contact_id, to_rep_id, assigned_by, assignment_type, notes)
+               VALUES (:contact_id, :to_rep_id, :assigned_by, :assignment_type, :notes)
+               RETURNING id""",
+            log_params,
+        )
+
     return result
 
 
@@ -285,7 +427,7 @@ async def bulk_assign_contacts(
     """Bulk assign contacts to a rep."""
     # Verify rep exists
     rep = execute_single(
-        "SELECT id, full_name FROM profiles WHERE id = :id AND (is_sales_agent = true OR is_admin = true OR is_superadmin = true)",
+        "SELECT id, full_name FROM profiles WHERE id = :id AND (is_sales_agent = true OR is_sales_rep = true OR is_sales_admin = true OR is_admin = true OR is_superadmin = true)",
         {"id": data.rep_id},
     )
     if not rep:
@@ -293,14 +435,73 @@ async def bulk_assign_contacts(
 
     updated = 0
     for cid in data.contact_ids:
+        # Get current assignment before update
+        existing = execute_single(
+            "SELECT assigned_rep_id FROM crm_contacts WHERE id = :cid",
+            {"cid": cid},
+        )
         result = execute_single(
             "UPDATE crm_contacts SET assigned_rep_id = :rep_id, updated_at = NOW() WHERE id = :cid RETURNING id",
             {"rep_id": data.rep_id, "cid": cid},
         )
         if result:
             updated += 1
+            from_rep_id = existing.get("assigned_rep_id") if existing else None
+            assignment_type = "transfer" if from_rep_id else "assign"
+            log_params = {
+                "contact_id": cid,
+                "to_rep_id": data.rep_id,
+                "assigned_by": profile["id"],
+                "assignment_type": assignment_type,
+                "notes": data.notes,
+            }
+            if from_rep_id:
+                log_params["from_rep_id"] = from_rep_id
+                execute_insert(
+                    """INSERT INTO crm_contact_assignment_log
+                       (contact_id, from_rep_id, to_rep_id, assigned_by, assignment_type, notes)
+                       VALUES (:contact_id, :from_rep_id, :to_rep_id, :assigned_by, :assignment_type, :notes)
+                       RETURNING id""",
+                    log_params,
+                )
+            else:
+                execute_insert(
+                    """INSERT INTO crm_contact_assignment_log
+                       (contact_id, to_rep_id, assigned_by, assignment_type, notes)
+                       VALUES (:contact_id, :to_rep_id, :assigned_by, :assignment_type, :notes)
+                       RETURNING id""",
+                    log_params,
+                )
 
     return {"updated": updated, "rep_name": rep["full_name"]}
+
+
+# ============================================================================
+# Contact Assignment History
+# ============================================================================
+
+@router.get("/contacts/{contact_id}/assignment-history")
+async def get_contact_assignment_history(
+    contact_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """Get the assignment history for a contact."""
+    rows = execute_query(
+        """
+        SELECT cal.*,
+               fp.full_name as from_rep_name,
+               tp.full_name as to_rep_name,
+               ap.full_name as assigned_by_name
+        FROM crm_contact_assignment_log cal
+        LEFT JOIN profiles fp ON fp.id = cal.from_rep_id
+        LEFT JOIN profiles tp ON tp.id = cal.to_rep_id
+        LEFT JOIN profiles ap ON ap.id = cal.assigned_by
+        WHERE cal.contact_id = :contact_id
+        ORDER BY cal.assigned_at DESC
+        """,
+        {"contact_id": contact_id},
+    )
+    return {"history": rows}
 
 
 # ============================================================================
@@ -427,6 +628,31 @@ async def get_pipeline_forecast(
 # ============================================================================
 # Goals Management
 # ============================================================================
+
+@router.get("/goals")
+async def list_goals(
+    rep_id: Optional[str] = Query(None),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """List sales goals, optionally filtered by rep."""
+    conditions = ["g.period_end >= CURRENT_DATE"]
+    params: Dict[str, Any] = {}
+    if rep_id:
+        conditions.append("(g.rep_id = :rep_id OR g.rep_id IS NULL)")
+        params["rep_id"] = rep_id
+    where = " AND ".join(conditions)
+    rows = execute_query(
+        f"""
+        SELECT g.*, p.full_name as rep_name
+        FROM crm_sales_goals g
+        LEFT JOIN profiles p ON p.id = g.rep_id
+        WHERE {where}
+        ORDER BY g.period_end DESC
+        """,
+        params,
+    )
+    return {"goals": rows}
+
 
 @router.post("/goals")
 async def create_goal(

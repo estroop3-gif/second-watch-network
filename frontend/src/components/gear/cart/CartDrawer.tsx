@@ -4,7 +4,7 @@
  * Allows viewing items, adjusting quantities, and submitting requests.
  */
 import { useState } from 'react';
-import { ShoppingCart, X, Trash2, Send, ArrowLeft, Loader2 } from 'lucide-react';
+import { ShoppingCart, Trash2, Send, ArrowLeft, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetFooter } from '@/components/ui/sheet';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -75,9 +75,6 @@ export function CartDrawer({ backlotProjectId }: CartDrawerProps) {
                 <SheetTitle>Cart ({totalItems})</SheetTitle>
               </div>
             )}
-            <Button variant="ghost" size="icon" onClick={handleClose}>
-              <X className="h-4 w-4" />
-            </Button>
           </div>
         </SheetHeader>
 

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -309,6 +310,7 @@ function ChangeRoleDialog({
 
 // --- Main TeamView ---
 const TeamView = () => {
+  const navigate = useNavigate();
   const { data, isLoading } = useCRMReps();
   const reps = data?.reps || [];
   const removeMember = useRemoveCRMTeamMember();
@@ -365,7 +367,11 @@ const TeamView = () => {
           const canManage = crmRole !== null; // only manage CRM roles, not system admins without CRM role
 
           return (
-            <Card key={rep.id} className="bg-charcoal-black border-muted-gray/30">
+            <Card
+              key={rep.id}
+              className="bg-charcoal-black border-muted-gray/30 cursor-pointer hover:border-accent-yellow/40 transition-colors"
+              onClick={() => navigate(`/crm/admin/team/${rep.id}`)}
+            >
               <CardHeader className="pb-3">
                 <div className="flex items-center gap-3">
                   {rep.avatar_url ? (
@@ -389,13 +395,13 @@ const TeamView = () => {
 
                   {/* Three-dot menu — only for users with CRM roles */}
                   {(canManage || isSystemAdmin) && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
+                    <DropdownMenu modal={false}>
+                      <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
                         <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-gray hover:text-bone-white">
                           <MoreVertical className="h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
+                      <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
                         <DropdownMenuItem onClick={() => setChangeRoleRep(rep)}>
                           Change Role
                         </DropdownMenuItem>

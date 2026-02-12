@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Trash2, Reply, Send } from 'lucide-react';
+import { formatDateTime } from '@/lib/dateUtils';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -57,10 +58,8 @@ const ContactNotes = ({ contactId, currentProfileId }: ContactNotesProps) => {
     deleteNote.mutate({ contactId, noteId });
   };
 
-  const formatDate = (dateStr: string) => {
-    const d = new Date(dateStr);
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) +
-      ' at ' + d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const formatNoteDate = (dateStr: string) => {
+    return formatDateTime(dateStr);
   };
 
   if (isLoading) {
@@ -119,7 +118,7 @@ const ContactNotes = ({ contactId, currentProfileId }: ContactNotesProps) => {
                         {note.author_name || 'Unknown'}
                       </span>
                       <span className="text-xs text-muted-gray">
-                        {formatDate(note.created_at)}
+                        {formatNoteDate(note.created_at)}
                       </span>
                     </div>
                     <p className="text-sm text-bone-white/80 whitespace-pre-wrap">{note.content}</p>
@@ -160,7 +159,7 @@ const ContactNotes = ({ contactId, currentProfileId }: ContactNotesProps) => {
                               {reply.author_name || 'Unknown'}
                             </span>
                             <span className="text-xs text-muted-gray">
-                              {formatDate(reply.created_at)}
+                              {formatNoteDate(reply.created_at)}
                             </span>
                           </div>
                           <p className="text-sm text-bone-white/70 whitespace-pre-wrap">{reply.content}</p>

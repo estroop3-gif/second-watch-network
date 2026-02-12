@@ -35,6 +35,7 @@ import {
   Loader2,
   CreditCard,
 } from 'lucide-react';
+import { formatDate as formatDateUtil } from '@/lib/dateUtils';
 
 type CardStatus = 'draft' | 'submitted' | 'approved' | 'printed' | 'rejected';
 
@@ -118,11 +119,7 @@ const AdminBusinessCards = () => {
 
   const formatDate = (dateStr: string) => {
     if (!dateStr) return '--';
-    return new Date(dateStr).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
+    return formatDateUtil(dateStr);
   };
 
   const getRepName = (card: any): string => {

@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { format } from 'date-fns';
 import { ArrowUpRight, ArrowDownLeft, Forward, Reply, Eye, Download, Paperclip } from 'lucide-react';
+import { formatDateTime } from '@/lib/dateUtils';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -132,7 +132,7 @@ const EmailMessage = ({ message, defaultExpanded = true, onForward, onReply }: E
           <Paperclip className="h-3 w-3 text-muted-gray flex-shrink-0" />
         )}
         <span className="text-xs text-muted-gray flex-shrink-0 whitespace-nowrap">
-          {format(new Date(message.created_at), 'MMM d, h:mm a')}
+          {formatDateTime(message.created_at, 'MMM d, h:mm a')}
         </span>
       </div>
     );
@@ -173,7 +173,7 @@ const EmailMessage = ({ message, defaultExpanded = true, onForward, onReply }: E
           {isOutbound && message.open_count != null && message.open_count > 0 && (
             <Badge
               className="bg-green-500/20 text-green-400 text-xs px-1.5 py-0"
-              title={`First opened: ${message.first_opened_at ? format(new Date(message.first_opened_at), 'MMM d, h:mm a') : 'N/A'}\nLast opened: ${message.last_opened_at ? format(new Date(message.last_opened_at), 'MMM d, h:mm a') : 'N/A'}\nTotal opens: ${message.open_count}`}
+              title={`First opened: ${message.first_opened_at ? formatDateTime(message.first_opened_at, 'MMM d, h:mm a') : 'N/A'}\nLast opened: ${message.last_opened_at ? formatDateTime(message.last_opened_at, 'MMM d, h:mm a') : 'N/A'}\nTotal opens: ${message.open_count}`}
             >
               <Eye className="h-3 w-3 mr-1" />
               Opened{message.open_count > 1 ? ` (${message.open_count})` : ''}
@@ -190,7 +190,7 @@ const EmailMessage = ({ message, defaultExpanded = true, onForward, onReply }: E
             </Button>
           )}
           <span className="text-xs text-muted-gray">
-            {format(new Date(message.created_at), 'MMM d, yyyy h:mm a')}
+            {formatDateTime(message.created_at)}
           </span>
         </div>
       </div>

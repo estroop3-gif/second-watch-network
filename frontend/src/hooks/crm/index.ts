@@ -30,6 +30,7 @@ export {
   useAddCRMTeamMember,
   useRemoveCRMTeamMember,
   useUpdateCRMTeamMemberRole,
+  useRepSummary,
 } from './useInteractions';
 
 export {
@@ -109,6 +110,7 @@ export {
   useCreateEmailAccount,
   useDeactivateEmailAccount,
   // New feature hooks
+  useDeleteThread,
   useStarThread,
   useSnoozeThread,
   useBulkThreadAction,
@@ -157,5 +159,12 @@ export {
   useEmailKeyboardShortcuts,
   KEYBOARD_SHORTCUTS,
 } from './useEmailKeyboardShortcuts';
+
+export {
+  useUnassignedContacts,
+  useContactAssignmentHistory,
+  useNewLeads,
+  useMarkNewLeadsViewed,
+} from './useLeads';
 
 export { useSidebarBadges } from './useSidebarBadges';

@@ -1,4 +1,5 @@
 import { Target } from 'lucide-react';
+import { formatDate } from '@/lib/dateUtils';
 
 const GOAL_TYPE_LABELS: Record<string, string> = {
   revenue: 'Revenue',
@@ -78,7 +79,7 @@ const GoalProgressCard = ({ goal, onClick }: GoalProgressCardProps) => {
 
       <div className="flex items-center justify-between">
         <span className="text-xs text-muted-gray">
-          {new Date(goal.period_start).toLocaleDateString()} - {new Date(goal.period_end).toLocaleDateString()}
+          {formatDate(goal.period_start)} - {formatDate(goal.period_end)}
         </span>
         <span className={`text-xs font-medium ${progress >= 100 ? 'text-emerald-400' : 'text-muted-gray'}`}>
           {progress}%

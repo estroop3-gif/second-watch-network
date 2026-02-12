@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, StickyNote, Trash2 } from 'lucide-react';
+import { formatDateTime } from '@/lib/dateUtils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -70,7 +71,7 @@ const InternalNotes = ({ threadId, currentProfileId }: InternalNotesProps) => {
                           {note.author_name || 'Unknown'}
                         </span>
                         <span className="text-xs text-muted-gray shrink-0">
-                          {new Date(note.created_at).toLocaleString()}
+                          {formatDateTime(note.created_at)}
                         </span>
                       </div>
                       <p className="text-sm text-muted-gray whitespace-pre-wrap">{note.content}</p>

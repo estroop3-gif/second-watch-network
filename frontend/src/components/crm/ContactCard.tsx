@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Phone, Mail, Building2, Clock, Send, PhoneOff } from 'lucide-react';
+import { Phone, Mail, Building2, Clock, Send, PhoneOff, UserPlus } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -8,6 +8,7 @@ import {
 import TemperatureBadge from './TemperatureBadge';
 import CopyableEmail from './CopyableEmail';
 import { useUpdateContact, useUpdateContactDNC } from '@/hooks/crm';
+import { formatDate } from '@/lib/dateUtils';
 import { toast } from 'sonner';
 
 const TEMPERATURES = [
@@ -20,11 +21,13 @@ const TEMPERATURES = [
 interface ContactCardProps {
   contact: any;
   onEmail?: (contact: any) => void;
+  showAdminControls?: boolean;
+  onAssign?: (contact: any) => void;
 }
 
-const ContactCard = ({ contact, onEmail }: ContactCardProps) => {
+const ContactCard = ({ contact, onEmail, showAdminControls, onAssign }: ContactCardProps) => {
   const lastActivity = contact.last_activity_date
-    ? new Date(contact.last_activity_date).toLocaleDateString()
+    ? formatDate(contact.last_activity_date)
     : null;
 
   const updateDNC = useUpdateContactDNC();
@@ -136,6 +139,27 @@ const ContactCard = ({ contact, onEmail }: ContactCardProps) => {
               </span>
             )}
           </div>
+
+          {/* Admin: Assigned rep + assign button */}
+          {showAdminControls && (
+            <div className="mt-2 flex items-center justify-between">
+              <span className="text-xs text-muted-gray">
+                {contact.assigned_rep_name
+                  ? <>Rep: <span className="text-bone-white/70">{contact.assigned_rep_name}</span></>
+                  : <span className="text-orange-400">Unassigned</span>
+                }
+              </span>
+              {onAssign && (
+                <button
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); onAssign(contact); }}
+                  className="p-1 rounded text-muted-gray hover:text-accent-yellow hover:bg-accent-yellow/10 transition-colors"
+                  title={contact.assigned_rep_id ? 'Reassign' : 'Assign'}
+                >
+                  <UserPlus className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          )}
 
           <div className="mt-3 flex items-center justify-between text-xs text-muted-gray">
             <span className="flex items-center gap-1">

@@ -28,7 +28,7 @@ const CRMLayout = () => {
 
   const navItems = [
     { name: 'Dashboard', href: '/crm/dashboard', icon: LayoutDashboard, badge: 0 },
-    { name: 'Contacts', href: '/crm/contacts', icon: Users, badge: badges?.contacts || 0 },
+    { name: 'Contacts', href: '/crm/contacts', icon: Users, badge: (badges?.my_contacts || 0) + (badges?.new_leads || 0) },
     { name: 'DNC List', href: '/crm/dnc', icon: ShieldOff, badge: badges?.dnc || 0 },
     { name: 'Email', href: '/crm/email', icon: AtSign, badge: unreadCount },
     { name: 'Pipeline', href: '/crm/pipeline', icon: Kanban, badge: badges?.pipeline || 0 },

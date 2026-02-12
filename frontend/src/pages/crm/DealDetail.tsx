@@ -24,7 +24,7 @@ import {
   ArrowLeft, Edit, Trash2, DollarSign, Calendar,
   User, Building, Phone, Mail, Target, Send, AtSign,
 } from 'lucide-react';
-import { format } from 'date-fns';
+import { formatDate, formatDateTime } from '@/lib/dateUtils';
 
 const STAGES = [
   { value: 'lead', label: 'Lead' },
@@ -265,7 +265,7 @@ const DealDetail = () => {
                       <div className="flex items-center gap-3 mt-1 text-xs text-muted-gray ml-6">
                         {thread.contact_email && <span>{thread.contact_email}</span>}
                         {thread.last_message_at && (
-                          <span>{format(new Date(thread.last_message_at), 'MMM d, yyyy')}</span>
+                          <span>{formatDate(thread.last_message_at)}</span>
                         )}
                       </div>
                     </button>
@@ -288,13 +288,13 @@ const DealDetail = () => {
             {deal.expected_close_date && (
               <div className="flex items-center gap-2 text-sm text-muted-gray">
                 <Calendar className="h-4 w-4" />
-                <span>Expected: {new Date(deal.expected_close_date).toLocaleDateString()}</span>
+                <span>Expected: {formatDate(deal.expected_close_date)}</span>
               </div>
             )}
             {deal.actual_close_date && (
               <div className="flex items-center gap-2 text-sm text-muted-gray">
                 <Calendar className="h-4 w-4" />
-                <span>Closed: {new Date(deal.actual_close_date).toLocaleDateString()}</span>
+                <span>Closed: {formatDate(deal.actual_close_date)}</span>
               </div>
             )}
             {deal.competitor && (

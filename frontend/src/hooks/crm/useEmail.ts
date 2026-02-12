@@ -124,6 +124,17 @@ export function useArchiveThread() {
   });
 }
 
+export function useDeleteThread() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (threadId: string) => api.deleteCRMEmailThread(threadId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-email-inbox'] });
+      qc.invalidateQueries({ queryKey: ['crm-email-unread-count'] });
+    },
+  });
+}
+
 // ============================================================================
 // Email Templates
 // ============================================================================

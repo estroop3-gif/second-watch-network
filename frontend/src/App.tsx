@@ -134,6 +134,7 @@ import CRMReports from "./pages/crm/Reports";
 import CRMPipeline from "./pages/crm/Pipeline";
 import CRMDealDetail from "./pages/crm/DealDetail";
 import CRMLeads from "./pages/crm/Leads";
+import CRMAdminLeads from "./pages/crm/admin/AdminLeads";
 import CRMGoals from "./pages/crm/Goals";
 import CRMKPIDashboard from "./pages/crm/KPIDashboard";
 import CRMCustomerLog from "./pages/crm/CustomerLog";
@@ -147,6 +148,7 @@ import CRMEmail from "./pages/crm/Email";
 import CRMAdminLayout from "./pages/crm/AdminLayout";
 import CRMAdminEmail from "./pages/crm/AdminEmail";
 import CRMAdminBusinessCards from "./pages/crm/AdminBusinessCards";
+import CRMRepDetail from "./pages/crm/admin/RepDetail";
 import CRMTraining from "./pages/crm/Training";
 import CRMDiscussions from "./pages/crm/Discussions";
 import CRMBusinessCardForm from "./components/crm/BusinessCardForm";
@@ -497,7 +499,8 @@ const App = () => (
                         <Route path="admin" element={<CRMAdminLayout />}>
                           <Route index element={<CRMKPIDashboard />} />
                           <Route path="team" element={<CRMTeamView />} />
-                          <Route path="leads" element={<CRMLeads />} />
+                          <Route path="team/:repId" element={<CRMRepDetail />} />
+                          <Route path="leads" element={<CRMAdminLeads />} />
                           <Route path="campaigns" element={<CRMCampaigns />} />
                           <Route path="campaigns/:id" element={<CRMCampaignDetail />} />
                           <Route path="email" element={<CRMAdminEmail />} />

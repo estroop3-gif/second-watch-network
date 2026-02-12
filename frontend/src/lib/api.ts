@@ -4542,6 +4542,7 @@ class APIClient {
     status?: string
     tag?: string
     assigned_rep_id?: string
+    unassigned?: boolean
     sort_by?: string
     sort_order?: string
     limit?: number
@@ -4553,6 +4554,7 @@ class APIClient {
     if (params?.status) query.append('status', params.status)
     if (params?.tag) query.append('tag', params.tag)
     if (params?.assigned_rep_id) query.append('assigned_rep_id', params.assigned_rep_id)
+    if (params?.unassigned) query.append('unassigned', 'true')
     if (params?.sort_by) query.append('sort_by', params.sort_by)
     if (params?.sort_order) query.append('sort_order', params.sort_order)
     if (params?.limit !== undefined) query.append('limit', params.limit.toString())
@@ -4662,15 +4664,28 @@ class APIClient {
     )
   }
 
-  async assignCRMContact(contactId: string, repId: string) {
-    return this.post<any>(`/api/v1/admin/crm/contacts/${contactId}/assign`, { rep_id: repId })
+  async assignCRMContact(contactId: string, repId: string, notes?: string) {
+    return this.post<any>(`/api/v1/admin/crm/contacts/${contactId}/assign`, { rep_id: repId, notes })
   }
 
-  async bulkAssignCRMContacts(contactIds: string[], repId: string) {
+  async bulkAssignCRMContacts(contactIds: string[], repId: string, notes?: string) {
     return this.post<any>('/api/v1/admin/crm/contacts/bulk-assign', {
       contact_ids: contactIds,
       rep_id: repId,
+      notes,
     })
+  }
+
+  async getCRMContactAssignmentHistory(contactId: string) {
+    return this.get<{ history: any[] }>(`/api/v1/admin/crm/contacts/${contactId}/assignment-history`)
+  }
+
+  async getCRMNewLeads() {
+    return this.get<{ contacts: any[]; total: number }>('/api/v1/crm/new-leads')
+  }
+
+  async markCRMNewLeadsViewed() {
+    return this.post<{ success: boolean }>('/api/v1/crm/new-leads/mark-viewed', {})
   }
 
   async addCRMTeamMember(userId: string, role: string) {
@@ -5032,6 +5047,10 @@ class APIClient {
     return this.patch<any>(`/api/v1/crm/email/threads/${threadId}/archive`, {})
   }
 
+  async deleteCRMEmailThread(threadId: string) {
+    return this.patch<any>(`/api/v1/crm/email/threads/${threadId}/delete`, {})
+  }
+
   async getCRMEmailContactThreads(contactId: string) {
     return this.get<{ threads: any[] }>(`/api/v1/crm/email/contacts/${contactId}/threads`)
   }
@@ -5241,6 +5260,21 @@ class APIClient {
     if (days !== undefined) query.append('days', days.toString())
     const qs = query.toString()
     return this.get<any>(`/api/v1/admin/crm/email/analytics${qs ? `?${qs}` : ''}`)
+  }
+
+  // CRM Admin — Goals List
+
+  async getCRMAdminGoals(params?: { rep_id?: string }) {
+    const query = new URLSearchParams()
+    if (params?.rep_id) query.append('rep_id', params.rep_id)
+    const qs = query.toString()
+    return this.get<{ goals: any[] }>(`/api/v1/admin/crm/goals${qs ? `?${qs}` : ''}`)
+  }
+
+  // CRM Admin — Rep Summary
+
+  async getCRMRepSummary(repId: string) {
+    return this.get<any>(`/api/v1/admin/crm/reps/${repId}/summary`)
   }
 
   // CRM Admin — Rep Email Drill-Down

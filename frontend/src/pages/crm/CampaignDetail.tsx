@@ -18,6 +18,7 @@ import {
   useUpdateCampaignSenders,
 } from '@/hooks/crm/useCampaigns';
 import { useEmailAccounts } from '@/hooks/crm/useEmail';
+import { formatDate, formatDateTime } from '@/lib/dateUtils';
 
 const SEND_STATUS_COLORS: Record<string, string> = {
   pending: 'text-muted-gray',
@@ -132,7 +133,7 @@ const CampaignDetail = () => {
             <p className="text-muted-gray mt-1">{campaign.description}</p>
           )}
           <p className="text-xs text-muted-gray mt-2">
-            Created {new Date(campaign.created_at).toLocaleDateString()}
+            Created {formatDate(campaign.created_at)}
             {campaign.created_by_name && ` by ${campaign.created_by_name}`}
           </p>
         </div>
@@ -362,7 +363,7 @@ const CampaignDetail = () => {
               {campaign.scheduled_at && (
                 <div>
                   <span className="text-muted-gray">Scheduled:</span>{' '}
-                  <span className="text-bone-white">{new Date(campaign.scheduled_at).toLocaleString()}</span>
+                  <span className="text-bone-white">{formatDateTime(campaign.scheduled_at)}</span>
                 </div>
               )}
               {campaign.drip_delay_days && (
@@ -410,10 +411,10 @@ const CampaignDetail = () => {
                           </span>
                         </td>
                         <td className="py-2 pr-4 text-muted-gray">
-                          {send.sent_at ? new Date(send.sent_at).toLocaleString() : '-'}
+                          {send.sent_at ? formatDateTime(send.sent_at) : '-'}
                         </td>
                         <td className="py-2 text-muted-gray">
-                          {send.opened_at ? new Date(send.opened_at).toLocaleString() : '-'}
+                          {send.opened_at ? formatDateTime(send.opened_at) : '-'}
                         </td>
                       </tr>
                     ))}

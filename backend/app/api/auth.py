@@ -187,21 +187,13 @@ async def sign_in(request: SignInRequest):
         # Build user data - include full profile if available
         if profile:
             # Return full profile data to avoid needing a second API call
-            user_data = {
-                "id": str(profile["id"]),
-                "email": cognito_user.get("email") or request.email,
-                "full_name": profile.get("full_name") or cognito_user.get("name"),
-                "cognito_user_id": cognito_user.get("id"),
-                "username": profile.get("username"),
-                "avatar_url": profile.get("avatar_url"),
-                "role": profile.get("role"),
-                "display_name": profile.get("display_name"),
-                "bio": profile.get("bio"),
-                "location": profile.get("location"),
-                "is_filmmaker": profile.get("is_filmmaker"),
-                "is_partner": profile.get("is_partner"),
-                "subscription_status": profile.get("subscription_status"),
-            }
+            from uuid import UUID
+            user_data = {}
+            for key, value in profile.items():
+                if isinstance(value, UUID):
+                    user_data[key] = str(value)
+                else:
+                    user_data[key] = value
         else:
             user_data = {
                 "id": cognito_user.get("id"),
@@ -254,18 +246,15 @@ async def complete_new_password(request: CompleteNewPasswordRequest):
             except Exception as e:
                 print(f"Profile lookup error: {e}")
 
-        # Build user data
+        # Build user data - include full profile data
         if profile:
-            user_data = {
-                "id": str(profile["id"]),
-                "email": cognito_user.get("email") or request.email,
-                "full_name": profile.get("full_name") or cognito_user.get("name"),
-                "cognito_user_id": cognito_user.get("id"),
-                "username": profile.get("username"),
-                "avatar_url": profile.get("avatar_url"),
-                "role": profile.get("role"),
-                "display_name": profile.get("display_name"),
-            }
+            from uuid import UUID
+            user_data = {}
+            for key, value in profile.items():
+                if isinstance(value, UUID):
+                    user_data[key] = str(value)
+                else:
+                    user_data[key] = value
         else:
             user_data = {
                 "id": cognito_user.get("id"),

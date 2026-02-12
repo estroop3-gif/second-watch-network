@@ -1,4 +1,5 @@
 import { Mail, Clock, Send, Ban, FileEdit, Users } from 'lucide-react';
+import { formatDate } from '@/lib/dateUtils';
 
 const STATUS_STYLES: Record<string, { bg: string; text: string; label: string }> = {
   draft: { bg: 'bg-muted-gray/30', text: 'text-bone-white', label: 'Draft' },
@@ -74,7 +75,7 @@ const CampaignCard = ({ campaign, onClick }: CampaignCardProps) => {
         {campaign.scheduled_at && (
           <span className="inline-flex items-center gap-1">
             <Clock className="h-3 w-3" />
-            {new Date(campaign.scheduled_at).toLocaleDateString()}
+            {formatDate(campaign.scheduled_at)}
           </span>
         )}
       </div>

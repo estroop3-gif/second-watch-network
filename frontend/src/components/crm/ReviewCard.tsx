@@ -1,4 +1,5 @@
 import { Star, User } from 'lucide-react';
+import { formatDate } from '@/lib/dateUtils';
 
 interface ReviewCardProps {
   review: any;
@@ -58,7 +59,7 @@ const ReviewCard = ({ review, onDelete }: ReviewCardProps) => {
             <span>by {review.reviewer_name}</span>
           )}
         </div>
-        <span>{new Date(review.created_at).toLocaleDateString()}</span>
+        <span>{formatDate(review.created_at)}</span>
       </div>
     </div>
   );
