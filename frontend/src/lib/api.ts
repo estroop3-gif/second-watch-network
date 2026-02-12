@@ -4921,6 +4921,10 @@ class APIClient {
     return this.get<Record<string, number>>('/api/v1/crm/sidebar-badges')
   }
 
+  async markCRMTabViewed(tabKey: string) {
+    return this.post<{ success: boolean }>('/api/v1/crm/tab-viewed', { tab_key: tabKey })
+  }
+
   // ============================================================================
   // CRM — Contact Notes
   // ============================================================================

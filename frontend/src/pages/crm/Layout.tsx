@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Users, CalendarDays,
@@ -10,6 +10,7 @@ import {
 import { usePermissions } from '@/hooks/usePermissions';
 import { useUnreadCount } from '@/hooks/crm/useEmail';
 import { useSidebarBadges } from '@/hooks/crm/useSidebarBadges';
+import { useMarkTabViewed, getTabKeyFromPath } from '@/hooks/crm/useTabViewed';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -25,6 +26,17 @@ const CRMLayout = () => {
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
   const isEmailRoute = location.pathname.startsWith('/crm/email');
+  const markTabViewed = useMarkTabViewed();
+  const lastMarkedTab = useRef<string | null>(null);
+
+  // Mark tab as viewed when navigating to a new CRM tab
+  useEffect(() => {
+    const tabKey = getTabKeyFromPath(location.pathname);
+    if (tabKey && tabKey !== lastMarkedTab.current) {
+      lastMarkedTab.current = tabKey;
+      markTabViewed.mutate(tabKey);
+    }
+  }, [location.pathname]);
 
   const navItems = [
     { name: 'Dashboard', href: '/crm/dashboard', icon: LayoutDashboard, badge: 0 },

@@ -225,3 +225,49 @@ def build_digest_notification_email(
         body,
         preheader=f"{count} new message{'s' if count != 1 else ''} in {account_email}"
     )
+
+
+def build_notification_confirmation_email(
+    account_email: str,
+    notification_email: str,
+    mode: str,
+    crm_url: str,
+) -> str:
+    """
+    Build a confirmation email sent to the user's personal email
+    when they enable CRM email notifications.
+
+    Args:
+        account_email: The CRM work email being monitored
+        notification_email: The personal email receiving notifications
+        mode: "instant" or "digest"
+        crm_url: Link to CRM email settings
+    """
+    mode_label = "Instant" if mode == "instant" else "Hourly Digest"
+    mode_desc = (
+        "You'll receive an email immediately whenever a new message arrives."
+        if mode == "instant"
+        else "You'll receive a summary of new messages on an hourly or daily schedule."
+    )
+
+    body = f"""
+<h2 style="color: {TEXT_LIGHT}; margin: 0 0 16px 0; font-size: 22px;">Notifications Enabled</h2>
+<p style="color: {TEXT_MUTED}; margin: 0 0 24px 0; font-size: 15px; line-height: 1.6;">
+    Email notifications have been set up for your CRM inbox. Here's a summary of your settings:
+</p>
+
+{info_card("Work Email", f'<span style="color: {TEXT_LIGHT};">{account_email}</span>')}
+{info_card("Notification Email", f'<span style="color: {TEXT_LIGHT};">{notification_email}</span>')}
+{info_card("Mode", f'<span style="color: {TEXT_LIGHT};">{mode_label}</span><br><span style="color: {TEXT_MUTED}; font-size: 13px;">{mode_desc}</span>')}
+
+{cta_button("Open CRM Email", crm_url)}
+
+<p style="color: #666; margin: 0; font-size: 12px; text-align: center;">
+    You can change these settings anytime in your CRM email settings.
+</p>"""
+
+    return base_template(
+        "Notifications Enabled",
+        body,
+        preheader=f"CRM notifications enabled for {account_email}"
+    )

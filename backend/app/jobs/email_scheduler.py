@@ -48,7 +48,9 @@ async def process_scheduled_emails():
                 plain_text = msg.get("body_text") or ""
                 if not plain_text:
                     import re
-                    plain_text = re.sub(r'<br\s*/?>', '\n', body_html)
+                    plain_text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', body_html)
+                    plain_text = re.sub(r'<br\s*/?>', '\n', plain_text)
+                    plain_text = re.sub(r'</(div|h[1-6]|li|tr)>', '\n', plain_text)
                     plain_text = re.sub(r'<[^>]+>', '', plain_text)
                     plain_text = plain_text.strip()
 

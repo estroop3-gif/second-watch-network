@@ -125,9 +125,12 @@ const EmailComposer = ({
         `</blockquote>`;
     }
 
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = finalBodyHtml;
-    const bodyText = tempDiv.textContent || tempDiv.innerText || '';
+    // Convert HTML to plain text preserving paragraph breaks
+    let bodyText = finalBodyHtml.replace(/<\/p>\s*<p[^>]*>/gi, '\n\n');
+    bodyText = bodyText.replace(/<br\s*\/?>/gi, '\n');
+    bodyText = bodyText.replace(/<\/(div|h[1-6]|li|tr)>/gi, '\n');
+    bodyText = bodyText.replace(/<[^>]+>/g, '');
+    bodyText = bodyText.trim();
 
     sendEmail.mutate({
       contact_id: resolvedContactId || contactId,

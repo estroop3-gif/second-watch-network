@@ -572,7 +572,7 @@ const CRMEmail = () => {
                         compact
                         threadId={selectedThreadId}
                         defaultTo={thread.contact_email}
-                        defaultSubject={`Re: ${thread.subject}`}
+                        defaultSubject={thread.subject}
                         contactId={thread.contact_id}
                         quotedHtml={buildQuotedReply(messages, thread.subject)?.quotedHtml}
                         quotedLabel={buildQuotedReply(messages, thread.subject)?.quotedLabel}

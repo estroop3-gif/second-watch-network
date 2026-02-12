@@ -140,9 +140,21 @@ class StageChangeRequest(BaseModel):
 async def get_sidebar_badges(
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
 ):
-    """Return badge counts for all CRM sidebar tabs in a single query."""
+    """Return badge counts for all CRM sidebar tabs.
+
+    Badges show activity *since the user last viewed each tab*. First-time
+    users (no row in crm_tab_views) see the old time-window behaviour so badges
+    look normal on first visit, then clear after first click.
+    """
     is_admin = has_permission(profile, Permission.CRM_MANAGE)
     rep_id = profile["id"]
+
+    # Fetch last-viewed timestamps (max ~10 rows)
+    view_rows = execute_query(
+        "SELECT tab_key, last_viewed_at FROM crm_tab_views WHERE profile_id = :pid",
+        {"pid": rep_id},
+    )
+    views = {r["tab_key"]: r["last_viewed_at"] for r in (view_rows or [])}
 
     # Build rep-scoping conditions
     contact_scope = "" if is_admin else "AND c.assigned_rep_id = :rep_id"
@@ -151,74 +163,87 @@ async def get_sidebar_badges(
     log_scope = "" if is_admin else "AND cl.rep_id = :rep_id"
     review_scope = "" if is_admin else "AND r.rep_id = :rep_id"
 
-    params: Dict[str, Any] = {"rep_id": rep_id}
+    params: Dict[str, Any] = {
+        "rep_id": rep_id,
+        "contacts_viewed": views.get("contacts"),
+        "dnc_viewed": views.get("dnc"),
+        "pipeline_viewed": views.get("pipeline"),
+        "goals_viewed": views.get("goals"),
+        "log_viewed": views.get("log"),
+        "reviews_viewed": views.get("reviews"),
+        "training_viewed": views.get("training"),
+        "discussions_viewed": views.get("discussions"),
+        "bc_viewed": views.get("business_card"),
+    }
 
     row = execute_single(
         f"""
         SELECT
-            -- Contacts: new in last 24h
+            -- Contacts: new since last view (fallback: last 24h)
             (SELECT COUNT(*) FROM crm_contacts c
              WHERE c.status != 'inactive'
-             AND c.created_at >= NOW() - INTERVAL '24 hours'
+             AND c.created_at > COALESCE(:contacts_viewed, NOW() - INTERVAL '24 hours')
              {contact_scope}) as new_contacts,
 
-            -- DNC: total flagged contacts
+            -- DNC: newly flagged since last view (fallback: last 24h)
             (SELECT COUNT(*) FROM crm_contacts c
              WHERE (c.do_not_email = true OR c.do_not_call = true OR c.do_not_text = true OR c.status = 'do_not_contact')
+             AND c.updated_at > COALESCE(:dnc_viewed, NOW() - INTERVAL '24 hours')
              {contact_scope}) as dnc_count,
 
-            -- Pipeline: deals updated in last 24h
+            -- Pipeline: deals updated since last view (fallback: last 24h)
             (SELECT COUNT(*) FROM crm_deals d
-             WHERE d.updated_at >= NOW() - INTERVAL '24 hours'
+             WHERE d.updated_at > COALESCE(:pipeline_viewed, NOW() - INTERVAL '24 hours')
              AND d.stage NOT IN ('won', 'lost')
              {deal_scope}) as active_deals,
 
-            -- Calendar: today's follow-ups due + overdue
+            -- Calendar: today's follow-ups due + overdue (unchanged — actionable, not "new")
             (SELECT COUNT(*) FROM crm_activities a
              WHERE a.follow_up_date IS NOT NULL
              AND a.follow_up_date <= CURRENT_DATE
              AND a.follow_up_completed = false
              {activity_scope}) as due_followups,
 
-            -- Interactions: today's logged count
+            -- Interactions: today's logged count (unchanged — resets daily)
             (SELECT COALESCE(SUM(ic.calls + ic.emails + ic.texts + ic.meetings + ic.demos), 0)
              FROM crm_interaction_counts ic
              WHERE ic.count_date = CURRENT_DATE
              AND ic.rep_id = :rep_id) as todays_interactions,
 
-            -- Goals: active goals (current period)
+            -- Goals: new goals since last view (fallback: last 7d)
             (SELECT COUNT(*) FROM crm_sales_goals g
-             WHERE g.period_start <= CURRENT_DATE AND g.period_end >= CURRENT_DATE
+             WHERE g.created_at > COALESCE(:goals_viewed, NOW() - INTERVAL '7 days')
              AND (g.rep_id = :rep_id OR g.rep_id IS NULL)) as active_goals,
 
-            -- Log: open entries
+            -- Log: new entries since last view (fallback: last 24h)
             (SELECT COUNT(*) FROM crm_customer_log cl
-             WHERE cl.status = 'open'
+             WHERE cl.created_at > COALESCE(:log_viewed, NOW() - INTERVAL '24 hours')
              {log_scope}) as open_logs,
 
-            -- Reviews: recent reviews (last 30 days)
+            -- Reviews: new since last view (fallback: last 30d)
             (SELECT COUNT(*) FROM crm_rep_reviews r
-             WHERE r.created_at >= NOW() - INTERVAL '30 days'
+             WHERE r.created_at > COALESCE(:reviews_viewed, NOW() - INTERVAL '30 days')
              {review_scope}) as recent_reviews,
 
-            -- Training: new resources in last 7 days
+            -- Training: new resources since last view (fallback: last 7d)
             (SELECT COUNT(*) FROM crm_training_resources tr
-             WHERE tr.created_at >= NOW() - INTERVAL '7 days') as new_training,
+             WHERE tr.created_at > COALESCE(:training_viewed, NOW() - INTERVAL '7 days')) as new_training,
 
-            -- Discussions: new threads/replies in last 7 days
+            -- Discussions: new threads since last view (fallback: last 7d)
             (SELECT COUNT(*) FROM crm_discussion_threads dt
-             WHERE dt.created_at >= NOW() - INTERVAL '7 days') as new_discussions,
+             WHERE dt.created_at > COALESCE(:discussions_viewed, NOW() - INTERVAL '7 days')) as new_discussions,
 
-            -- Business Card: cards with actionable status
+            -- Business Card: updates since last view (fallback: last 7d)
             (SELECT COUNT(*) FROM crm_business_cards bc
              WHERE bc.profile_id = :rep_id
-             AND bc.status IN ('approved', 'rejected', 'printed')) as card_updates,
+             AND bc.status IN ('approved', 'rejected', 'printed')
+             AND bc.updated_at > COALESCE(:bc_viewed, NOW() - INTERVAL '7 days')) as card_updates,
 
-            -- My Contacts: contacts assigned to this rep
+            -- My Contacts: contacts assigned to this rep (unchanged — not badge-clearable)
             (SELECT COUNT(*) FROM crm_contacts c
              WHERE c.assigned_rep_id = :rep_id AND c.status = 'active') as my_contacts,
 
-            -- New Leads: unviewed assignments for this rep
+            -- New Leads: unviewed assignments for this rep (unchanged — per-item tracking)
             (SELECT COUNT(DISTINCT cal.contact_id) FROM crm_contact_assignment_log cal
              JOIN crm_contacts c2 ON c2.id = cal.contact_id AND c2.status != 'inactive'
              WHERE cal.to_rep_id = :rep_id AND cal.viewed_at IS NULL) as new_leads
@@ -292,6 +317,40 @@ async def mark_new_leads_viewed(
         RETURNING id
         """,
         {"rep_id": rep_id},
+    )
+    return {"success": True}
+
+
+# ============================================================================
+# Tab View Tracking (for sidebar badge clearing)
+# ============================================================================
+
+ALLOWED_TAB_KEYS = {
+    "contacts", "dnc", "pipeline", "interactions", "goals",
+    "log", "reviews", "training", "discussions", "business_card",
+}
+
+class TabViewedRequest(BaseModel):
+    tab_key: str
+
+@router.post("/tab-viewed")
+async def mark_tab_viewed(
+    data: TabViewedRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Record that the user viewed a CRM sidebar tab (clears the badge)."""
+    if data.tab_key not in ALLOWED_TAB_KEYS:
+        raise HTTPException(400, f"Invalid tab_key: {data.tab_key}")
+
+    execute_single(
+        """
+        INSERT INTO crm_tab_views (profile_id, tab_key, last_viewed_at)
+        VALUES (:pid, :key, NOW())
+        ON CONFLICT (profile_id, tab_key)
+        DO UPDATE SET last_viewed_at = NOW()
+        RETURNING profile_id
+        """,
+        {"pid": profile["id"], "key": data.tab_key},
     )
     return {"success": True}
 
@@ -2605,10 +2664,14 @@ async def send_crm_email(
         # Link attachments
         if data.attachment_ids:
             for att_id in data.attachment_ids:
-                execute_single(
-                    "UPDATE crm_email_attachments SET message_id = :mid WHERE id = :aid RETURNING id",
-                    {"mid": message["id"], "aid": att_id},
-                )
+                try:
+                    execute_insert(
+                        "UPDATE crm_email_attachments SET message_id = :mid WHERE id = :aid AND message_id IS NULL RETURNING id",
+                        {"mid": message["id"], "aid": att_id},
+                    )
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).warning(f"Failed to link attachment {att_id} to scheduled message {message['id']}")
         return {"message": message, "thread_id": thread_id, "scheduled": True}
 
     # Insert message first to get ID for tracking pixel
@@ -2651,16 +2714,22 @@ async def send_crm_email(
         # Link attachments
         if data.attachment_ids:
             for att_id in data.attachment_ids:
-                execute_single(
-                    "UPDATE crm_email_attachments SET message_id = :mid WHERE id = :aid RETURNING id",
-                    {"mid": message["id"], "aid": att_id},
-                )
+                try:
+                    execute_insert(
+                        "UPDATE crm_email_attachments SET message_id = :mid WHERE id = :aid AND message_id IS NULL RETURNING id",
+                        {"mid": message["id"], "aid": att_id},
+                    )
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).warning(f"Failed to link attachment {att_id} to internal message {message['id']}")
 
         # Generate plain text fallback if not provided
         plain_text = data.body_text
         if not plain_text:
             import re
-            plain_text = re.sub(r'<br\s*/?>', '\n', body_html)
+            plain_text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', body_html)
+            plain_text = re.sub(r'<br\s*/?>', '\n', plain_text)
+            plain_text = re.sub(r'</(div|h[1-6]|li|tr)>', '\n', plain_text)
             plain_text = re.sub(r'<[^>]+>', '', plain_text)
             plain_text = plain_text.strip()
 
@@ -2706,19 +2775,26 @@ async def send_crm_email(
     resend_attachments = []
     if data.attachment_ids:
         import boto3
+        import logging
+        logger = logging.getLogger(__name__)
         s3 = boto3.client("s3", region_name="us-east-1")
         for att_id in data.attachment_ids:
-            att = execute_single(
-                "UPDATE crm_email_attachments SET message_id = :mid WHERE id = :aid RETURNING *",
-                {"mid": message["id"], "aid": att_id},
-            )
-            if att and att.get("s3_key"):
-                presigned = s3.generate_presigned_url(
-                    "get_object",
-                    Params={"Bucket": att.get("s3_bucket", settings.AWS_S3_BACKLOT_FILES_BUCKET), "Key": att["s3_key"]},
-                    ExpiresIn=300,
+            try:
+                att = execute_insert(
+                    "UPDATE crm_email_attachments SET message_id = :mid WHERE id = :aid AND message_id IS NULL RETURNING *",
+                    {"mid": message["id"], "aid": att_id},
                 )
-                resend_attachments.append({"path": presigned, "filename": att["filename"]})
+                if att and att.get("s3_key"):
+                    presigned = s3.generate_presigned_url(
+                        "get_object",
+                        Params={"Bucket": att.get("s3_bucket", settings.AWS_S3_BACKLOT_FILES_BUCKET), "Key": att["s3_key"]},
+                        ExpiresIn=300,
+                    )
+                    resend_attachments.append({"path": presigned, "filename": att["filename"]})
+                else:
+                    logger.warning(f"Attachment {att_id} not found or already linked, skipping")
+            except Exception as e:
+                logger.warning(f"Failed to link attachment {att_id} to message {message['id']}: {e}")
 
     # Send via Resend
     resend_sdk.api_key = settings.RESEND_API_KEY
@@ -2727,7 +2803,9 @@ async def send_crm_email(
     plain_text = data.body_text
     if not plain_text:
         import re
-        plain_text = re.sub(r'<br\s*/?>', '\n', body_html)
+        plain_text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', body_html)
+        plain_text = re.sub(r'<br\s*/?>', '\n', plain_text)
+        plain_text = re.sub(r'</(div|h[1-6]|li|tr)>', '\n', plain_text)
         plain_text = re.sub(r'<[^>]+>', '', plain_text)
         plain_text = plain_text.strip()
 
@@ -2751,7 +2829,10 @@ async def send_crm_email(
             "UPDATE crm_email_messages SET status = 'failed' WHERE id = :mid RETURNING id",
             {"mid": message["id"]},
         )
-        raise HTTPException(502, f"Failed to send email: {str(e)}")
+        detail = f"Failed to send email: {str(e)}"
+        if resend_attachments:
+            detail += f" (with {len(resend_attachments)} attachment(s))"
+        raise HTTPException(502, detail)
 
     resend_id = result.get("id")
 
@@ -2887,20 +2968,36 @@ async def email_inbound_webhook_handler(request: Request):
         )
         contact_id = linked_contact["id"] if linked_contact else None
 
-        # Create a new thread for this direct inbound email
-        new_thread = execute_single(
+        # Try to find an existing thread for this sender + account
+        # (catches replies where the client dropped the reply+ routing address)
+        existing_thread = execute_single(
             """
-            INSERT INTO crm_email_threads (account_id, contact_id, contact_email, subject)
-            VALUES (:aid, :cid, :email, :subj) RETURNING *
+            SELECT id FROM crm_email_threads
+            WHERE account_id = :aid
+              AND LOWER(contact_email) = LOWER(:email)
+            ORDER BY last_message_at DESC NULLS LAST
+            LIMIT 1
             """,
-            {
-                "aid": matched_account["id"],
-                "cid": contact_id,
-                "email": from_address,
-                "subj": subject,
-            },
+            {"aid": matched_account["id"], "email": from_address},
         )
-        thread_id = str(new_thread["id"])
+
+        if existing_thread:
+            thread_id = str(existing_thread["id"])
+        else:
+            # Create a new thread for this direct inbound email
+            new_thread = execute_single(
+                """
+                INSERT INTO crm_email_threads (account_id, contact_id, contact_email, subject)
+                VALUES (:aid, :cid, :email, :subj) RETURNING *
+                """,
+                {
+                    "aid": matched_account["id"],
+                    "cid": contact_id,
+                    "email": from_address,
+                    "subj": subject,
+                },
+            )
+            thread_id = str(new_thread["id"])
 
     # Fetch full email content from Resend API (webhook only sends metadata)
     import logging as _logging
@@ -2993,7 +3090,7 @@ async def email_inbound_webhook_handler(request: Request):
 
     # Auto-increment interaction counter + create activity for inbound email
     account = execute_single(
-        "SELECT profile_id FROM crm_email_accounts WHERE id = :aid",
+        "SELECT * FROM crm_email_accounts WHERE id = :aid",
         {"aid": thread["account_id"]},
     )
     if account:
@@ -3049,6 +3146,8 @@ async def email_inbound_webhook_handler(request: Request):
 
     # Email notification (best-effort, after WebSocket)
     if account and message:
+        import logging
+        notif_logger = logging.getLogger(__name__)
         try:
             notif_mode = account.get("notification_mode", "off")
             notif_email = account.get("notification_email")
@@ -3057,8 +3156,9 @@ async def email_inbound_webhook_handler(request: Request):
                 account_email = account.get("email_address", "")
                 if notif_email.lower() != account_email.lower():
                     if notif_mode == "instant":
+                        import resend as resend_sdk
+                        from app.core.config import settings
                         from app.services.email_templates import build_instant_notification_email
-                        from app.services.email_service import EmailService
                         thread_url = f"https://www.secondwatchnetwork.com/crm/email?thread={thread_id}"
                         html = build_instant_notification_email(
                             account_email=account_email,
@@ -3067,14 +3167,14 @@ async def email_inbound_webhook_handler(request: Request):
                             preview=(text_body or "")[:300],
                             thread_url=thread_url,
                         )
-                        await EmailService.send_email(
-                            to_emails=[notif_email],
-                            subject=f"New email from {from_address or 'Unknown'}: {subject or '(no subject)'}",
-                            html_content=html,
-                            email_type="crm_notification",
-                            source_service="crm",
-                            source_action="inbound_notification",
-                        )
+                        resend_sdk.api_key = settings.RESEND_API_KEY
+                        resend_sdk.Emails.send({
+                            "from": "Second Watch Network <notifications@theswn.com>",
+                            "to": [notif_email],
+                            "subject": f"New email from {from_address or 'Unknown'}: {subject or '(no subject)'}",
+                            "html": html,
+                        })
+                        notif_logger.info(f"Instant notification sent to {notif_email} for thread {thread_id}")
                     elif notif_mode == "digest":
                         # Queue for digest
                         execute_insert(
@@ -3093,8 +3193,8 @@ async def email_inbound_webhook_handler(request: Request):
                                 "preview": (text_body or "")[:300],
                             },
                         )
-        except Exception:
-            pass  # Best-effort notification
+        except Exception as e:
+            notif_logger.error(f"Failed to send inbound email notification for thread {thread_id}: {e}")
 
     return {"status": "stored", "message_id": message["id"] if message else None}
 
@@ -3596,10 +3696,19 @@ async def get_attachment_upload_url(
     """Get a presigned S3 PUT URL for uploading an email attachment."""
     import boto3
     import uuid as uuid_mod
+    import logging
     from app.core.config import settings
+
+    logger = logging.getLogger(__name__)
 
     if data.size_bytes > 10 * 1024 * 1024:
         raise HTTPException(400, "Maximum attachment size is 10MB")
+
+    # Block dangerous file extensions
+    BLOCKED_EXTENSIONS = {"exe", "bat", "cmd", "scr", "pif", "msi", "js", "vbs", "wsf", "ps1", "sh"}
+    ext = data.filename.rsplit(".", 1)[-1].lower() if "." in data.filename else "bin"
+    if ext in BLOCKED_EXTENSIONS:
+        raise HTTPException(400, f"File type .{ext} is not allowed")
 
     account = execute_single(
         "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
@@ -3608,20 +3717,23 @@ async def get_attachment_upload_url(
     if not account:
         raise HTTPException(404, "No email account")
 
-    ext = data.filename.rsplit(".", 1)[-1] if "." in data.filename else "bin"
     attachment_id = str(uuid_mod.uuid4())
     s3_key = f"email-attachments/{account['id']}/{attachment_id}.{ext}"
     bucket = settings.AWS_S3_BACKLOT_FILES_BUCKET
 
-    s3 = boto3.client("s3", region_name="us-east-1")
-    presigned_url = s3.generate_presigned_url(
-        "put_object",
-        Params={"Bucket": bucket, "Key": s3_key, "ContentType": data.content_type},
-        ExpiresIn=300,
-    )
+    try:
+        s3 = boto3.client("s3", region_name="us-east-1")
+        presigned_url = s3.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": bucket, "Key": s3_key, "ContentType": data.content_type},
+            ExpiresIn=300,
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate presigned URL for attachment: {e}")
+        raise HTTPException(500, "Failed to generate upload URL")
 
-    # Create attachment record (not yet linked to a message)
-    att = execute_single(
+    # Create attachment record (not yet linked to a message — message_id is NULL)
+    att = execute_insert(
         """
         INSERT INTO crm_email_attachments (id, message_id, filename, content_type, size_bytes, s3_key, s3_bucket)
         VALUES (:id, NULL, :filename, :content_type, :size_bytes, :s3_key, :bucket) RETURNING *
@@ -4112,6 +4224,34 @@ async def update_email_notification_settings(
             "aid": account_id,
         },
     )
+
+    # Send confirmation email to personal address when notifications are enabled
+    if notification_mode != "off" and notification_email:
+        try:
+            import resend as resend_sdk
+            import logging
+            from app.core.config import settings
+            from app.services.email_templates import build_notification_confirmation_email
+
+            crm_url = f"{settings.FRONTEND_URL}/crm/email"
+            html = build_notification_confirmation_email(
+                account_email=account["email_address"],
+                notification_email=notification_email,
+                mode=notification_mode,
+                crm_url=crm_url,
+            )
+            resend_sdk.api_key = settings.RESEND_API_KEY
+            resend_sdk.Emails.send({
+                "from": "Second Watch Network <notifications@theswn.com>",
+                "to": [notification_email],
+                "subject": "CRM Email Notifications Enabled",
+                "html": html,
+            })
+            logging.getLogger(__name__).info(f"Sent notification confirmation to {notification_email} for account {account['email_address']}")
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to send notification confirmation email: {e}")
+
     return {"status": "updated"}
 
 
