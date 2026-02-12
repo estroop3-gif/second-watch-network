@@ -559,7 +559,7 @@ const CRMEmail = () => {
 
                 {/* Reply composer / Quick replies */}
                 {showReply && (
-                  <div className="border-t border-muted-gray/30 p-4 flex-shrink-0">
+                  <div className="border-t border-muted-gray/30 p-4 min-h-0 max-h-[50vh] overflow-y-auto">
                     <div className="max-w-3xl mx-auto">
                       <div className="flex items-center gap-2 mb-2">
                         <QuickReplyDropdown
