@@ -91,6 +91,10 @@ export const UserDetailDrawer = ({ userId, onClose }: UserDetailDrawerProps) => 
   const [showResetPasswordDialog, setShowResetPasswordDialog] = useState(false);
   const [showResendTempPasswordDialog, setShowResendTempPasswordDialog] = useState(false);
   const [showTempPassword, setShowTempPassword] = useState(false);
+  const [showSetPasswordDialog, setShowSetPasswordDialog] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [showChangeEmailDialog, setShowChangeEmailDialog] = useState(false);
+  const [newEmail, setNewEmail] = useState('');
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['admin-user-details', userId],
@@ -148,6 +152,33 @@ export const UserDetailDrawer = ({ userId, onClose }: UserDetailDrawerProps) => 
     },
   });
 
+  const setPasswordMutation = useMutation({
+    mutationFn: () => api.adminSetUserPassword(userId!, newPassword),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['admin-user-details', userId] });
+      toast.success(result.message || 'Password set successfully');
+      setShowSetPasswordDialog(false);
+      setNewPassword('');
+    },
+    onError: (err: any) => {
+      toast.error(err.message || 'Failed to set password');
+    },
+  });
+
+  const changeEmailMutation = useMutation({
+    mutationFn: () => api.adminChangeUserEmail(userId!, newEmail),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['admin-user-details', userId] });
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
+      toast.success(result.message || 'Email changed successfully');
+      setShowChangeEmailDialog(false);
+      setNewEmail('');
+    },
+    onError: (err: any) => {
+      toast.error(err.message || 'Failed to change email');
+    },
+  });
+
   const profile = data?.profile;
 
   return (
@@ -193,17 +224,38 @@ export const UserDetailDrawer = ({ userId, onClose }: UserDetailDrawerProps) => 
                 <Button
                   variant="outline"
                   size="sm"
+                  onClick={() => setShowSetPasswordDialog(true)}
+                  className="bg-charcoal-black border-accent-yellow text-accent-yellow"
+                >
+                  <Key className="h-4 w-4 mr-1" />
+                  Set Password
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setNewEmail(profile?.email || '');
+                    setShowChangeEmailDialog(true);
+                  }}
+                  className="bg-charcoal-black border-accent-yellow text-accent-yellow"
+                >
+                  <Mail className="h-4 w-4 mr-1" />
+                  Change Email
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => setShowResetPasswordDialog(true)}
                   className="bg-charcoal-black border-muted-gray text-bone-white"
                 >
-                  <Key className="h-4 w-4 mr-1" />
+                  <Send className="h-4 w-4 mr-1" />
                   Reset Password
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setShowResendTempPasswordDialog(true)}
-                  className="bg-charcoal-black border-accent-yellow text-accent-yellow"
+                  className="bg-charcoal-black border-muted-gray text-bone-white"
                 >
                   <Send className="h-4 w-4 mr-1" />
                   Resend Temp Password
@@ -740,6 +792,77 @@ export const UserDetailDrawer = ({ userId, onClose }: UserDetailDrawerProps) => 
               className="bg-accent-yellow text-charcoal-black hover:bg-yellow-500"
             >
               {resendTempPasswordMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Send New Password'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Set Password Dialog */}
+      <AlertDialog open={showSetPasswordDialog} onOpenChange={(open) => {
+        setShowSetPasswordDialog(open);
+        if (!open) setNewPassword('');
+      }}>
+        <AlertDialogContent className="bg-charcoal-black border-muted-gray">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-bone-white">Set Password</AlertDialogTitle>
+            <AlertDialogDescription className="text-muted-gray">
+              Set a new password for {profile?.display_name || profile?.email}. This takes effect immediately.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Input
+            type="text"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            placeholder="Enter new password"
+            className="bg-charcoal-black border-muted-gray text-bone-white font-mono"
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel className="bg-charcoal-black border-muted-gray text-bone-white">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => setPasswordMutation.mutate()}
+              disabled={!newPassword || newPassword.length < 8 || setPasswordMutation.isPending}
+              className="bg-accent-yellow text-charcoal-black hover:bg-yellow-500"
+            >
+              {setPasswordMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Set Password'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Change Email Dialog */}
+      <AlertDialog open={showChangeEmailDialog} onOpenChange={(open) => {
+        setShowChangeEmailDialog(open);
+        if (!open) setNewEmail('');
+      }}>
+        <AlertDialogContent className="bg-charcoal-black border-muted-gray">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-bone-white">Change Email</AlertDialogTitle>
+            <AlertDialogDescription className="text-muted-gray">
+              Change the email address for {profile?.display_name || profile?.username}. This updates both Cognito and the database.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2">
+            <p className="text-xs text-muted-gray">Current: <span className="text-bone-white">{profile?.email}</span></p>
+            <Input
+              type="email"
+              value={newEmail}
+              onChange={(e) => setNewEmail(e.target.value)}
+              placeholder="New email address"
+              className="bg-charcoal-black border-muted-gray text-bone-white"
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="bg-charcoal-black border-muted-gray text-bone-white">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => changeEmailMutation.mutate()}
+              disabled={!newEmail || newEmail === profile?.email || changeEmailMutation.isPending}
+              className="bg-accent-yellow text-charcoal-black hover:bg-yellow-500"
+            >
+              {changeEmailMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Change Email'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

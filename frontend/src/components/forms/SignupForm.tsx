@@ -351,11 +351,20 @@ export function SignupForm() {
       <Dialog open={openConfirmSent} onOpenChange={setOpenConfirmSent}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Check your inbox to confirm</DialogTitle>
+            <DialogTitle>Check Your Email</DialogTitle>
             <DialogDescription>
-              We've sent a 6-digit confirmation code to {lastEmail}. Enter it below to activate your account.
+              We've sent a 6-digit confirmation code to <strong className="text-bone-white">{lastEmail}</strong>
             </DialogDescription>
           </DialogHeader>
+
+          {/* Email sender info */}
+          <div className="bg-muted-gray/10 border border-muted-gray/30 rounded-lg p-3 text-sm">
+            <p className="text-muted-gray mb-1">Look for an email from:</p>
+            <p className="text-bone-white font-medium">Second Watch Network</p>
+            <p className="text-accent-yellow font-mono text-xs">noreply@secondwatch.network</p>
+            <p className="text-muted-gray text-xs mt-2">The code expires in 24 hours.</p>
+          </div>
+
           <div className="space-y-4">
             <Input
               type="text"
@@ -383,11 +392,12 @@ export function SignupForm() {
               Resend code
             </button>
             <details>
-              <summary className="cursor-pointer">Didn't get it?</summary>
+              <summary className="cursor-pointer text-muted-gray">Didn't get it?</summary>
               <ul className="list-disc pl-6 mt-2 text-muted-gray">
                 <li>Check your spam or junk folder.</li>
+                <li>Look for an email from <span className="text-bone-white">noreply@secondwatch.network</span></li>
                 <li>Wait a minute and try "Resend code".</li>
-                <li>Add our domain to your allowlist.</li>
+                <li>Make sure you entered the correct email address.</li>
               </ul>
             </details>
           </div>

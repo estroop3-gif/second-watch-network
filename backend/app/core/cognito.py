@@ -610,6 +610,40 @@ class CognitoAuth:
         except ClientError as e:
             return {'success': False, 'error': {'message': e.response['Error']['Message']}}
 
+    @staticmethod
+    def admin_set_user_password(email: str, password: str, permanent: bool = True) -> Dict[str, Any]:
+        """
+        Admin: Set a user's password directly.
+        """
+        try:
+            cognito_client.admin_set_user_password(
+                UserPoolId=COGNITO_USER_POOL_ID,
+                Username=email,
+                Password=password,
+                Permanent=permanent
+            )
+            return {'success': True, 'error': None}
+        except ClientError as e:
+            return {'success': False, 'error': {'message': e.response['Error']['Message']}}
+
+    @staticmethod
+    def admin_update_email(old_email: str, new_email: str) -> Dict[str, Any]:
+        """
+        Admin: Update a user's email and mark it as verified.
+        """
+        try:
+            cognito_client.admin_update_user_attributes(
+                UserPoolId=COGNITO_USER_POOL_ID,
+                Username=old_email,
+                UserAttributes=[
+                    {'Name': 'email', 'Value': new_email},
+                    {'Name': 'email_verified', 'Value': 'true'},
+                ]
+            )
+            return {'success': True, 'error': None}
+        except ClientError as e:
+            return {'success': False, 'error': {'message': e.response['Error']['Message']}}
+
 
 # FastAPI dependency for getting current user
 async def get_current_user(

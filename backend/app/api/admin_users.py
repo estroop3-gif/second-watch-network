@@ -426,6 +426,109 @@ async def reset_user_password(user_id: str, authorization: str = Header(None)):
         raise HTTPException(status_code=500, detail=f"Failed to reset password: {str(e)}")
 
 
+class SetPasswordRequest(BaseModel):
+    password: str
+    permanent: bool = True
+
+
+@router.post("/{user_id}/set-password")
+async def set_user_password(user_id: str, data: SetPasswordRequest, authorization: str = Header(None)):
+    """Admin: Set a user's password directly"""
+    await require_admin(authorization)
+
+    client = get_client()
+
+    user = client.table("profiles").select("email").eq("id", user_id).single().execute()
+
+    if not user.data:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        from app.core.cognito import CognitoAuth
+
+        result = CognitoAuth.admin_set_user_password(
+            email=user.data["email"],
+            password=data.password,
+            permanent=data.permanent
+        )
+
+        if result.get("error"):
+            raise HTTPException(status_code=400, detail=result["error"]["message"])
+
+        # Update temp_password in profile so it's visible in admin drawer
+        client.table("profiles").update({
+            "temp_password": data.password,
+            "temp_password_set_at": datetime.utcnow().isoformat()
+        }).eq("id", user_id).execute()
+
+        return {
+            "success": True,
+            "message": "Password set successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to set password: {str(e)}")
+
+
+class ChangeEmailRequest(BaseModel):
+    new_email: EmailStr
+
+
+@router.post("/{user_id}/change-email")
+async def change_user_email(user_id: str, data: ChangeEmailRequest, authorization: str = Header(None)):
+    """Admin: Change a user's email address"""
+    await require_admin(authorization)
+
+    client = get_client()
+
+    user = client.table("profiles").select("email").eq("id", user_id).single().execute()
+
+    if not user.data:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    old_email = user.data["email"]
+
+    if old_email == data.new_email:
+        raise HTTPException(status_code=400, detail="New email is the same as current email")
+
+    # Check if new email is already taken
+    existing = client.table("profiles").select("id").eq("email", data.new_email).execute()
+    if existing.data:
+        raise HTTPException(status_code=400, detail="Email already in use by another account")
+
+    try:
+        from app.core.cognito import CognitoAuth
+
+        # Update in Cognito first
+        result = CognitoAuth.admin_update_email(
+            old_email=old_email,
+            new_email=data.new_email
+        )
+
+        if result.get("error"):
+            raise HTTPException(status_code=400, detail=result["error"]["message"])
+
+        # Update in database
+        client.table("profiles").update({
+            "email": data.new_email,
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("id", user_id).execute()
+
+        return {
+            "success": True,
+            "old_email": old_email,
+            "new_email": data.new_email,
+            "message": f"Email changed from {old_email} to {data.new_email}"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to change email: {str(e)}")
+
+
 @router.delete("/{user_id}")
 async def delete_user(user_id: str, authorization: str = Header(None)):
     """Delete a user account"""

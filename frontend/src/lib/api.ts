@@ -1282,6 +1282,20 @@ class APIClient {
     )
   }
 
+  async adminSetUserPassword(userId: string, password: string, permanent: boolean = true) {
+    return this.request<{ success: boolean; message: string }>(
+      `/api/v1/admin/users/${userId}/set-password`,
+      { method: 'POST', body: JSON.stringify({ password, permanent }) }
+    )
+  }
+
+  async adminChangeUserEmail(userId: string, newEmail: string) {
+    return this.request<{ success: boolean; old_email: string; new_email: string; message: string }>(
+      `/api/v1/admin/users/${userId}/change-email`,
+      { method: 'POST', body: JSON.stringify({ new_email: newEmail }) }
+    )
+  }
+
   async adminUpdateUserProfile(userId: string, data: {
     full_name?: string
     display_name?: string

@@ -21,7 +21,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { Eye, EyeOff, Loader2, ArrowLeft } from "lucide-react";
+import { Eye, EyeOff, Loader2, ArrowLeft, Mail } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
@@ -432,6 +432,19 @@ export function InlineAuthModal({
               <ArrowLeft className="h-4 w-4 mr-1" />
               Back
             </button>
+
+            {/* Email sender info */}
+            <div className="bg-muted-gray/10 border border-muted-gray/30 rounded-lg p-3">
+              <div className="flex items-start gap-3">
+                <Mail className="h-5 w-5 text-accent-yellow mt-0.5 shrink-0" />
+                <div className="text-sm">
+                  <p className="text-muted-gray">Look for an email from:</p>
+                  <p className="text-bone-white font-medium">Second Watch Network</p>
+                  <p className="text-accent-yellow font-mono text-xs">noreply@secondwatch.network</p>
+                  <p className="text-muted-gray text-xs mt-1">Check your spam folder if you don't see it. Code expires in 24 hours.</p>
+                </div>
+              </div>
+            </div>
 
             <Input
               type="text"
