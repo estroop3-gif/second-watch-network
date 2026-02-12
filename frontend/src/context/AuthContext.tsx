@@ -1,6 +1,27 @@
-import { createContext, useState, useEffect, useContext, ReactNode, useRef } from 'react';
+import { createContext, useState, useEffect, useContext, ReactNode, useRef, useCallback } from 'react';
 import { api, safeStorage } from '@/lib/api';
 import { performanceMetrics } from '@/lib/performanceMetrics';
+
+// --- Cache helpers for instant hydration ---
+const CACHED_PROFILE_KEY = 'swn_cached_profile';
+
+const getCachedProfile = (): any | null => {
+  try {
+    const raw = safeStorage.getItem(CACHED_PROFILE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+};
+
+const saveCachedProfile = (profile: any) => {
+  try {
+    safeStorage.setItem(CACHED_PROFILE_KEY, JSON.stringify(profile));
+  } catch {
+    // localStorage full or unavailable — non-fatal
+  }
+};
 
 // Custom types to replace Supabase types
 interface AuthUser {
@@ -55,8 +76,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [profile, setProfile] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+  const bootstrapErrorRef = useRef<string | null>(null);
   const initialCheckComplete = useRef(false);
   const retryCount = useRef(0);
+
+  const setBootstrapErrorWithRef = (msg: string | null) => {
+    bootstrapErrorRef.current = msg;
+    setBootstrapError(msg);
+  };
 
   /**
    * Check if an error is transient (network/timeout/5xx) vs auth error (401/403)
@@ -114,12 +141,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       setSession(authSession);
       setUser(userData as AuthUser);
-      setBootstrapError(null);
+      setBootstrapErrorWithRef(null);
 
       // Try to load profile (non-blocking)
       try {
         const profileData = await api.getProfile();
         setProfile(profileData);
+        saveCachedProfile(profileData);
         if (profileData?.id) {
           safeStorage.setItem('profile_id', profileData.id);
         }
@@ -133,7 +161,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       if (isTransientError(error)) {
         // For transient errors, keep the token and allow retry
         console.warn('[Auth] Transient error during session validation, will retry:', error.message);
-        setBootstrapError('Connection issue - tap to retry');
+        setBootstrapErrorWithRef('Connection issue - tap to retry');
         return false;
       } else {
         // For auth errors (401/403/invalid), clear the token
@@ -142,11 +170,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         safeStorage.removeItem('access_token');
         safeStorage.removeItem('refresh_token');
         safeStorage.removeItem('profile_id');
+        safeStorage.removeItem(CACHED_PROFILE_KEY);
         api.setToken(null);
         setSession(null);
         setUser(null);
         setProfile(null);
-        setBootstrapError(null);
+        setBootstrapErrorWithRef(null);
         return false;
       }
     }
@@ -160,7 +189,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     if (!token) return false;
 
     setLoading(true);
-    setBootstrapError(null);
+    setBootstrapErrorWithRef(null);
     retryCount.current += 1;
     performanceMetrics.incrementRetry();
 
@@ -170,34 +199,135 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     return success;
   };
 
-  // Check for existing session on mount with auto-retry
+  /**
+   * Validate session in the background (non-blocking).
+   * Used after hydrating from cache so the user sees the dashboard instantly.
+   */
+  const validateSessionBackground = useCallback(async (token: string) => {
+    api.setToken(token);
+    try {
+      const userData = await api.getCurrentUser();
+      const refreshToken = safeStorage.getItem('refresh_token') || '';
+
+      const authSession: AuthSession = {
+        access_token: token,
+        refresh_token: refreshToken,
+        expires_in: 3600,
+        token_type: 'bearer',
+        user: userData as AuthUser,
+      };
+
+      setSession(authSession);
+      setUser(userData as AuthUser);
+
+      try {
+        const profileData = await api.getProfile();
+        setProfile(profileData);
+        saveCachedProfile(profileData);
+        if (profileData?.id) {
+          safeStorage.setItem('profile_id', profileData.id);
+        }
+      } catch {
+        // Profile fetch failed — keep cached data
+      }
+    } catch (error: any) {
+      if (!isTransientError(error)) {
+        // Auth error (401/403) — token is invalid, sign out
+        console.log('[Auth] Background validation: token invalid, signing out');
+        safeStorage.removeItem('access_token');
+        safeStorage.removeItem('refresh_token');
+        safeStorage.removeItem('profile_id');
+        safeStorage.removeItem(CACHED_PROFILE_KEY);
+        api.setToken(null);
+        setSession(null);
+        setUser(null);
+        setProfile(null);
+      }
+      // Transient errors: silently ignore, user keeps cached data
+    }
+  }, []);
+
+  // Check for existing session on mount with cache-first hydration
   useEffect(() => {
     const checkSession = async () => {
-      // Performance: mark auth check started
       performanceMetrics.markAuthCheckStarted();
 
-      setLoading(true);
       const token = safeStorage.getItem('access_token');
       const hadToken = !!token;
 
-      if (token) {
-        let success = await validateSession(token);
-
-        // Auto-retry once on transient error (helps with cold starts)
-        if (!success && bootstrapError && retryCount.current === 0) {
-          console.log('[Auth] Auto-retrying after transient error...');
-          await new Promise(resolve => setTimeout(resolve, 1500)); // Wait 1.5s
-          retryCount.current = 1;
-          success = await validateSession(token, true);
-        }
-
-        // Performance: mark auth check completed
-        performanceMetrics.markAuthCheckCompleted(hadToken, success);
-      } else {
-        // Performance: mark auth check completed (no token)
+      if (!token) {
+        // No token — go straight to landing page
         performanceMetrics.markAuthCheckCompleted(false, false);
+        setLoading(false);
+        initialCheckComplete.current = true;
+        return;
       }
 
+      // --- Fast path: token + cached profile → instant hydration ---
+      const cachedProfile = getCachedProfile();
+      if (cachedProfile) {
+        console.log('[Auth] Fast path: hydrating from cached profile');
+        const refreshToken = safeStorage.getItem('refresh_token') || '';
+
+        const authSession: AuthSession = {
+          access_token: token,
+          refresh_token: refreshToken,
+          expires_in: 3600,
+          token_type: 'bearer',
+          user: cachedProfile as AuthUser,
+        };
+
+        api.setToken(token);
+        setSession(authSession);
+        setUser(cachedProfile as AuthUser);
+        setProfile(cachedProfile);
+        setLoading(false);
+        initialCheckComplete.current = true;
+        performanceMetrics.markAuthCheckCompleted(true, true);
+
+        // Validate in background — don't block the UI
+        validateSessionBackground(token);
+        return;
+      }
+
+      // --- Slow path: token but no cache (first login or cleared cache) ---
+      // Show branded skeleton and retry up to 5 times
+      console.log('[Auth] Slow path: no cached profile, validating with retry...');
+      setLoading(true);
+
+      const MAX_ATTEMPTS = 5;
+      const RETRY_DELAY_MS = 2000;
+
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        if (attempt > 1) {
+          setBootstrapErrorWithRef(`Connecting... (attempt ${attempt}/${MAX_ATTEMPTS})`);
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+          retryCount.current = attempt - 1;
+          performanceMetrics.incrementRetry();
+        }
+
+        const success = await validateSession(token, attempt > 1);
+
+        if (success) {
+          performanceMetrics.markAuthCheckCompleted(hadToken, true);
+          setLoading(false);
+          initialCheckComplete.current = true;
+          return;
+        }
+
+        // If it was an auth error (not transient), validateSession already cleared state
+        if (!bootstrapErrorRef.current) {
+          // Auth error — token was invalid, state already cleared
+          performanceMetrics.markAuthCheckCompleted(hadToken, false);
+          setLoading(false);
+          initialCheckComplete.current = true;
+          return;
+        }
+      }
+
+      // All attempts exhausted
+      setBootstrapErrorWithRef('Unable to connect — tap to retry');
+      performanceMetrics.markAuthCheckCompleted(hadToken, false);
       setLoading(false);
       initialCheckComplete.current = true;
     };
@@ -257,6 +387,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       if (data.user?.id && data.user?.role !== undefined) {
         // Full profile data is included in the signin response
         setProfile(data.user);
+        saveCachedProfile(data.user);
         if (data.user.id) {
           safeStorage.setItem('profile_id', data.user.id);
         }
@@ -265,6 +396,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         try {
           const profileData = await api.getProfile();
           setProfile(profileData);
+          saveCachedProfile(profileData);
           if (profileData?.id) {
             safeStorage.setItem('profile_id', profileData.id);
           }
@@ -316,6 +448,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         setSession(authSession);
         setUser(data.user as AuthUser);
         setProfile(data.user);
+        saveCachedProfile(data.user);
         if (data.user.id) {
           safeStorage.setItem('profile_id', data.user.id);
         }
@@ -333,6 +466,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         setUser(data.user as AuthUser);
         if (profileData) {
           setProfile(profileData);
+          saveCachedProfile(profileData);
           if (profileData.id) {
             safeStorage.setItem('profile_id', profileData.id);
           }
@@ -398,6 +532,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     safeStorage.removeItem('refresh_token');
     safeStorage.removeItem('profile_id');
     safeStorage.removeItem('swn_cached_roles');
+    safeStorage.removeItem(CACHED_PROFILE_KEY);
     api.setToken(null);
     setSession(null);
     setUser(null);

@@ -1,8 +1,8 @@
 import { useAuth } from "@/context/AuthContext";
 import { useEnrichedProfile } from "@/context/EnrichedProfileContext";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
-import { Skeleton } from "./ui/skeleton";
 import { useSettings } from "@/context/SettingsContext";
+import { safeStorage } from "@/lib/api";
 
 const OnboardingGate = () => {
   const { session, loading: authLoading } = useAuth();
@@ -10,18 +10,15 @@ const OnboardingGate = () => {
   const { settings, isLoading: settingsLoading } = useSettings();
   const location = useLocation();
 
-  // Only block on auth loading - we need to know if user is authenticated
-  // Profile/settings loading can happen in the background while content renders
+  // If auth is loading but we have a token, let the content render
+  // (AuthenticatedLayout handles its own loading skeleton)
   if (authLoading) {
-    return (
-      <div className="min-h-screen bg-charcoal-black flex items-center justify-center">
-        <div className="space-y-4 p-8 w-full max-w-md">
-            <Skeleton className="h-12 w-full" />
-            <Skeleton className="h-8 w-3/4" />
-            <Skeleton className="h-8 w-1/2" />
-        </div>
-      </div>
-    );
+    const hasToken = !!safeStorage.getItem('access_token');
+    if (hasToken) {
+      return <Outlet />;
+    }
+    // No token during auth loading — will resolve quickly to landing redirect
+    return null;
   }
 
   if (!session) {
