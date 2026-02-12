@@ -4,6 +4,7 @@ Uses APScheduler with AsyncIOScheduler.
 """
 import asyncio
 import logging
+import random
 from datetime import datetime, timedelta
 
 from app.core.database import execute_query, execute_single, execute_insert
@@ -649,6 +650,216 @@ async def process_notification_digests():
         logger.error(f"process_notification_digests error: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Internal Email Warmup — realistic conversations between @theswn.com accounts
+# ---------------------------------------------------------------------------
+
+WARMUP_CONVERSATIONS = [
+    {"subject": "Quick question about the rollout", "body": "Hey, do you have a few minutes to chat about the timeline for the new rollout? I want to make sure we're aligned before the end of the week."},
+    {"subject": "Following up on yesterday's call", "body": "Just wanted to follow up on what we discussed yesterday. Let me know if you need anything else from my end."},
+    {"subject": "Meeting notes from today", "body": "Here are the key takeaways from today's meeting. Let me know if I missed anything or if you have questions."},
+    {"subject": "Thoughts on the new campaign strategy?", "body": "I've been thinking about the approach we discussed for Q2. Do you think we should prioritize the digital push or keep the focus on partnerships?"},
+    {"subject": "Updated project timeline", "body": "I just updated the project timeline based on our last conversation. Take a look when you get a chance and let me know if the dates work for your team."},
+    {"subject": "Client feedback summary", "body": "Got some great feedback from the client call this morning. They're really excited about the direction we're heading. I'll put together a summary doc by EOD."},
+    {"subject": "Quick favor", "body": "Hey, could you send me the latest version of the deck? I want to review it before our presentation tomorrow. Thanks!"},
+    {"subject": "Team lunch next week?", "body": "Thinking about organizing a team lunch next week to celebrate hitting our milestone. Any day work better for you?"},
+    {"subject": "FYI - schedule change", "body": "Heads up — the weekly sync got moved to Thursday at 2pm this week. Same agenda, just different day. Let me know if that conflicts with anything."},
+    {"subject": "Resource allocation for next sprint", "body": "Can we carve out some time to talk about resource allocation for the next sprint? I want to make sure we're not overcommitting on deliverables."},
+    {"subject": "Great job on the presentation", "body": "Just wanted to say great job on the presentation today. The client seemed really impressed with the data you pulled together."},
+    {"subject": "Budget review reminder", "body": "Quick reminder that the budget review is coming up next Friday. Let me know if you need any numbers from my side before then."},
+    {"subject": "New tool recommendation", "body": "I came across a tool that might help streamline our workflow. Want to hop on a quick call so I can walk you through it?"},
+    {"subject": "Content calendar update", "body": "I made some changes to the content calendar based on what we talked about. Take a look and let me know if you want to adjust anything."},
+    {"subject": "Check-in on the onboarding process", "body": "How's the new onboarding flow coming along? I know you were working on simplifying a few steps. Happy to help test it out."},
+]
+
+WARMUP_REPLIES = [
+    "Sounds good, let's touch base later today.",
+    "Got it — I'll take a look and get back to you by end of day.",
+    "Thanks for the heads up! I'll adjust my schedule accordingly.",
+    "Great idea. Let me pull some data together and we can discuss.",
+    "Appreciate the update. I think we're on the right track.",
+    "Sure thing, I'll send that over shortly.",
+    "Works for me. Let's plan on it.",
+    "Good call — I was thinking the same thing. Let's sync up tomorrow.",
+    "Thanks! I'll review and share my thoughts.",
+    "Absolutely. I'll block some time on my calendar.",
+]
+
+MAX_DAILY_WARMUP = 10
+
+
+async def process_internal_warmup():
+    """
+    Generate realistic internal email conversations between @theswn.com accounts.
+    Runs every 2 hours. Sends 1 email per run (new thread or reply to existing).
+    All messages stay internal (database-only via _route_email_internally).
+    """
+    try:
+        # Guard: check daily count
+        today_count = execute_single(
+            """
+            SELECT COUNT(*) as cnt FROM crm_email_messages
+            WHERE source_type = 'warmup'
+              AND created_at >= CURRENT_DATE
+            """,
+            {},
+        )
+        if today_count and today_count["cnt"] >= MAX_DAILY_WARMUP:
+            logger.info(f"Internal warmup: daily limit reached ({today_count['cnt']}/{MAX_DAILY_WARMUP})")
+            return
+
+        # Get all active email accounts
+        accounts = execute_query(
+            "SELECT * FROM crm_email_accounts WHERE is_active = true ORDER BY created_at",
+            {},
+        )
+        if len(accounts) < 2:
+            logger.info("Internal warmup: need at least 2 active accounts, skipping")
+            return
+
+        # 50% chance: reply to an existing warmup thread instead of starting new
+        if random.random() < 0.5:
+            # Find a warmup thread that we can reply to
+            recent_warmup_thread = execute_single(
+                """
+                SELECT t.id as thread_id, t.account_id, t.contact_email, t.subject,
+                       m.from_address, m.to_addresses
+                FROM crm_email_threads t
+                JOIN crm_email_messages m ON m.thread_id = t.id
+                WHERE m.source_type = 'warmup'
+                  AND m.created_at >= CURRENT_DATE - INTERVAL '3 days'
+                ORDER BY RANDOM()
+                LIMIT 1
+                """,
+                {},
+            )
+
+            if recent_warmup_thread:
+                # The thread owner is the recipient of the original — they should reply
+                thread_owner_account = None
+                for acc in accounts:
+                    if acc["id"] == recent_warmup_thread["account_id"]:
+                        thread_owner_account = acc
+                        break
+
+                if thread_owner_account:
+                    # Find the other account to be the recipient of the reply
+                    other_account = None
+                    for acc in accounts:
+                        if acc["email_address"] == recent_warmup_thread["contact_email"]:
+                            other_account = acc
+                            break
+
+                    if other_account:
+                        reply_body = random.choice(WARMUP_REPLIES)
+                        reply_html = f"<p>{reply_body}</p>"
+                        subject = recent_warmup_thread["subject"]
+
+                        # Create outbound message on sender's (thread owner's) thread
+                        execute_single(
+                            """
+                            INSERT INTO crm_email_messages
+                                (thread_id, direction, from_address, to_addresses,
+                                 subject, body_html, body_text, status, source_type)
+                            VALUES (:tid, 'outbound', :from_addr, :to_addrs,
+                                    :subj, :html, :text, 'sent', 'warmup')
+                            RETURNING id
+                            """,
+                            {
+                                "tid": recent_warmup_thread["thread_id"],
+                                "from_addr": thread_owner_account["email_address"],
+                                "to_addrs": [other_account["email_address"]],
+                                "subj": subject,
+                                "html": reply_html,
+                                "text": reply_body,
+                            },
+                        )
+
+                        execute_single(
+                            "UPDATE crm_email_threads SET last_message_at = NOW() WHERE id = :tid RETURNING id",
+                            {"tid": recent_warmup_thread["thread_id"]},
+                        )
+
+                        # Route to the other account's inbox
+                        from app.api.crm import _route_email_internally
+                        _route_email_internally(
+                            sender_account=thread_owner_account,
+                            recipient_account=other_account,
+                            subject=subject,
+                            body_html=reply_html,
+                            body_text=reply_body,
+                            to_addresses=[other_account["email_address"]],
+                            cc_addresses=[],
+                        )
+
+                        logger.info(f"Internal warmup: reply sent from {thread_owner_account['email_address']} to {other_account['email_address']} on thread {recent_warmup_thread['thread_id']}")
+                        return
+
+        # New conversation: pick random sender → recipient
+        sender = random.choice(accounts)
+        recipient = random.choice([a for a in accounts if a["id"] != sender["id"]])
+
+        conversation = random.choice(WARMUP_CONVERSATIONS)
+        subject = conversation["subject"]
+        body_text = conversation["body"]
+        body_html = f"<p>{body_text}</p>"
+
+        # Create sender's outbound thread
+        sender_thread = execute_single(
+            """
+            INSERT INTO crm_email_threads (account_id, contact_email, subject)
+            VALUES (:aid, :email, :subj) RETURNING *
+            """,
+            {
+                "aid": sender["id"],
+                "email": recipient["email_address"],
+                "subj": subject,
+            },
+        )
+
+        # Create outbound message on sender's thread
+        execute_single(
+            """
+            INSERT INTO crm_email_messages
+                (thread_id, direction, from_address, to_addresses,
+                 subject, body_html, body_text, status, source_type)
+            VALUES (:tid, 'outbound', :from_addr, :to_addrs,
+                    :subj, :html, :text, 'sent', 'warmup')
+            RETURNING id
+            """,
+            {
+                "tid": sender_thread["id"],
+                "from_addr": sender["email_address"],
+                "to_addrs": [recipient["email_address"]],
+                "subj": subject,
+                "html": body_html,
+                "text": body_text,
+            },
+        )
+
+        execute_single(
+            "UPDATE crm_email_threads SET last_message_at = NOW() WHERE id = :tid RETURNING id",
+            {"tid": sender_thread["id"]},
+        )
+
+        # Route to recipient's inbox (internal only — no Resend API calls)
+        from app.api.crm import _route_email_internally
+        _route_email_internally(
+            sender_account=sender,
+            recipient_account=recipient,
+            subject=subject,
+            body_html=body_html,
+            body_text=body_text,
+            to_addresses=[recipient["email_address"]],
+            cc_addresses=[],
+        )
+
+        logger.info(f"Internal warmup: new email from {sender['email_address']} to {recipient['email_address']} — \"{subject}\"")
+
+    except Exception as e:
+        logger.error(f"process_internal_warmup error: {e}")
+
+
 def start_email_scheduler():
     """Initialize and start the APScheduler for email jobs."""
     try:
@@ -660,8 +871,9 @@ def start_email_scheduler():
         scheduler.add_job(process_sequence_sends, "interval", seconds=300, id="sequence_sends")
         scheduler.add_job(process_campaign_sends, "interval", seconds=120, id="campaign_sends")
         scheduler.add_job(process_notification_digests, "interval", seconds=900, id="notification_digests")
+        scheduler.add_job(process_internal_warmup, "interval", seconds=7200, id="internal_warmup")
         scheduler.start()
-        logger.info("Email scheduler started with 5 jobs")
+        logger.info("Email scheduler started with 6 jobs")
         return scheduler
     except ImportError:
         logger.warning("APScheduler not installed — email scheduler disabled. Install with: pip install apscheduler")
