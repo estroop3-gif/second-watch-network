@@ -182,7 +182,16 @@ class APIClient {
         if (!isExpectedFailure) {
           console.error(`[API] Error response (${response.status}):`, error)
         }
-        throw new Error(error.detail || 'Request failed')
+        // Support structured error details: { code: "...", message: "..." }
+        const detail = error.detail
+        const message = typeof detail === 'object' && detail !== null
+          ? detail.message || 'Request failed'
+          : detail || 'Request failed'
+        const code = typeof detail === 'object' && detail !== null ? detail.code : undefined
+        const err = new Error(message) as any
+        err.code = code
+        err.status = response.status
+        throw err
       }
 
       return response.json().catch(() => ({}))
@@ -5452,6 +5461,10 @@ class APIClient {
 
   async deleteCRMDiscussionReply(id: string) {
     return this.delete<any>(`/api/v1/crm/discussions/replies/${id}`)
+  }
+
+  async getTeamDirectory() {
+    return this.get<any[]>('/api/v1/crm/team-directory')
   }
 }
 

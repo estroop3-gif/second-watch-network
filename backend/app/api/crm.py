@@ -4556,3 +4556,34 @@ async def delete_discussion_reply(
 
     execute_query("DELETE FROM crm_discussion_replies WHERE id = :rid", {"rid": reply_id})
     return {"status": "deleted"}
+
+
+# ── Team Directory ──────────────────────────────────────────────────────
+
+@router.get("/team-directory")
+async def get_team_directory(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Return all staff/sales team members with their @theswn.com email accounts."""
+    rows = execute_query(
+        """
+        SELECT
+            p.id, p.full_name, p.avatar_url, p.email,
+            p.phone, p.department, p.job_title,
+            p.is_admin, p.is_superadmin, p.is_moderator,
+            p.is_sales_admin, p.is_sales_agent, p.is_sales_rep,
+            ea.email_address AS theswn_email
+        FROM profiles p
+        LEFT JOIN crm_email_accounts ea
+            ON ea.profile_id = p.id AND ea.is_active = true
+        WHERE p.is_admin = true
+           OR p.is_superadmin = true
+           OR p.is_moderator = true
+           OR p.is_sales_admin = true
+           OR p.is_sales_agent = true
+           OR p.is_sales_rep = true
+        ORDER BY p.full_name
+        """,
+        {},
+    )
+    return rows

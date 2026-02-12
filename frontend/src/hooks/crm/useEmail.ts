@@ -563,3 +563,11 @@ export function useUpdateEmailNotificationSettings() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['crm-email-notifications'] }),
   });
 }
+
+export function useTeamDirectory() {
+  return useQuery({
+    queryKey: ['crm-team-directory'],
+    queryFn: () => api.getTeamDirectory(),
+    staleTime: 5 * 60 * 1000,
+  });
+}

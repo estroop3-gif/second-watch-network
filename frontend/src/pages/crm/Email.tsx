@@ -22,6 +22,7 @@ import EmailSignatureEditor from '@/components/crm/EmailSignatureEditor';
 import EmailShortcutOverlay from '@/components/crm/EmailShortcutOverlay';
 import SnoozePopover from '@/components/crm/SnoozePopover';
 import LinkContactDialog from '@/components/crm/LinkContactDialog';
+import TeamDirectoryModal from '@/components/crm/TeamDirectoryModal';
 import { AISummarizeButton, AISentimentBadge } from '@/components/crm/AIEmailTools';
 import {
   useEmailInbox, useEmailThread, useUnreadCount, useMarkRead,
@@ -66,6 +67,7 @@ const CRMEmail = () => {
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [sentiment, setSentiment] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showTeamDirectory, setShowTeamDirectory] = useState(false);
 
   const searchRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
@@ -241,6 +243,9 @@ const CRMEmail = () => {
                 </Button>
                 <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-gray flex-shrink-0" onClick={() => setShowSignatureEditor(true)} title="Signature settings">
                   <Settings className="h-4 w-4" />
+                </Button>
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-gray flex-shrink-0" onClick={() => setShowTeamDirectory(true)} title="Team Directory">
+                  <Users className="h-4 w-4" />
                 </Button>
                 <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-gray flex-shrink-0" onClick={() => setIsFullscreen(!isFullscreen)} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
                   {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
@@ -556,6 +561,7 @@ const CRMEmail = () => {
       {/* Dialogs */}
       <EmailSignatureEditor open={showSignatureEditor} onOpenChange={setShowSignatureEditor} />
       <EmailShortcutOverlay open={showShortcuts} onOpenChange={setShowShortcuts} />
+      <TeamDirectoryModal open={showTeamDirectory} onOpenChange={setShowTeamDirectory} />
       {showLinkContact && (
         <LinkContactDialog
           threadId={selectedThreadId}
