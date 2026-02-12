@@ -1,5 +1,6 @@
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
+import Link from '@tiptap/extension-link';
 import Placeholder from '@tiptap/extension-placeholder';
 import {
   Bold, Italic, Strikethrough, List, ListOrdered,
@@ -45,10 +46,10 @@ const RichTextEditor = ({
         code: false,
         horizontalRule: false,
         blockquote: false,
-        link: {
-          openOnClick: false,
-          HTMLAttributes: { class: 'text-accent-yellow underline' },
-        },
+      }),
+      Link.configure({
+        openOnClick: false,
+        HTMLAttributes: { class: 'text-accent-yellow underline' },
       }),
       Placeholder.configure({
         placeholder: placeholder || 'Compose your email...',
