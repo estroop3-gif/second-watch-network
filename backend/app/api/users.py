@@ -98,7 +98,7 @@ async def get_my_permissions(authorization: str = Header(None)):
     # Get user's profile for base permissions (is_admin, is_superadmin, etc.)
     try:
         profile_result = client.table("profiles").select(
-            "is_admin, is_superadmin, is_moderator, is_premium, is_filmmaker, is_partner, is_order_member, is_lodge_officer"
+            "is_admin, is_superadmin, is_moderator, is_sales_admin, is_sales_agent, is_sales_rep, is_premium, is_filmmaker, is_partner, is_order_member, is_lodge_officer"
         ).eq("id", user_id).limit(1).execute()
         profile_data = profile_result.data[0] if profile_result.data else {}
     except Exception:
@@ -139,6 +139,13 @@ async def get_my_permissions(authorization: str = Header(None)):
             for key in PERMISSION_KEYS:
                 if key.startswith("mod_") or key == 'can_moderate':
                     merged_permissions[key] = True
+
+        if profile_data.get("is_sales_admin"):
+            role_names.append("sales_admin")
+        if profile_data.get("is_sales_agent"):
+            role_names.append("sales_agent")
+        if profile_data.get("is_sales_rep"):
+            role_names.append("sales_rep")
 
     return {
         "user_id": user_id,
