@@ -258,6 +258,11 @@ const AWSWebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const shouldReconnectRef = useRef(true);
+  // Use refs for user/token so connect() doesn't need them as dependencies
+  const userRef = useRef(user);
+  const tokenRef = useRef(token);
+  userRef.current = user;
+  tokenRef.current = token;
 
   // Send message helper
   const send = useCallback((action: string, data: Record<string, unknown>) => {
@@ -280,28 +285,24 @@ const AWSWebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, []);
 
-  // Connect function
+  // Connect function — uses refs so it has a stable identity
   const connect = useCallback(() => {
-    if (!user || !token || !WEBSOCKET_URL) {
-      console.log('[WebSocket] Cannot connect: missing user, token, or URL');
+    const currentToken = tokenRef.current;
+    const currentUser = userRef.current;
+
+    if (!currentUser || !currentToken || !WEBSOCKET_URL) {
       return;
     }
 
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      console.log('[WebSocket] Already connected');
-      return;
-    }
-
-    if (socketRef.current?.readyState === WebSocket.CONNECTING) {
-      console.log('[WebSocket] Connection already in progress');
+    if (socketRef.current?.readyState === WebSocket.OPEN ||
+        socketRef.current?.readyState === WebSocket.CONNECTING) {
       return;
     }
 
     setIsConnecting(true);
     setError(null);
 
-    // Build WebSocket URL with token
-    const wsUrl = `${WEBSOCKET_URL}?token=${encodeURIComponent(token)}`;
+    const wsUrl = `${WEBSOCKET_URL}?token=${encodeURIComponent(currentToken)}`;
     console.log('[WebSocket] Connecting to:', WEBSOCKET_URL);
 
     try {
@@ -323,7 +324,10 @@ const AWSWebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       };
 
       ws.onclose = (event) => {
-        console.log('[WebSocket] Disconnected:', event.code, event.reason);
+        // Only log unexpected disconnects
+        if (event.code !== 1000) {
+          console.log('[WebSocket] Disconnected:', event.code, event.reason);
+        }
         setSocket(null);
         setIsConnected(false);
         setIsConnecting(false);
@@ -349,8 +353,9 @@ const AWSWebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
       };
 
-      ws.onerror = (event) => {
-        console.error('[WebSocket] Error:', event);
+      ws.onerror = () => {
+        // Error details are not available on WebSocket error events;
+        // the onclose handler will fire next with the actual code
         setError(new Error('WebSocket connection error'));
       };
 
@@ -360,10 +365,7 @@ const AWSWebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           const eventType = data.event;
 
           if (eventType) {
-            console.log('[WebSocket] Received event:', eventType);
             dispatchEvent(eventType, data);
-          } else {
-            console.log('[WebSocket] Received message without event type:', data);
           }
         } catch (err) {
           console.error('[WebSocket] Failed to parse message:', err);
@@ -374,16 +376,10 @@ const AWSWebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setError(err instanceof Error ? err : new Error('Failed to connect'));
       setIsConnecting(false);
     }
-  }, [user, token, send, dispatchEvent]);
+  }, [send, dispatchEvent]);
 
   // Connect/disconnect based on auth state
   useEffect(() => {
-    console.log('[WebSocket] Auth state changed:', {
-      hasUser: !!user,
-      hasToken: !!token,
-      hasUrl: !!WEBSOCKET_URL
-    });
-
     if (!user || !token) {
       // Cleanup on logout
       shouldReconnectRef.current = false;
@@ -400,11 +396,20 @@ const AWSWebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return;
     }
 
-    // Connect when user is authenticated
+    // Already connected or connecting — don't create a duplicate
+    if (socketRef.current?.readyState === WebSocket.OPEN ||
+        socketRef.current?.readyState === WebSocket.CONNECTING) {
+      return;
+    }
+
+    // Debounce: wait a tick for auth state to settle before connecting
     shouldReconnectRef.current = true;
-    connect();
+    const connectTimeout = setTimeout(() => {
+      connect();
+    }, 100);
 
     return () => {
+      clearTimeout(connectTimeout);
       shouldReconnectRef.current = false;
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
