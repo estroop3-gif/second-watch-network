@@ -50,6 +50,7 @@ export const UserNav = () => {
     isOrderMember,
     isLodgeOfficer,
     isSalesAgent,
+    isSalesRep,
   } = useEnrichedProfile();
 
   // Use live permissions for the badge (updates in real-time when role changes)
@@ -80,10 +81,10 @@ export const UserNav = () => {
 
   // Use enriched profile for role checks
   const showAdminLink = isAdmin || isSuperadmin;
-  const showPartnerLink = isPartner || isAdmin || isSuperadmin;
-  const showOrderLink = isOrderMember || isLodgeOfficer || isAdmin || isSuperadmin;
-  const showCRMLink = isSalesAgent || isAdmin || isSuperadmin;
-  const canSubmitAndManageSubmissions = isFilmmaker || isAdmin || isSuperadmin;
+  const showPartnerLink = isPartner || isSalesRep || isAdmin || isSuperadmin;
+  const showOrderLink = isOrderMember || isLodgeOfficer || isSalesRep || isAdmin || isSuperadmin;
+  const showCRMLink = isSalesAgent || isSalesRep || isAdmin || isSuperadmin;
+  const canSubmitAndManageSubmissions = isFilmmaker || isSalesRep || isAdmin || isSuperadmin;
 
   // Check for filmmaker onboarding
   const hasOnboarded = profile?.has_completed_filmmaker_onboarding === true;
