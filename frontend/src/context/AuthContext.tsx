@@ -397,6 +397,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     safeStorage.removeItem('access_token');
     safeStorage.removeItem('refresh_token');
     safeStorage.removeItem('profile_id');
+    safeStorage.removeItem('swn_cached_roles');
     api.setToken(null);
     setSession(null);
     setUser(null);

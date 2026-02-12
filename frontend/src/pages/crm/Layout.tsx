@@ -5,10 +5,11 @@ import {
   Activity, Kanban, Target,
   ClipboardList, Star, Shield, AtSign,
   PanelLeftClose, PanelLeftOpen,
-  GraduationCap, CreditCard, MessageSquare,
+  GraduationCap, CreditCard, MessageSquare, ShieldOff,
 } from 'lucide-react';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useUnreadCount } from '@/hooks/crm/useEmail';
+import { useSidebarBadges } from '@/hooks/crm/useSidebarBadges';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -20,27 +21,29 @@ const CRMLayout = () => {
   const isAdmin = hasAnyRole(['admin', 'superadmin', 'sales_admin']);
   const { data: unreadData } = useUnreadCount();
   const unreadCount = unreadData?.count || 0;
+  const { data: badges } = useSidebarBadges();
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
   const isEmailRoute = location.pathname.startsWith('/crm/email');
 
   const navItems = [
-    { name: 'Dashboard', href: '/crm/dashboard', icon: LayoutDashboard },
-    { name: 'Contacts', href: '/crm/contacts', icon: Users },
+    { name: 'Dashboard', href: '/crm/dashboard', icon: LayoutDashboard, badge: 0 },
+    { name: 'Contacts', href: '/crm/contacts', icon: Users, badge: badges?.contacts || 0 },
+    { name: 'DNC List', href: '/crm/dnc', icon: ShieldOff, badge: badges?.dnc || 0 },
     { name: 'Email', href: '/crm/email', icon: AtSign, badge: unreadCount },
-    { name: 'Pipeline', href: '/crm/pipeline', icon: Kanban },
-    { name: 'Calendar', href: '/crm/calendar', icon: CalendarDays },
-    { name: 'Interactions', href: '/crm/interactions', icon: Activity },
-    { name: 'Goals', href: '/crm/goals', icon: Target },
-    { name: 'Log', href: '/crm/log', icon: ClipboardList },
-    { name: 'Reviews', href: '/crm/reviews', icon: Star },
-    { name: 'Training', href: '/crm/training', icon: GraduationCap },
-    { name: 'Discussions', href: '/crm/discussions', icon: MessageSquare },
-    { name: 'Business Card', href: '/crm/business-card', icon: CreditCard },
+    { name: 'Pipeline', href: '/crm/pipeline', icon: Kanban, badge: badges?.pipeline || 0 },
+    { name: 'Calendar', href: '/crm/calendar', icon: CalendarDays, badge: badges?.calendar || 0 },
+    { name: 'Interactions', href: '/crm/interactions', icon: Activity, badge: badges?.interactions || 0 },
+    { name: 'Goals', href: '/crm/goals', icon: Target, badge: badges?.goals || 0 },
+    { name: 'Log', href: '/crm/log', icon: ClipboardList, badge: badges?.log || 0 },
+    { name: 'Reviews', href: '/crm/reviews', icon: Star, badge: badges?.reviews || 0 },
+    { name: 'Training', href: '/crm/training', icon: GraduationCap, badge: badges?.training || 0 },
+    { name: 'Discussions', href: '/crm/discussions', icon: MessageSquare, badge: badges?.discussions || 0 },
+    { name: 'Business Card', href: '/crm/business-card', icon: CreditCard, badge: badges?.business_card || 0 },
   ];
 
   const adminItems = [
-    { name: 'Admin', href: '/crm/admin', icon: Shield },
+    { name: 'Admin', href: '/crm/admin', icon: Shield, badge: 0 },
   ];
 
   const allItems = isAdmin ? [...navItems, ...adminItems] : navItems;
@@ -81,14 +84,14 @@ const CRMLayout = () => {
                 >
                   <item.icon className="h-5 w-5 flex-shrink-0" />
                   {!collapsed && <span className="hidden md:inline">{item.name}</span>}
-                  {!collapsed && 'badge' in item && item.badge > 0 && (
+                  {!collapsed && item.badge > 0 && (
                     <Badge className="ml-auto bg-accent-yellow text-charcoal-black text-xs px-1.5 py-0 h-5 min-w-[20px] flex items-center justify-center">
-                      {item.badge}
+                      {item.badge > 99 ? '99+' : item.badge}
                     </Badge>
                   )}
-                  {collapsed && 'badge' in item && item.badge > 0 && (
+                  {collapsed && item.badge > 0 && (
                     <span className="absolute -top-1 -right-1 bg-accent-yellow text-charcoal-black text-[10px] rounded-full h-4 min-w-[16px] flex items-center justify-center px-1 font-bold">
-                      {item.badge}
+                      {item.badge > 99 ? '99+' : item.badge}
                     </span>
                   )}
                 </NavLink>

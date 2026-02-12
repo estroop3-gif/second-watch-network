@@ -61,7 +61,7 @@ const DealDetail = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { hasAnyRole } = usePermissions();
-  const isAdmin = hasAnyRole(['admin', 'superadmin']);
+  const isAdmin = hasAnyRole(['admin', 'superadmin', 'sales_admin']);
 
   const { data: deal, isLoading } = useDeal(id);
   const updateDeal = useUpdateDeal();

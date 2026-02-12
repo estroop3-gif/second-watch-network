@@ -9,7 +9,7 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional, List, Dict, Any
 from datetime import date, datetime
 
-from app.core.database import get_client, execute_query, execute_single, execute_insert
+from app.core.database import get_client, execute_query, execute_single, execute_insert, execute_update, execute_delete
 from app.core.deps import get_user_profile
 from app.core.permissions import Permission, require_permissions, has_permission
 
@@ -130,6 +130,106 @@ class StageChangeRequest(BaseModel):
     stage: str
     notes: Optional[str] = None
     close_reason: Optional[str] = None
+
+
+# ============================================================================
+# Sidebar Badge Counts
+# ============================================================================
+
+@router.get("/sidebar-badges")
+async def get_sidebar_badges(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Return badge counts for all CRM sidebar tabs in a single query."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+    rep_id = profile["id"]
+
+    # Build rep-scoping conditions
+    contact_scope = "" if is_admin else "AND c.assigned_rep_id = :rep_id"
+    deal_scope = "" if is_admin else "AND d.assigned_rep_id = :rep_id"
+    activity_scope = "" if is_admin else "AND a.rep_id = :rep_id"
+    log_scope = "" if is_admin else "AND cl.rep_id = :rep_id"
+    review_scope = "" if is_admin else "AND r.rep_id = :rep_id"
+
+    params: Dict[str, Any] = {"rep_id": rep_id}
+
+    row = execute_single(
+        f"""
+        SELECT
+            -- Contacts: new in last 24h
+            (SELECT COUNT(*) FROM crm_contacts c
+             WHERE c.status != 'inactive'
+             AND c.created_at >= NOW() - INTERVAL '24 hours'
+             {contact_scope}) as new_contacts,
+
+            -- DNC: total flagged contacts
+            (SELECT COUNT(*) FROM crm_contacts c
+             WHERE (c.do_not_email = true OR c.do_not_call = true OR c.do_not_text = true OR c.status = 'do_not_contact')
+             {contact_scope}) as dnc_count,
+
+            -- Pipeline: deals updated in last 24h
+            (SELECT COUNT(*) FROM crm_deals d
+             WHERE d.updated_at >= NOW() - INTERVAL '24 hours'
+             AND d.stage NOT IN ('won', 'lost')
+             {deal_scope}) as active_deals,
+
+            -- Calendar: today's follow-ups due + overdue
+            (SELECT COUNT(*) FROM crm_activities a
+             WHERE a.follow_up_date IS NOT NULL
+             AND a.follow_up_date <= CURRENT_DATE
+             AND a.follow_up_completed = false
+             {activity_scope}) as due_followups,
+
+            -- Interactions: today's logged count
+            (SELECT COALESCE(SUM(ic.calls + ic.emails + ic.texts + ic.meetings + ic.demos), 0)
+             FROM crm_interaction_counts ic
+             WHERE ic.count_date = CURRENT_DATE
+             AND ic.rep_id = :rep_id) as todays_interactions,
+
+            -- Goals: active goals (current period)
+            (SELECT COUNT(*) FROM crm_sales_goals g
+             WHERE g.period_start <= CURRENT_DATE AND g.period_end >= CURRENT_DATE
+             AND (g.rep_id = :rep_id OR g.rep_id IS NULL)) as active_goals,
+
+            -- Log: open entries
+            (SELECT COUNT(*) FROM crm_customer_log cl
+             WHERE cl.status = 'open'
+             {log_scope}) as open_logs,
+
+            -- Reviews: recent reviews (last 30 days)
+            (SELECT COUNT(*) FROM crm_rep_reviews r
+             WHERE r.created_at >= NOW() - INTERVAL '30 days'
+             {review_scope}) as recent_reviews,
+
+            -- Training: new resources in last 7 days
+            (SELECT COUNT(*) FROM crm_training_resources tr
+             WHERE tr.created_at >= NOW() - INTERVAL '7 days') as new_training,
+
+            -- Discussions: new threads/replies in last 7 days
+            (SELECT COUNT(*) FROM crm_discussion_threads dt
+             WHERE dt.created_at >= NOW() - INTERVAL '7 days') as new_discussions,
+
+            -- Business Card: cards with actionable status
+            (SELECT COUNT(*) FROM crm_business_cards bc
+             WHERE bc.profile_id = :rep_id
+             AND bc.status IN ('approved', 'rejected', 'printed')) as card_updates
+        """,
+        params,
+    )
+
+    return {
+        "contacts": row["new_contacts"] if row else 0,
+        "dnc": row["dnc_count"] if row else 0,
+        "pipeline": row["active_deals"] if row else 0,
+        "calendar": row["due_followups"] if row else 0,
+        "interactions": row["todays_interactions"] if row else 0,
+        "goals": row["active_goals"] if row else 0,
+        "log": row["open_logs"] if row else 0,
+        "reviews": row["recent_reviews"] if row else 0,
+        "training": row["new_training"] if row else 0,
+        "discussions": row["new_discussions"] if row else 0,
+        "business_card": row["card_updates"] if row else 0,
+    }
 
 
 # ============================================================================
@@ -1587,6 +1687,45 @@ async def get_my_reviews(
 # Do Not Contact
 # ============================================================================
 
+@router.get("/dnc-list")
+async def get_rep_dnc_list(
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get the DNC list. Reps see only their assigned contacts, admins see all."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    conditions = ["(c.status = 'do_not_contact' OR c.do_not_email = true OR c.do_not_call = true OR c.do_not_text = true)"]
+    params: Dict[str, Any] = {}
+
+    if not is_admin:
+        conditions.append("c.assigned_rep_id = :rep_id")
+        params["rep_id"] = profile["id"]
+
+    where = " AND ".join(conditions)
+
+    count_row = execute_single(
+        f"SELECT COUNT(*) as total FROM crm_contacts c WHERE {where}",
+        params,
+    )
+
+    rows = execute_query(
+        f"""
+        SELECT c.id, c.first_name, c.last_name, c.email, c.phone, c.company,
+               c.status, c.do_not_email, c.do_not_call, c.do_not_text,
+               p.full_name as assigned_rep_name
+        FROM crm_contacts c
+        LEFT JOIN profiles p ON p.id = c.assigned_rep_id
+        WHERE {where}
+        ORDER BY c.last_name ASC, c.first_name ASC
+        LIMIT :limit OFFSET :offset
+        """,
+        {**params, "limit": limit, "offset": offset},
+    )
+
+    return {"contacts": rows, "total": count_row["total"] if count_row else 0}
+
 class DNCUpdate(BaseModel):
     do_not_email: Optional[bool] = None
     do_not_call: Optional[bool] = None
@@ -1629,6 +1768,124 @@ async def update_dnc_flags(
         params,
     )
     return result
+
+
+# ============================================================================
+# Contact Notes (threaded)
+# ============================================================================
+
+class ContactNoteCreate(BaseModel):
+    content: str
+    parent_id: Optional[str] = None
+
+
+@router.get("/contacts/{contact_id}/notes")
+async def list_contact_notes(
+    contact_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get all notes for a contact, ordered by creation date."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    # Verify access
+    contact = execute_single(
+        "SELECT assigned_rep_id FROM crm_contacts WHERE id = :id",
+        {"id": contact_id},
+    )
+    if not contact:
+        raise HTTPException(404, "Contact not found")
+    if not is_admin and contact["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized")
+
+    rows = execute_query(
+        """
+        SELECT n.id, n.contact_id, n.author_id, n.content, n.parent_id,
+               n.created_at, n.updated_at,
+               p.full_name as author_name
+        FROM crm_contact_notes n
+        LEFT JOIN profiles p ON p.id = n.author_id
+        WHERE n.contact_id = :contact_id
+        ORDER BY n.created_at ASC
+        """,
+        {"contact_id": contact_id},
+    )
+    return {"notes": rows}
+
+
+@router.post("/contacts/{contact_id}/notes")
+async def create_contact_note(
+    contact_id: str,
+    data: ContactNoteCreate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Add a note to a contact."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    contact = execute_single(
+        "SELECT assigned_rep_id FROM crm_contacts WHERE id = :id",
+        {"id": contact_id},
+    )
+    if not contact:
+        raise HTTPException(404, "Contact not found")
+    if not is_admin and contact["assigned_rep_id"] != profile["id"]:
+        raise HTTPException(403, "Not authorized")
+
+    params: Dict[str, Any] = {
+        "contact_id": contact_id,
+        "author_id": profile["id"],
+        "content": data.content.strip(),
+    }
+
+    if data.parent_id:
+        parent = execute_single(
+            "SELECT id FROM crm_contact_notes WHERE id = :pid AND contact_id = :cid",
+            {"pid": data.parent_id, "cid": contact_id},
+        )
+        if not parent:
+            raise HTTPException(400, "Parent note not found")
+        params["parent_id"] = data.parent_id
+
+    cols = list(params.keys())
+    placeholders = ", ".join(f":{c}" for c in cols)
+    col_names = ", ".join(cols)
+
+    result = execute_single(
+        f"""
+        INSERT INTO crm_contact_notes ({col_names})
+        VALUES ({placeholders})
+        RETURNING *
+        """,
+        params,
+    )
+
+    # Get author name for immediate return
+    result["author_name"] = profile.get("full_name", "Unknown")
+    return result
+
+
+@router.delete("/contacts/{contact_id}/notes/{note_id}")
+async def delete_contact_note(
+    contact_id: str,
+    note_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Delete a note. Author can delete their own, admins can delete any."""
+    is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    if is_admin:
+        result = execute_single(
+            "DELETE FROM crm_contact_notes WHERE id = :nid AND contact_id = :cid RETURNING id",
+            {"nid": note_id, "cid": contact_id},
+        )
+    else:
+        result = execute_single(
+            "DELETE FROM crm_contact_notes WHERE id = :nid AND contact_id = :cid AND author_id = :aid RETURNING id",
+            {"nid": note_id, "cid": contact_id, "aid": profile["id"]},
+        )
+
+    if not result:
+        raise HTTPException(404, "Note not found or not authorized")
+    return {"deleted": True}
 
 
 # ============================================================================
@@ -3800,7 +4057,7 @@ async def upload_email_avatar(
     )
     avatar_url = storage_client.from_("avatars").get_public_url(unique_filename)
 
-    execute_query(
+    execute_update(
         "UPDATE crm_email_accounts SET avatar_url = :url WHERE id = :aid",
         {"url": avatar_url, "aid": account["id"]},
     )
@@ -3928,7 +4185,7 @@ async def submit_business_card(
     if card["status"] not in ("draft", "rejected"):
         raise HTTPException(status_code=400, detail="Card can only be submitted from draft or rejected status")
 
-    execute_query(
+    execute_update(
         "UPDATE crm_business_cards SET status = 'submitted', submitted_at = NOW(), updated_at = NOW() WHERE id = :cid",
         {"cid": card["id"]},
     )
@@ -4096,7 +4353,7 @@ async def get_training_resource(
     if not row:
         raise HTTPException(status_code=404, detail="Resource not found")
 
-    execute_query(
+    execute_update(
         "UPDATE crm_training_resources SET view_count = view_count + 1 WHERE id = :rid",
         {"rid": resource_id},
     )
@@ -4168,7 +4425,7 @@ async def delete_training_resource(
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
 ):
     """Delete a training resource."""
-    execute_query("DELETE FROM crm_training_resources WHERE id = :rid", {"rid": resource_id})
+    execute_delete("DELETE FROM crm_training_resources WHERE id = :rid", {"rid": resource_id})
     return {"status": "deleted"}
 
 
@@ -4294,7 +4551,7 @@ async def delete_discussion_category(
     if count and count["cnt"] > 0:
         raise HTTPException(status_code=400, detail="Category must be empty before deletion")
 
-    execute_query("DELETE FROM crm_discussion_categories WHERE id = :cid", {"cid": category_id})
+    execute_delete("DELETE FROM crm_discussion_categories WHERE id = :cid", {"cid": category_id})
     return {"status": "deleted"}
 
 
@@ -4437,7 +4694,7 @@ async def delete_discussion_thread(
     if thread["author_id"] != profile["id"] and not has_permission(profile, Permission.CRM_ADMIN):
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    execute_query("DELETE FROM crm_discussion_threads WHERE id = :tid", {"tid": thread_id})
+    execute_delete("DELETE FROM crm_discussion_threads WHERE id = :tid", {"tid": thread_id})
     return {"status": "deleted"}
 
 
@@ -4449,7 +4706,7 @@ async def pin_discussion_thread(
 ):
     """Pin or unpin a discussion thread (admin only)."""
     pinned = payload.get("is_pinned", True)
-    execute_query(
+    execute_update(
         "UPDATE crm_discussion_threads SET is_pinned = :pinned WHERE id = :tid",
         {"pinned": pinned, "tid": thread_id},
     )
@@ -4532,7 +4789,7 @@ async def update_discussion_reply(
     if not content:
         raise HTTPException(status_code=400, detail="Content is required")
 
-    execute_query(
+    execute_update(
         "UPDATE crm_discussion_replies SET content = :content, updated_at = NOW() WHERE id = :rid",
         {"content": content, "rid": reply_id},
     )
@@ -4554,7 +4811,7 @@ async def delete_discussion_reply(
     if reply["author_id"] != profile["id"] and not has_permission(profile, Permission.CRM_ADMIN):
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    execute_query("DELETE FROM crm_discussion_replies WHERE id = :rid", {"rid": reply_id})
+    execute_delete("DELETE FROM crm_discussion_replies WHERE id = :rid", {"rid": reply_id})
     return {"status": "deleted"}
 
 

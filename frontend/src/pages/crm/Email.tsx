@@ -73,7 +73,7 @@ const CRMEmail = () => {
   const { toast } = useToast();
   const { openCompose } = useEmailCompose();
   const { hasAnyRole } = usePermissions();
-  const isAdmin = hasAnyRole(['admin', 'superadmin']);
+  const isAdmin = hasAnyRole(['admin', 'superadmin', 'sales_admin']);
 
   // Build inbox params based on filter tab
   const inboxParams = {

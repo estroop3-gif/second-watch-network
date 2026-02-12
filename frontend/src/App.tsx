@@ -142,6 +142,7 @@ import CRMAdminReviews from "./pages/crm/AdminReviews";
 import CRMCampaigns from "./pages/crm/Campaigns";
 import CRMCampaignDetail from "./pages/crm/CampaignDetail";
 import CRMDNCList from "./pages/crm/DNCList";
+import CRMRepDNCList from "./pages/crm/RepDNCList";
 import CRMEmail from "./pages/crm/Email";
 import CRMAdminLayout from "./pages/crm/AdminLayout";
 import CRMAdminEmail from "./pages/crm/AdminEmail";
@@ -514,7 +515,7 @@ const App = () => (
                         <Route path="sequences" element={<Navigate to="/crm/admin/email" replace />} />
                         <Route path="sequences/:id" element={<Navigate to="/crm/admin/email" replace />} />
                         <Route path="email-analytics" element={<Navigate to="/crm/admin/email" replace />} />
-                        <Route path="dnc" element={<Navigate to="/crm/admin/dnc" replace />} />
+                        <Route path="dnc" element={<CRMRepDNCList />} />
                         <Route path="team" element={<Navigate to="/crm/admin/team" replace />} />
                         <Route path="reports" element={<Navigate to="/crm/admin/reports" replace />} />
                         <Route path="leads" element={<Navigate to="/crm/admin/leads" replace />} />

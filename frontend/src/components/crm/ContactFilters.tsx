@@ -40,6 +40,7 @@ const ContactFilters = ({
           <SelectItem value="cold">Cold</SelectItem>
           <SelectItem value="warm">Warm</SelectItem>
           <SelectItem value="hot">Hot</SelectItem>
+          <SelectItem value="missed_opportunity">Missed Opportunity</SelectItem>
         </SelectContent>
       </Select>
 

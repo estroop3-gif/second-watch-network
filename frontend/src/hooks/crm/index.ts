@@ -5,6 +5,9 @@ export {
   useUpdateContact,
   useDeleteContact,
   useLinkProfile,
+  useContactNotes,
+  useCreateContactNote,
+  useDeleteContactNote,
 } from './useContacts';
 
 export {
@@ -84,6 +87,7 @@ export {
   useCancelCampaign,
   useUpdateContactDNC,
   useDNCList,
+  useRepDNCList,
 } from './useCampaigns';
 
 export {
@@ -153,3 +157,5 @@ export {
   useEmailKeyboardShortcuts,
   KEYBOARD_SHORTCUTS,
 } from './useEmailKeyboardShortcuts';
+
+export { useSidebarBadges } from './useSidebarBadges';

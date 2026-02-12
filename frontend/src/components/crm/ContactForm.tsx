@@ -21,7 +21,7 @@ const contactSchema = z.object({
   state: z.string().optional().or(z.literal('')),
   zip: z.string().optional().or(z.literal('')),
   country: z.string().optional().or(z.literal('')),
-  temperature: z.enum(['cold', 'warm', 'hot']),
+  temperature: z.enum(['cold', 'warm', 'hot', 'missed_opportunity']),
   source: z.enum(['inbound', 'outbound', 'referral', 'event', 'website', 'social', 'other']),
   source_detail: z.string().optional().or(z.literal('')),
   notes: z.string().optional().or(z.literal('')),
@@ -133,6 +133,7 @@ const ContactForm = ({ defaultValues, onSubmit, isSubmitting, submitLabel = 'Sav
                   <SelectItem value="cold">Cold</SelectItem>
                   <SelectItem value="warm">Warm</SelectItem>
                   <SelectItem value="hot">Hot</SelectItem>
+                  <SelectItem value="missed_opportunity">Missed Opportunity</SelectItem>
                 </SelectContent>
               </Select>
               <FormMessage />

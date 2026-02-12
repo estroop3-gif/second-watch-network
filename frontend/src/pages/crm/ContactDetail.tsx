@@ -2,36 +2,43 @@ import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Edit, Link2, Phone, Mail, Building2,
-  MapPin, Tag, Trash2,
+  MapPin, Tag, Trash2, PhoneOff, ClipboardList,
+  MessageSquare,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import TemperatureBadge from '@/components/crm/TemperatureBadge';
 import ActivityTimeline from '@/components/crm/ActivityTimeline';
-import ActivityForm from '@/components/crm/ActivityForm';
 import ContactForm from '@/components/crm/ContactForm';
 import LinkProfileDialog from '@/components/crm/LinkProfileDialog';
 import EmailThreadList from '@/components/crm/EmailThreadList';
 import CopyableEmail from '@/components/crm/CopyableEmail';
 import SequenceEnrollButton from '@/components/crm/SequenceEnrollButton';
+import CalendarActivityDialog from '@/components/crm/CalendarActivityDialog';
+import ContactNotes from '@/components/crm/ContactNotes';
 import { useContact, useUpdateContact, useDeleteContact, useLinkProfile } from '@/hooks/crm';
-import { useCreateActivity } from '@/hooks/crm';
+import { useCreateActivity, useUpdateContactDNC } from '@/hooks/crm';
 import { useContactThreads } from '@/hooks/crm/useEmail';
 import { useEmailCompose } from '@/context/EmailComposeContext';
+import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
 import { toast } from 'sonner';
 
 const ContactDetail = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { profile: currentProfile } = useEnrichedProfile();
   const { data: contact, isLoading } = useContact(id);
   const updateContact = useUpdateContact();
   const deleteContact = useDeleteContact();
   const linkProfile = useLinkProfile();
   const createActivity = useCreateActivity();
+  const updateDNC = useUpdateContactDNC();
 
   const { data: contactThreadsData, isLoading: threadsLoading } = useContactThreads(id || '');
 
@@ -40,6 +47,12 @@ const ContactDetail = () => {
   const [showEdit, setShowEdit] = useState(false);
   const [showLink, setShowLink] = useState(false);
   const [showLogActivity, setShowLogActivity] = useState(false);
+  const [showDNC, setShowDNC] = useState(false);
+  const [dncForm, setDncForm] = useState({
+    do_not_email: false,
+    do_not_call: false,
+    do_not_text: false,
+  });
 
   if (isLoading) {
     return (
@@ -95,6 +108,29 @@ const ContactDetail = () => {
     }
   };
 
+  const openDNCDialog = () => {
+    setDncForm({
+      do_not_email: !!contact.do_not_email,
+      do_not_call: !!contact.do_not_call,
+      do_not_text: !!contact.do_not_text,
+    });
+    setShowDNC(true);
+  };
+
+  const saveDNC = () => {
+    updateDNC.mutate(
+      { contactId: id!, data: dncForm },
+      {
+        onSuccess: () => {
+          setShowDNC(false);
+          toast.success('DNC flags updated');
+        },
+      }
+    );
+  };
+
+  const isDNC = contact.do_not_call || contact.do_not_email || contact.do_not_text;
+
   const address = [contact.address_line1, contact.city, contact.state, contact.zip]
     .filter(Boolean)
     .join(', ');
@@ -116,9 +152,16 @@ const ContactDetail = () => {
 
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-3xl font-heading text-bone-white">
-            {contact.first_name} {contact.last_name}
-          </h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-heading text-bone-white">
+              {contact.first_name} {contact.last_name}
+            </h1>
+            {isDNC && (
+              <Badge variant="outline" className="bg-red-500/10 text-red-400 border-red-500/30">
+                DNC
+              </Badge>
+            )}
+          </div>
           <div className="flex items-center gap-3 mt-2">
             <TemperatureBadge temperature={contact.temperature} />
             <Badge variant="outline" className={statusBadge}>
@@ -132,6 +175,14 @@ const ContactDetail = () => {
           </div>
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowLogActivity(true)}
+            className="border-green-500/50 text-green-400 hover:bg-green-500/10"
+          >
+            <ClipboardList className="h-4 w-4 mr-1" /> Log Activity
+          </Button>
           {contact.email && (
             <Button
               variant="outline"
@@ -151,6 +202,14 @@ const ContactDetail = () => {
               <Mail className="h-4 w-4 mr-1" /> Send Email
             </Button>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={openDNCDialog}
+            className={isDNC ? 'border-red-500/50 text-red-400 hover:bg-red-500/10' : 'border-muted-gray/50 text-muted-gray hover:bg-red-500/10 hover:text-red-400'}
+          >
+            <PhoneOff className="h-4 w-4 mr-1" /> DNC
+          </Button>
           <Button variant="outline" size="sm" onClick={() => setShowLink(true)}>
             <Link2 className="h-4 w-4 mr-1" /> Link Profile
           </Button>
@@ -206,6 +265,16 @@ const ContactDetail = () => {
                 </div>
               </div>
             )}
+            {isDNC && (
+              <div className="mt-3 p-2 rounded bg-red-500/10 border border-red-500/20">
+                <div className="text-xs text-red-400 font-medium mb-1">Do Not Contact Flags</div>
+                <div className="flex flex-wrap gap-2 text-xs text-red-300">
+                  {contact.do_not_email && <span className="flex items-center gap-1"><Mail className="h-3 w-3" /> No Email</span>}
+                  {contact.do_not_call && <span className="flex items-center gap-1"><Phone className="h-3 w-3" /> No Call</span>}
+                  {contact.do_not_text && <span className="flex items-center gap-1"><MessageSquare className="h-3 w-3" /> No Text</span>}
+                </div>
+              </div>
+            )}
             {contact.linked_profile_name && (
               <div className="mt-3 p-2 rounded bg-accent-yellow/10 border border-accent-yellow/20">
                 <div className="text-xs text-accent-yellow">Linked SWN Profile</div>
@@ -220,17 +289,15 @@ const ContactDetail = () => {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <CardTitle className="text-bone-white text-base">Notes</CardTitle>
+                {contact.assigned_rep_name && (
+                  <span className="text-xs text-muted-gray">
+                    Assigned to: <span className="text-bone-white">{contact.assigned_rep_name}</span>
+                  </span>
+                )}
               </div>
             </CardHeader>
             <CardContent>
-              <p className="text-sm text-bone-white/70 whitespace-pre-wrap">
-                {contact.notes || 'No notes yet.'}
-              </p>
-              {contact.assigned_rep_name && (
-                <div className="mt-4 text-xs text-muted-gray">
-                  Assigned to: <span className="text-bone-white">{contact.assigned_rep_name}</span>
-                </div>
-              )}
+              <ContactNotes contactId={id!} currentProfileId={currentProfile?.id || ''} />
             </CardContent>
           </Card>
         </div>
@@ -243,7 +310,6 @@ const ContactDetail = () => {
             <TabsTrigger value="timeline">Activity Timeline</TabsTrigger>
             <TabsTrigger value="emails">Emails</TabsTrigger>
             <TabsTrigger value="sequences">Sequences</TabsTrigger>
-            <TabsTrigger value="log">Log Activity</TabsTrigger>
           </TabsList>
         </div>
 
@@ -302,18 +368,6 @@ const ContactDetail = () => {
             </CardContent>
           </Card>
         </TabsContent>
-
-        <TabsContent value="log" className="mt-4">
-          <Card className="bg-charcoal-black border-muted-gray/30">
-            <CardContent className="pt-6">
-              <ActivityForm
-                contactId={id!}
-                onSubmit={handleLogActivity}
-                isSubmitting={createActivity.isPending}
-              />
-            </CardContent>
-          </Card>
-        </TabsContent>
       </Tabs>
 
       {/* Edit Dialog */}
@@ -339,6 +393,66 @@ const ContactDetail = () => {
         onLink={handleLink}
         isLinking={linkProfile.isPending}
       />
+
+      {/* Log Activity Dialog */}
+      <CalendarActivityDialog
+        open={showLogActivity}
+        onOpenChange={setShowLogActivity}
+        contacts={[contact]}
+        onSubmit={handleLogActivity}
+        isSubmitting={createActivity.isPending}
+        defaultDate={new Date().toISOString().split('T')[0]}
+      />
+
+      {/* DNC Dialog */}
+      <Dialog open={showDNC} onOpenChange={setShowDNC}>
+        <DialogContent className="bg-charcoal-black border-muted-gray/30 text-bone-white max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              DNC — {contact.first_name} {contact.last_name}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="flex items-center justify-between">
+              <Label className="flex items-center gap-2">
+                <Mail className="h-4 w-4" /> Do Not Email
+              </Label>
+              <Switch
+                checked={dncForm.do_not_email}
+                onCheckedChange={(v) => setDncForm({ ...dncForm, do_not_email: v })}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <Label className="flex items-center gap-2">
+                <Phone className="h-4 w-4" /> Do Not Call
+              </Label>
+              <Switch
+                checked={dncForm.do_not_call}
+                onCheckedChange={(v) => setDncForm({ ...dncForm, do_not_call: v })}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <Label className="flex items-center gap-2">
+                <MessageSquare className="h-4 w-4" /> Do Not Text
+              </Label>
+              <Switch
+                checked={dncForm.do_not_text}
+                onCheckedChange={(v) => setDncForm({ ...dncForm, do_not_text: v })}
+              />
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <Button variant="outline" onClick={() => setShowDNC(false)}>Cancel</Button>
+              <Button
+                onClick={saveDNC}
+                disabled={updateDNC.isPending}
+                className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+              >
+                {updateDNC.isPending ? 'Saving...' : 'Save'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

@@ -19,7 +19,7 @@ import { Plus, BarChart3 } from 'lucide-react';
 
 const Pipeline = () => {
   const { hasAnyRole } = usePermissions();
-  const isAdmin = hasAnyRole(['admin', 'superadmin']);
+  const isAdmin = hasAnyRole(['admin', 'superadmin', 'sales_admin']);
 
   const [productFilter, setProductFilter] = useState<string>('all');
   const [showStats, setShowStats] = useState(false);

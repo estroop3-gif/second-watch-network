@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
-from app.core.database import execute_query, execute_single, execute_insert
+from app.core.database import execute_query, execute_single, execute_insert, execute_update, execute_delete
 from app.core.permissions import Permission, require_permissions
 
 router = APIRouter()
@@ -1186,7 +1186,7 @@ async def update_campaign(
 
     # Update sender accounts if provided
     if sender_account_ids is not None:
-        execute_query(
+        execute_delete(
             "DELETE FROM crm_campaign_senders WHERE campaign_id = :cid",
             {"cid": campaign_id},
         )
@@ -1348,7 +1348,7 @@ async def update_campaign_senders(
         raise HTTPException(400, "Can only modify senders for draft or scheduled campaigns")
 
     # Remove existing and re-add
-    execute_query(
+    execute_delete(
         "DELETE FROM crm_campaign_senders WHERE campaign_id = :cid",
         {"cid": campaign_id},
     )

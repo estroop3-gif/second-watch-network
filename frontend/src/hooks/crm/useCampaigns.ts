@@ -66,7 +66,9 @@ export function useUpdateContactDNC() {
       api.updateCRMContactDNC(contactId, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['crm-contacts'] });
+      qc.invalidateQueries({ queryKey: ['crm-contact'] });
       qc.invalidateQueries({ queryKey: ['crm-dnc-list'] });
+      qc.invalidateQueries({ queryKey: ['crm-rep-dnc-list'] });
     },
   });
 }
@@ -114,5 +116,12 @@ export function useDNCList(params?: { limit?: number; offset?: number }) {
   return useQuery({
     queryKey: ['crm-dnc-list', params],
     queryFn: () => api.getCRMDNCList(params),
+  });
+}
+
+export function useRepDNCList(params?: { limit?: number; offset?: number }) {
+  return useQuery({
+    queryKey: ['crm-rep-dnc-list', params],
+    queryFn: () => api.getCRMRepDNCList(params),
   });
 }

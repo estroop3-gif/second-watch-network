@@ -8,10 +8,10 @@
  *
  * This ensures badges and role checks are consistent across the entire app.
  */
-import React, { createContext, useContext, useMemo } from 'react';
+import React, { createContext, useContext, useMemo, useEffect } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useProfile } from '@/hooks/useProfile';
-import { api } from '@/lib/api';
+import { api, safeStorage } from '@/lib/api';
 import { useQuery } from '@tanstack/react-query';
 import { orderAPI } from '@/lib/api/order';
 import {
@@ -23,6 +23,8 @@ import {
   hasRole,
   getActiveRolesFromProfile,
 } from '@/lib/badges';
+
+const CACHED_ROLES_KEY = 'swn_cached_roles';
 
 interface EnrichedProfileContextValue {
   // The enriched profile with all role flags properly set
@@ -60,6 +62,35 @@ interface EnrichedProfileContextValue {
 
 const EnrichedProfileContext = createContext<EnrichedProfileContextValue | null>(null);
 
+// Role flags we cache in localStorage for instant availability on next login
+const ROLE_CACHE_FIELDS = [
+  'is_superadmin', 'is_admin', 'is_moderator', 'is_filmmaker', 'is_partner',
+  'is_premium', 'is_order_member', 'is_lodge_officer', 'is_sales_admin',
+  'is_sales_agent', 'is_sales_rep',
+] as const;
+
+function getCachedRoles(userId: string | undefined): Record<string, boolean> | null {
+  if (!userId) return null;
+  try {
+    const raw = safeStorage.getItem(CACHED_ROLES_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // Only use cache if it matches the current user
+    if (parsed._userId !== userId) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function saveCachedRoles(userId: string, roleFlags: Record<string, boolean>) {
+  try {
+    safeStorage.setItem(CACHED_ROLES_KEY, JSON.stringify({ ...roleFlags, _userId: userId }));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 export function EnrichedProfileProvider({ children }: { children: React.ReactNode }) {
   const { user, session } = useAuth();
   const { profile: baseProfile, isLoading: profileLoading, refetch: refetchProfile } = useProfile();
@@ -72,6 +103,13 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
     if (legacyRole) roles.add(legacyRole);
     return roles;
   }, [session]);
+
+  // Load cached roles from localStorage for instant availability
+  // Use profile_id from localStorage as fallback before auth resolves
+  const cachedRoles = useMemo(
+    () => getCachedRoles(user?.id || safeStorage.getItem('profile_id') || undefined),
+    [user?.id],
+  );
 
   // Check for filmmaker profile existence
   const { data: hasFilmmakerProfile, isLoading: filmmakerLoading } = useQuery({
@@ -115,29 +153,40 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
   });
 
   // Create enriched profile that merges all data sources
+  // Sources (in priority order): profile table, profile existence, auth metadata, localStorage cache
   const enrichedProfile = useMemo<ProfileWithRoles | null>(() => {
     if (!baseProfile && !user) return null;
 
     const base = (baseProfile || {}) as ProfileWithRoles;
+    const cache = cachedRoles || {};
 
-    // Merge profile flags with profile existence and auth metadata
+    // Merge from multiple sources: profile table, profile existence, auth metadata, cached roles
     return {
       ...base,
       id: base.id || user?.id,
-      // Merge from multiple sources: profile table, profile existence, auth metadata
-      is_superadmin: base.is_superadmin || authRoles.has('superadmin'),
-      is_admin: base.is_admin || authRoles.has('admin'),
-      is_moderator: base.is_moderator || authRoles.has('moderator'),
-      is_filmmaker: base.is_filmmaker || hasFilmmakerProfile || authRoles.has('filmmaker'),
-      is_partner: base.is_partner || hasPartnerProfile || authRoles.has('partner'),
-      is_premium: base.is_premium || authRoles.has('premium'),
-      is_order_member: base.is_order_member || orderData?.hasProfile || authRoles.has('order_member'),
-      is_lodge_officer: base.is_lodge_officer || orderData?.isOfficer || authRoles.has('lodge_officer'),
-      is_sales_admin: base.is_sales_admin || authRoles.has('sales_admin'),
-      is_sales_agent: base.is_sales_agent || authRoles.has('sales_agent'),
-      is_sales_rep: base.is_sales_rep || authRoles.has('sales_rep'),
+      is_superadmin: base.is_superadmin || authRoles.has('superadmin') || !!cache.is_superadmin,
+      is_admin: base.is_admin || authRoles.has('admin') || !!cache.is_admin,
+      is_moderator: base.is_moderator || authRoles.has('moderator') || !!cache.is_moderator,
+      is_filmmaker: base.is_filmmaker || hasFilmmakerProfile || authRoles.has('filmmaker') || !!cache.is_filmmaker,
+      is_partner: base.is_partner || hasPartnerProfile || authRoles.has('partner') || !!cache.is_partner,
+      is_premium: base.is_premium || authRoles.has('premium') || !!cache.is_premium,
+      is_order_member: base.is_order_member || orderData?.hasProfile || authRoles.has('order_member') || !!cache.is_order_member,
+      is_lodge_officer: base.is_lodge_officer || orderData?.isOfficer || authRoles.has('lodge_officer') || !!cache.is_lodge_officer,
+      is_sales_admin: base.is_sales_admin || authRoles.has('sales_admin') || !!cache.is_sales_admin,
+      is_sales_agent: base.is_sales_agent || authRoles.has('sales_agent') || !!cache.is_sales_agent,
+      is_sales_rep: base.is_sales_rep || authRoles.has('sales_rep') || !!cache.is_sales_rep,
     };
-  }, [baseProfile, user, authRoles, hasFilmmakerProfile, hasPartnerProfile, orderData]);
+  }, [baseProfile, user, authRoles, hasFilmmakerProfile, hasPartnerProfile, orderData, cachedRoles]);
+
+  // Persist role flags to localStorage so they're available instantly on next login
+  useEffect(() => {
+    if (!enrichedProfile?.id) return;
+    const roleFlags: Record<string, boolean> = {};
+    for (const field of ROLE_CACHE_FIELDS) {
+      roleFlags[field] = !!(enrichedProfile as any)[field];
+    }
+    saveCachedRoles(enrichedProfile.id, roleFlags);
+  }, [enrichedProfile]);
 
   // Compute badge information using enriched profile
   const activeRoles = useMemo(() => getActiveRolesFromProfile(enrichedProfile), [enrichedProfile]);
@@ -217,7 +266,6 @@ export function useEnrichedProfileSafe() {
       isAdmin: false,
       isModerator: false,
       isSalesAdmin: false,
-      isSalesRep: false,
       isFilmmaker: false,
       isPartner: false,
       isPremium: false,

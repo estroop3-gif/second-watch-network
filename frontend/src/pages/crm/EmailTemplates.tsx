@@ -23,7 +23,7 @@ const PLACEHOLDERS = ['{{first_name}}', '{{last_name}}', '{{company}}', '{{email
 
 const EmailTemplates = () => {
   const { hasAnyRole } = usePermissions();
-  const isAdmin = hasAnyRole(['admin', 'superadmin']);
+  const isAdmin = hasAnyRole(['admin', 'superadmin', 'sales_admin']);
   const { toast } = useToast();
 
   const { data, isLoading } = useEmailTemplates();

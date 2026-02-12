@@ -22,7 +22,7 @@ import { useToast } from '@/hooks/use-toast';
 const EmailSequences = () => {
   const navigate = useNavigate();
   const { hasAnyRole } = usePermissions();
-  const isAdmin = hasAnyRole(['admin', 'superadmin']);
+  const isAdmin = hasAnyRole(['admin', 'superadmin', 'sales_admin']);
   const { toast } = useToast();
 
   const { data, isLoading } = useAdminSequences();

@@ -4899,6 +4899,30 @@ class APIClient {
   }
 
   // ============================================================================
+  // CRM — Sidebar Badges
+  // ============================================================================
+
+  async getCRMSidebarBadges() {
+    return this.get<Record<string, number>>('/api/v1/crm/sidebar-badges')
+  }
+
+  // ============================================================================
+  // CRM — Contact Notes
+  // ============================================================================
+
+  async getCRMContactNotes(contactId: string) {
+    return this.get<{ notes: any[] }>(`/api/v1/crm/contacts/${contactId}/notes`)
+  }
+
+  async createCRMContactNote(contactId: string, data: { content: string; parent_id?: string }) {
+    return this.post<any>(`/api/v1/crm/contacts/${contactId}/notes`, data)
+  }
+
+  async deleteCRMContactNote(contactId: string, noteId: string) {
+    return this.delete<any>(`/api/v1/crm/contacts/${contactId}/notes/${noteId}`)
+  }
+
+  // ============================================================================
   // CRM — Email Campaigns & DNC
   // ============================================================================
 
@@ -5297,6 +5321,16 @@ class APIClient {
     const qs = query.toString()
     return this.get<{ contacts: any[]; total: number }>(
       `/api/v1/admin/crm/dnc-list${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  async getCRMRepDNCList(params?: { limit?: number; offset?: number }) {
+    const query = new URLSearchParams()
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.offset !== undefined) query.append('offset', params.offset.toString())
+    const qs = query.toString()
+    return this.get<{ contacts: any[]; total: number }>(
+      `/api/v1/crm/dnc-list${qs ? `?${qs}` : ''}`
     )
   }
 

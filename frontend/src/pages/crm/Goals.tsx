@@ -34,7 +34,7 @@ const PERIOD_TYPES = [
 
 const Goals = () => {
   const { hasAnyRole } = usePermissions();
-  const isAdmin = hasAnyRole(['admin', 'superadmin']);
+  const isAdmin = hasAnyRole(['admin', 'superadmin', 'sales_admin']);
   const { toast } = useToast();
 
   const [periodFilter, setPeriodFilter] = useState<string>('all');

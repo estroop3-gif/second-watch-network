@@ -1,13 +1,14 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus } from 'lucide-react';
+import { Plus, ClipboardList } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import ContactCard from '@/components/crm/ContactCard';
 import ContactForm from '@/components/crm/ContactForm';
 import ContactFilters from '@/components/crm/ContactFilters';
-import { useContacts, useCreateContact } from '@/hooks/crm';
+import CalendarActivityDialog from '@/components/crm/CalendarActivityDialog';
+import { useContacts, useCreateContact, useCreateActivity } from '@/hooks/crm';
 import { useEmailCompose } from '@/context/EmailComposeContext';
 import { toast } from 'sonner';
 
@@ -18,6 +19,7 @@ const Contacts = () => {
   const [status, setStatus] = useState('all');
   const [sortBy, setSortBy] = useState('created_at');
   const [showCreate, setShowCreate] = useState(false);
+  const [showLogActivity, setShowLogActivity] = useState(false);
   const [offset, setOffset] = useState(0);
   const limit = 50;
 
@@ -32,6 +34,7 @@ const Contacts = () => {
   });
 
   const createContact = useCreateContact();
+  const createActivity = useCreateActivity();
   const { openCompose } = useEmailCompose();
 
   const handleEmail = (contact: any) => {
@@ -61,16 +64,35 @@ const Contacts = () => {
     }
   };
 
+  const handleLogActivity = async (data: any) => {
+    try {
+      await createActivity.mutateAsync(data);
+      setShowLogActivity(false);
+      toast.success('Activity logged');
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-heading text-bone-white">Contacts</h1>
-        <Button
-          onClick={() => setShowCreate(true)}
-          className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
-        >
-          <Plus className="h-4 w-4 mr-2" /> New Contact
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setShowLogActivity(true)}
+            className="border-green-500/50 text-green-400 hover:bg-green-500/10"
+          >
+            <ClipboardList className="h-4 w-4 mr-2" /> Log Activity
+          </Button>
+          <Button
+            onClick={() => setShowCreate(true)}
+            className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+          >
+            <Plus className="h-4 w-4 mr-2" /> New Contact
+          </Button>
+        </div>
       </div>
 
       <ContactFilters
@@ -146,6 +168,16 @@ const Contacts = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Log Activity Dialog */}
+      <CalendarActivityDialog
+        open={showLogActivity}
+        onOpenChange={setShowLogActivity}
+        contacts={contacts}
+        onSubmit={handleLogActivity}
+        isSubmitting={createActivity.isPending}
+        defaultDate={new Date().toISOString().split('T')[0]}
+      />
     </div>
   );
 };

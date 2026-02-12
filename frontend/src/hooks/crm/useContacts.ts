@@ -70,3 +70,37 @@ export function useLinkProfile() {
     },
   });
 }
+
+// ============================================================================
+// Contact Notes
+// ============================================================================
+
+export function useContactNotes(contactId: string) {
+  return useQuery({
+    queryKey: ['crm-contact-notes', contactId],
+    queryFn: () => api.getCRMContactNotes(contactId),
+    enabled: !!contactId,
+  });
+}
+
+export function useCreateContactNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contactId, content, parentId }: { contactId: string; content: string; parentId?: string }) =>
+      api.createCRMContactNote(contactId, { content, parent_id: parentId }),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: ['crm-contact-notes', variables.contactId] });
+    },
+  });
+}
+
+export function useDeleteContactNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contactId, noteId }: { contactId: string; noteId: string }) =>
+      api.deleteCRMContactNote(contactId, noteId),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: ['crm-contact-notes', variables.contactId] });
+    },
+  });
+}

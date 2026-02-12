@@ -48,7 +48,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
 
 const EmailAnalytics = () => {
   const { hasAnyRole } = usePermissions();
-  const isAdmin = hasAnyRole(['admin', 'superadmin']);
+  const isAdmin = hasAnyRole(['admin', 'superadmin', 'sales_admin']);
   const [days, setDays] = useState('30');
   const [selectedRep, setSelectedRep] = useState<{ id: string; name: string } | null>(null);
 
