@@ -223,11 +223,23 @@ class CognitoAuth:
             error_message = e.response['Error']['Message']
 
             if error_code == 'NotAuthorizedException':
-                return {'session': None, 'user': None, 'error': {'message': 'Invalid email or password'}}
+                # Cognito uses NotAuthorizedException for multiple cases
+                msg_lower = error_message.lower()
+                if 'password attempts exceeded' in msg_lower:
+                    return {'session': None, 'user': None, 'error': {'code': 'too_many_attempts', 'message': 'Too many failed attempts. Please wait a few minutes and try again.'}}
+                if 'user is disabled' in msg_lower or 'disabled' in msg_lower:
+                    return {'session': None, 'user': None, 'error': {'code': 'user_disabled', 'message': 'This account has been disabled. Please contact support.'}}
+                return {'session': None, 'user': None, 'error': {'code': 'invalid_credentials', 'message': 'Invalid email or password'}}
             elif error_code == 'UserNotConfirmedException':
-                return {'session': None, 'user': None, 'error': {'message': 'Please verify your email first'}}
+                return {'session': None, 'user': None, 'error': {'code': 'email_not_confirmed', 'message': 'Please verify your email before signing in.'}}
+            elif error_code == 'PasswordResetRequiredException':
+                return {'session': None, 'user': None, 'error': {'code': 'password_reset_required', 'message': 'A password reset is required. Please use "Forgot password" to reset your password.'}}
+            elif error_code == 'UserNotFoundException':
+                return {'session': None, 'user': None, 'error': {'code': 'invalid_credentials', 'message': 'Invalid email or password'}}
+            elif error_code == 'TooManyRequestsException':
+                return {'session': None, 'user': None, 'error': {'code': 'too_many_requests', 'message': 'Too many requests. Please wait a moment and try again.'}}
             else:
-                return {'session': None, 'user': None, 'error': {'message': error_message}}
+                return {'session': None, 'user': None, 'error': {'code': 'unknown', 'message': error_message}}
 
     @staticmethod
     def respond_to_new_password_challenge(

@@ -148,23 +148,36 @@ const LoginForm = () => {
     } catch (error: any) {
       setLoading(false);
       performanceMetrics.incrementRetry();
+      const code = error.code || "";
       const msg = (error.message || "").toLowerCase();
 
-      if (msg.includes("invalid login credentials") || msg.includes("invalid") || msg.includes("credentials")) {
+      // Match on structured error code first, fall back to message matching
+      if (code === "invalid_credentials" || msg.includes("invalid") || msg.includes("credentials")) {
         form.setError("password", { type: "server", message: "Email or password is incorrect." });
         ariaLiveRef.current = "Email or password is incorrect.";
         return;
       }
-      if (msg.includes("email not confirmed") || msg.includes("email_not_confirmed")) {
+      if (code === "email_not_confirmed" || msg.includes("not confirmed") || msg.includes("verify your email")) {
         setConfirmOpen(true);
         ariaLiveRef.current = "Please confirm your email to continue.";
         return;
       }
-      if (msg.includes("429") || msg.includes("rate")) {
-        toast.error("Too many attempts. Please wait a moment.");
+      if (code === "password_reset_required") {
+        toast.error("A password reset is required. Please use 'Forgot password' to reset your password.");
+        ariaLiveRef.current = "Password reset required.";
         return;
       }
-      // Fallback
+      if (code === "user_disabled") {
+        toast.error("This account has been disabled. Please contact support.");
+        ariaLiveRef.current = "Account disabled.";
+        return;
+      }
+      if (code === "too_many_attempts" || code === "too_many_requests" || msg.includes("429") || msg.includes("rate") || msg.includes("too many")) {
+        toast.error("Too many attempts. Please wait a few minutes and try again.");
+        ariaLiveRef.current = "Too many attempts.";
+        return;
+      }
+      // Fallback — show the actual error message for debugging
       toast.error(error.message || "Couldn't sign in. Please try again.");
     }
   };

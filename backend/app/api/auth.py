@@ -143,7 +143,11 @@ async def sign_in(request: SignInRequest):
         )
 
         if result.get("error"):
-            raise HTTPException(status_code=401, detail=result["error"]["message"])
+            error = result["error"]
+            raise HTTPException(status_code=401, detail={
+                "code": error.get("code", "unknown"),
+                "message": error.get("message", "Sign in failed"),
+            })
 
         # Check if there's a challenge (e.g., NEW_PASSWORD_REQUIRED)
         if result.get("challenge"):
