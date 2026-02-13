@@ -14,6 +14,8 @@ export function useCreateGoal() {
     mutationFn: (data: any) => api.createCRMGoal(data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['crm-my-goals'] });
+      qc.invalidateQueries({ queryKey: ['crm-rep-goals'] });
+      qc.invalidateQueries({ queryKey: ['crm-rep-summary'] });
     },
   });
 }
@@ -24,6 +26,8 @@ export function useUpdateGoal() {
     mutationFn: ({ id, data }: { id: string; data: any }) => api.updateCRMGoal(id, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['crm-my-goals'] });
+      qc.invalidateQueries({ queryKey: ['crm-rep-goals'] });
+      qc.invalidateQueries({ queryKey: ['crm-rep-summary'] });
     },
   });
 }
@@ -34,6 +38,8 @@ export function useDeleteGoal() {
     mutationFn: (id: string) => api.deleteCRMGoal(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['crm-my-goals'] });
+      qc.invalidateQueries({ queryKey: ['crm-rep-goals'] });
+      qc.invalidateQueries({ queryKey: ['crm-rep-summary'] });
     },
   });
 }
@@ -45,6 +51,8 @@ export function useSetGoalOverride() {
       api.setCRMGoalOverride(id, { manual_override }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['crm-my-goals'] });
+      qc.invalidateQueries({ queryKey: ['crm-rep-goals'] });
+      qc.invalidateQueries({ queryKey: ['crm-rep-summary'] });
     },
   });
 }

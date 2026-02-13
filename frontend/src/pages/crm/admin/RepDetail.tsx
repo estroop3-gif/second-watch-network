@@ -10,9 +10,15 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
+import { useCreateGoal, useUpdateGoal, useDeleteGoal } from '@/hooks/crm/useGoals';
+import {
   ArrowLeft, Users, Briefcase, Activity, Phone, Mail,
   MessageSquare, Monitor, Target, Star, DollarSign, ChevronDown,
   Calendar, Clock, FileText, ArrowRightLeft, Pencil, Loader2,
+  Plus, Trash2, RefreshCw, Check, X,
 } from 'lucide-react';
 import { useRepSummary, useCRMAdminInteractions } from '@/hooks/crm/useInteractions';
 import { useContacts, useActivities, useDeals } from '@/hooks/crm';
@@ -51,7 +57,7 @@ const RepDetail = () => {
   const [activitiesOffset, setActivitiesOffset] = useState(0);
   const [emailOffset, setEmailOffset] = useState(0);
 
-  const { data: summary, isLoading } = useRepSummary(repId || '');
+  const { data: summary, isLoading, isError, error } = useRepSummary(repId || '');
 
   // Tab data queries — limit: 200 (backend max)
   const { data: contactsData, isLoading: contactsLoading } = useContacts(
@@ -94,6 +100,36 @@ const RepDetail = () => {
           {[1, 2, 3, 4, 5].map(i => <Skeleton key={i} className="h-24" />)}
         </div>
         <Skeleton className="h-96" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    const status = (error as any)?.status || (error as any)?.response?.status;
+    const is404 = status === 404;
+    return (
+      <div className="space-y-4">
+        <Button variant="ghost" onClick={() => navigate('/crm/admin/team')} className="text-muted-gray">
+          <ArrowLeft className="h-4 w-4 mr-1" />Back to Team
+        </Button>
+        <div className="text-center py-12 space-y-3">
+          {is404 ? (
+            <p className="text-muted-gray">Rep not found.</p>
+          ) : (
+            <>
+              <p className="text-red-400 font-medium">Failed to load rep data</p>
+              <p className="text-muted-gray text-sm">{(error as any)?.message || 'An unexpected error occurred'}</p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => qc.invalidateQueries({ queryKey: ['crm-rep-summary', repId] })}
+                className="border-muted-gray/30 text-bone-white hover:bg-muted-gray/20"
+              >
+                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />Retry
+              </Button>
+            </>
+          )}
+        </div>
       </div>
     );
   }
@@ -291,7 +327,7 @@ const RepDetail = () => {
           />
         )}
         {activeTab === 'goals' && (
-          <GoalsTab data={goalsData} loading={goalsLoading} />
+          <GoalsTab data={goalsData} loading={goalsLoading} repId={repId!} />
         )}
         {activeTab === 'reviews' && (
           <ReviewsTab data={reviewsData} loading={reviewsLoading} />
@@ -325,6 +361,8 @@ function EditProfileDialog({ repId, profile, open, onOpenChange, onSaved }: {
   const [phone, setPhone] = useState('');
   const [department, setDepartment] = useState('');
   const [jobTitle, setJobTitle] = useState('');
+  const [bio, setBio] = useState('');
+  const [location, setLocation] = useState('');
 
   useEffect(() => {
     if (profile && open) {
@@ -333,6 +371,8 @@ function EditProfileDialog({ repId, profile, open, onOpenChange, onSaved }: {
       setPhone(profile.phone || '');
       setDepartment(profile.department || '');
       setJobTitle(profile.job_title || '');
+      setBio(profile.bio || '');
+      setLocation(profile.location || '');
     }
   }, [profile, open]);
 
@@ -351,6 +391,8 @@ function EditProfileDialog({ repId, profile, open, onOpenChange, onSaved }: {
       phone: phone.trim() || null,
       department: department.trim() || null,
       job_title: jobTitle.trim() || null,
+      bio: bio.trim() || null,
+      location: location.trim() || null,
     });
   };
 
@@ -415,6 +457,27 @@ function EditProfileDialog({ repId, profile, open, onOpenChange, onSaved }: {
               onChange={(e) => setJobTitle(e.target.value)}
               placeholder="e.g. Sales Representative"
               className="bg-charcoal-black border-muted-gray/30 text-bone-white"
+            />
+          </div>
+
+          <div>
+            <Label className="text-muted-gray text-xs">Location</Label>
+            <Input
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              placeholder="e.g. Nashville, TN"
+              className="bg-charcoal-black border-muted-gray/30 text-bone-white"
+            />
+          </div>
+
+          <div>
+            <Label className="text-muted-gray text-xs">Bio</Label>
+            <Textarea
+              value={bio}
+              onChange={(e) => setBio(e.target.value)}
+              placeholder="Short bio..."
+              rows={3}
+              className="bg-charcoal-black border-muted-gray/30 text-bone-white resize-none"
             />
           </div>
 
@@ -804,47 +867,275 @@ function EmailTab({ data, loading, offset, onLoadMore, onLoadPrev }: {
   );
 }
 
-function GoalsTab({ data, loading }: { data: any; loading: boolean }) {
+const GOAL_TYPES = [
+  { value: 'revenue', label: 'Revenue ($)' },
+  { value: 'deals_closed', label: 'Deals Closed' },
+  { value: 'calls_made', label: 'Calls Made' },
+  { value: 'emails_sent', label: 'Emails Sent' },
+  { value: 'meetings_held', label: 'Meetings Held' },
+  { value: 'demos_given', label: 'Demos Given' },
+  { value: 'new_contacts', label: 'New Contacts' },
+];
+
+const PERIOD_TYPES = [
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'monthly', label: 'Monthly' },
+  { value: 'quarterly', label: 'Quarterly' },
+];
+
+function GoalsTab({ data, loading, repId }: { data: any; loading: boolean; repId: string }) {
+  const { toast } = useToast();
+  const createGoal = useCreateGoal();
+  const updateGoal = useUpdateGoal();
+  const deleteGoal = useDeleteGoal();
+
+  const [showCreate, setShowCreate] = useState(false);
+  const [goalType, setGoalType] = useState('revenue');
+  const [periodType, setPeriodType] = useState('monthly');
+  const [targetValue, setTargetValue] = useState('');
+  const [periodStart, setPeriodStart] = useState('');
+  const [periodEnd, setPeriodEnd] = useState('');
+
+  // Inline edit state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+
+  const handleCreateGoal = async () => {
+    if (!targetValue || !periodStart || !periodEnd) return;
+    try {
+      const target = goalType === 'revenue'
+        ? Math.round(parseFloat(targetValue) * 100)
+        : parseInt(targetValue);
+      await createGoal.mutateAsync({
+        goal_type: goalType,
+        period_type: periodType,
+        target_value: target,
+        period_start: periodStart,
+        period_end: periodEnd,
+        rep_id: repId,
+      });
+      toast({ title: 'Goal created' });
+      setShowCreate(false);
+      setTargetValue('');
+      setPeriodStart('');
+      setPeriodEnd('');
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleDeleteGoal = async (goalId: string) => {
+    if (!confirm('Delete this goal?')) return;
+    try {
+      await deleteGoal.mutateAsync(goalId);
+      toast({ title: 'Goal deleted' });
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleSaveTarget = async (goalId: string, goalType: string) => {
+    const val = goalType === 'revenue'
+      ? Math.round(parseFloat(editValue) * 100)
+      : parseInt(editValue);
+    if (isNaN(val) || val <= 0) return;
+    try {
+      await updateGoal.mutateAsync({ id: goalId, data: { target_value: val } });
+      toast({ title: 'Target updated' });
+      setEditingId(null);
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
   if (loading) return <TabSkeleton />;
   const goals = data?.goals || [];
-  if (goals.length === 0) return <EmptyTab message="No goals" />;
+
   return (
-    <div className="rounded border border-muted-gray/30 overflow-hidden">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-muted-gray/10 text-muted-gray text-left">
-            <th className="px-4 py-2">Type</th>
-            <th className="px-4 py-2">Period</th>
-            <th className="px-4 py-2">Target</th>
-            <th className="px-4 py-2">Actual</th>
-            <th className="px-4 py-2">Progress</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-muted-gray/20">
-          {goals.map((g: any) => {
-            const pct = g.target_value > 0 ? Math.round(((g.manual_override ?? g.actual_value ?? 0) / g.target_value) * 100) : 0;
-            return (
-              <tr key={g.id} className="hover:bg-muted-gray/10">
-                <td className="px-4 py-2 text-bone-white capitalize">{g.goal_type?.replace(/_/g, ' ')}</td>
-                <td className="px-4 py-2 text-muted-gray">{g.period_start} — {g.period_end}</td>
-                <td className="px-4 py-2 text-muted-gray">{g.target_value}</td>
-                <td className="px-4 py-2 text-bone-white">{g.manual_override ?? g.actual_value ?? 0}</td>
-                <td className="px-4 py-2">
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-2 bg-muted-gray/20 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full ${pct >= 100 ? 'bg-green-500' : pct >= 50 ? 'bg-accent-yellow' : 'bg-red-400'}`}
-                        style={{ width: `${Math.min(pct, 100)}%` }}
-                      />
-                    </div>
-                    <span className="text-xs text-muted-gray w-10 text-right">{pct}%</span>
-                  </div>
-                </td>
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <Button
+          size="sm"
+          onClick={() => setShowCreate(true)}
+          className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+        >
+          <Plus className="h-3.5 w-3.5 mr-1.5" />Add Goal
+        </Button>
+      </div>
+
+      {goals.length === 0 ? (
+        <EmptyTab message="No goals" />
+      ) : (
+        <div className="rounded border border-muted-gray/30 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-muted-gray/10 text-muted-gray text-left">
+                <th className="px-4 py-2">Type</th>
+                <th className="px-4 py-2">Period</th>
+                <th className="px-4 py-2">Target</th>
+                <th className="px-4 py-2">Actual</th>
+                <th className="px-4 py-2">Progress</th>
+                <th className="px-4 py-2 w-10"></th>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
+            </thead>
+            <tbody className="divide-y divide-muted-gray/20">
+              {goals.map((g: any) => {
+                const displayTarget = g.goal_type === 'revenue' ? (g.target_value / 100) : g.target_value;
+                const actual = g.manual_override ?? g.actual_value ?? 0;
+                const pct = g.target_value > 0 ? Math.round((actual / g.target_value) * 100) : 0;
+                const isEditing = editingId === g.id;
+                return (
+                  <tr key={g.id} className="hover:bg-muted-gray/10 group">
+                    <td className="px-4 py-2 text-bone-white capitalize">{g.goal_type?.replace(/_/g, ' ')}</td>
+                    <td className="px-4 py-2 text-muted-gray">{g.period_start} — {g.period_end}</td>
+                    <td className="px-4 py-2">
+                      {isEditing ? (
+                        <div className="flex items-center gap-1">
+                          <Input
+                            type="number"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            className="h-7 w-24 bg-charcoal-black border-muted-gray/30 text-bone-white text-sm"
+                            autoFocus
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSaveTarget(g.id, g.goal_type);
+                              if (e.key === 'Escape') setEditingId(null);
+                            }}
+                          />
+                          <button
+                            onClick={() => handleSaveTarget(g.id, g.goal_type)}
+                            className="p-0.5 text-green-400 hover:text-green-300"
+                          >
+                            <Check className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setEditingId(null)}
+                            className="p-0.5 text-muted-gray hover:text-bone-white"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => { setEditingId(g.id); setEditValue(String(displayTarget)); }}
+                          className="text-muted-gray hover:text-accent-yellow transition-colors cursor-pointer"
+                          title="Click to edit target"
+                        >
+                          {g.goal_type === 'revenue' ? `$${displayTarget.toLocaleString()}` : displayTarget}
+                        </button>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-bone-white">
+                      {g.goal_type === 'revenue' ? `$${(actual / 100).toLocaleString()}` : actual}
+                    </td>
+                    <td className="px-4 py-2">
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-2 bg-muted-gray/20 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${pct >= 100 ? 'bg-green-500' : pct >= 50 ? 'bg-accent-yellow' : 'bg-red-400'}`}
+                            style={{ width: `${Math.min(pct, 100)}%` }}
+                          />
+                        </div>
+                        <span className="text-xs text-muted-gray w-10 text-right">{pct}%</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <button
+                        onClick={() => handleDeleteGoal(g.id)}
+                        className="p-1 rounded text-muted-gray/0 group-hover:text-red-400 hover:!text-red-300 hover:bg-red-400/10 transition-all"
+                        title="Delete goal"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Create Goal Dialog */}
+      <Dialog open={showCreate} onOpenChange={setShowCreate}>
+        <DialogContent className="bg-charcoal-black border-muted-gray text-bone-white max-w-md">
+          <DialogHeader>
+            <DialogTitle>Create Goal</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <label className="text-sm text-muted-gray block mb-2">Goal Type</label>
+              <Select value={goalType} onValueChange={setGoalType}>
+                <SelectTrigger className="bg-charcoal-black border-muted-gray text-bone-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {GOAL_TYPES.map((g) => (
+                    <SelectItem key={g.value} value={g.value}>{g.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-sm text-muted-gray block mb-2">Period</label>
+              <Select value={periodType} onValueChange={setPeriodType}>
+                <SelectTrigger className="bg-charcoal-black border-muted-gray text-bone-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PERIOD_TYPES.map((p) => (
+                    <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-sm text-muted-gray block mb-2">
+                Target {goalType === 'revenue' ? '($)' : ''}
+              </label>
+              <Input
+                type="number"
+                step={goalType === 'revenue' ? '0.01' : '1'}
+                value={targetValue}
+                onChange={(e) => setTargetValue(e.target.value)}
+                placeholder={goalType === 'revenue' ? 'e.g. 500.00' : 'e.g. 50'}
+                className="bg-charcoal-black border-muted-gray text-bone-white"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm text-muted-gray block mb-2">Start Date</label>
+                <Input
+                  type="date"
+                  value={periodStart}
+                  onChange={(e) => setPeriodStart(e.target.value)}
+                  className="bg-charcoal-black border-muted-gray text-bone-white"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-muted-gray block mb-2">End Date</label>
+                <Input
+                  type="date"
+                  value={periodEnd}
+                  onChange={(e) => setPeriodEnd(e.target.value)}
+                  className="bg-charcoal-black border-muted-gray text-bone-white"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <Button variant="outline" onClick={() => setShowCreate(false)}>Cancel</Button>
+              <Button
+                onClick={handleCreateGoal}
+                disabled={!targetValue || !periodStart || !periodEnd || createGoal.isPending}
+                className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+              >
+                {createGoal.isPending ? 'Creating...' : 'Create Goal'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
