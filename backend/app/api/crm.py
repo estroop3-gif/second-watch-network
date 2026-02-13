@@ -4449,8 +4449,11 @@ async def create_or_update_business_card(
         # Can only edit in draft or rejected status
         if existing["status"] not in ("draft", "rejected"):
             raise HTTPException(status_code=400, detail="Card can only be edited in draft or rejected status")
-        set_clauses = ", ".join(f"{k} = :{k}" for k in fields)
-        execute_query(
+        set_clauses = ", ".join(
+            f"{k} = CAST(:{k} AS jsonb)" if k == "personal_social_links" else f"{k} = :{k}"
+            for k in fields
+        )
+        execute_update(
             f"UPDATE crm_business_cards SET {set_clauses}, status = 'draft', updated_at = NOW() WHERE id = :card_id",
             {**fields, "card_id": existing["id"]},
         )
