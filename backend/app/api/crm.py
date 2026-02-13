@@ -209,7 +209,7 @@ async def get_sidebar_badges(
 
             -- Interactions: today's logged count, clears on tab view (fallback: today)
             (CASE
-              WHEN :interactions_viewed IS NOT NULL AND :interactions_viewed::date >= CURRENT_DATE
+              WHEN :interactions_viewed IS NOT NULL AND CAST(:interactions_viewed AS date) >= CURRENT_DATE
               THEN 0
               ELSE (SELECT COALESCE(SUM(ic.calls + ic.emails + ic.texts + ic.meetings + ic.demos), 0)
                     FROM crm_interaction_counts ic
@@ -4463,7 +4463,7 @@ async def create_or_update_business_card(
                 personal_social_links)
             VALUES (:pid, :swn_name, :swn_title, :swn_email, :swn_phone,
                 :personal_name, :personal_title, :personal_email, :personal_phone, :personal_website,
-                :personal_social_links::jsonb)
+                CAST(:personal_social_links AS jsonb))
             RETURNING id
             """,
             {**fields, "pid": profile["id"]},
