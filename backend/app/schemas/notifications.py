@@ -33,3 +33,4 @@ class NotificationCounts(BaseModel):
     messages: int = 0
     connection_requests: int = 0
     submission_updates: int = 0
+    crm: int = 0

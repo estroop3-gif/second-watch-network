@@ -2,7 +2,7 @@ import { useNotifications } from '@/hooks/useNotifications.tsx';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Bell, Check, Mail, MessageSquare, UserPlus, CheckCircle2, XCircle, ClipboardList, Star, Video, Gift, Briefcase } from 'lucide-react';
+import { Bell, Check, Mail, MessageSquare, UserPlus, CheckCircle2, XCircle, ClipboardList, Star, Video, Gift, Briefcase, BookOpen, Users, Target } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { cn } from '@/lib/utils';
@@ -26,7 +26,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { MoreHorizontal } from 'lucide-react';
 
-type TabKey = 'all' | 'unread' | 'messages' | 'requests' | 'submissions';
+type TabKey = 'all' | 'unread' | 'messages' | 'requests' | 'submissions' | 'crm';
 
 const NotificationIcon = ({ type }: { type: string }) => {
   switch (type) {
@@ -58,6 +58,17 @@ const NotificationIcon = ({ type }: { type: string }) => {
       return <Briefcase className="h-5 w-5 text-accent-yellow" />;
     case 'application_rejected':
       return <XCircle className="h-5 w-5 text-red-400" />;
+    // CRM notifications
+    case 'crm_discussion':
+      return <MessageSquare className="h-5 w-5 text-blue-400" />;
+    case 'crm_training':
+      return <BookOpen className="h-5 w-5 text-purple-400" />;
+    case 'crm_contact':
+      return <Users className="h-5 w-5 text-green-400" />;
+    case 'crm_goal':
+      return <Target className="h-5 w-5 text-accent-yellow" />;
+    case 'crm_campaign':
+      return <Mail className="h-5 w-5 text-primary-red" />;
     default:
       return <Bell className="h-5 w-5 text-muted-gray" />;
   }
@@ -66,6 +77,7 @@ const NotificationIcon = ({ type }: { type: string }) => {
 const typeToTab = (type?: string): TabKey => {
   if (!type) return 'all';
   const t = type.toLowerCase();
+  if (t.startsWith('crm_')) return 'crm';
   if (t.startsWith('connection')) return 'requests';
   if (t.startsWith('message')) return 'messages';
   if (t.startsWith('submission')) return 'submissions';
@@ -115,6 +127,16 @@ const Notifications = () => {
     const roleId = n.payload?.role_id || n.data?.role_id;
     const applicationId = n.payload?.application_id || n.data?.application_id;
 
+    // CRM notification navigation
+    if (t.startsWith('crm_')) {
+      if (t === 'crm_discussion') navigate('/crm/discussions');
+      else if (t === 'crm_training') navigate('/crm/training');
+      else if (t === 'crm_contact') navigate('/crm/contacts');
+      else if (t === 'crm_goal') navigate('/crm/goals');
+      else if (t === 'crm_campaign') navigate('/crm/campaigns');
+      else navigate('/crm');
+      return;
+    }
     if (t.startsWith('message') && conversationId) {
       navigate(`/messages?open=${conversationId}`);
       return;
@@ -150,6 +172,7 @@ const Notifications = () => {
       if (tab === 'messages') return (n.type || '').toLowerCase().startsWith('message');
       if (tab === 'requests') return (n.type || '').toLowerCase().startsWith('connection');
       if (tab === 'submissions') return (n.type || '').toLowerCase().startsWith('submission');
+      if (tab === 'crm') return (n.type || '').toLowerCase().startsWith('crm_');
       return true;
     });
   }, [notifications, tab]);
@@ -267,7 +290,7 @@ const Notifications = () => {
         <CardContent>
           {/* Desktop/Tablet filters (unchanged) */}
           <Tabs value={tab} onValueChange={(v) => setTab(v as TabKey)} className="hidden sm:block w-full mb-4">
-            <TabsList className="grid w-full grid-cols-5 bg-muted-gray/10">
+            <TabsList className="grid w-full grid-cols-6 bg-muted-gray/10">
               <TabsTrigger value="all">
                 All {counts?.total ? <span className="ml-2 inline-flex min-w-[18px] justify-center rounded-full bg-muted-gray/30 px-1 text-xs">{counts.total}</span> : null}
               </TabsTrigger>
@@ -280,6 +303,9 @@ const Notifications = () => {
               </TabsTrigger>
               <TabsTrigger value="submissions">
                 Submissions {counts?.submission_updates ? <span className="ml-2 inline-flex min-w-[18px] justify-center rounded-full bg-muted-gray/30 px-1 text-xs">{counts.submission_updates}</span> : null}
+              </TabsTrigger>
+              <TabsTrigger value="crm">
+                CRM {counts?.crm ? <span className="ml-2 inline-flex min-w-[18px] justify-center rounded-full bg-muted-gray/30 px-1 text-xs">{counts.crm}</span> : null}
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -300,6 +326,7 @@ const Notifications = () => {
                   <SelectItem value="messages">Messages</SelectItem>
                   <SelectItem value="requests">Requests</SelectItem>
                   <SelectItem value="submissions">Submissions</SelectItem>
+                  <SelectItem value="crm">CRM</SelectItem>
                 </SelectContent>
               </Select>
               <DropdownMenu>

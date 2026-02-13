@@ -3,7 +3,7 @@ Notifications API Routes
 """
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional
-from app.core.database import get_client
+from app.core.database import get_client, execute_single, execute_update
 from app.schemas.notifications import Notification, NotificationCreate, NotificationCounts
 
 router = APIRouter()
@@ -51,11 +51,19 @@ async def get_notification_counts(user_id: str):
         requests_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("is_read", False).eq("type", "connection_request").execute()
         submissions_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("is_read", False).eq("type", "submission_update").execute()
 
+        # CRM count — types prefixed with crm_
+        crm_row = execute_single(
+            "SELECT COUNT(*) as cnt FROM notifications WHERE user_id = :uid AND is_read = false AND type LIKE 'crm_%'",
+            {"uid": user_id},
+        )
+        crm_count = crm_row["cnt"] if crm_row else 0
+
         return {
             "total": total_response.count or 0,
             "messages": messages_response.count or 0,
             "connection_requests": requests_response.count or 0,
-            "submission_updates": submissions_response.count or 0
+            "submission_updates": submissions_response.count or 0,
+            "crm": crm_count,
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -97,6 +105,13 @@ async def mark_all_notifications_read(user_id: str, tab: str = "all"):
             query = query.eq("type", "connection_request")
         elif tab == "submissions":
             query = query.eq("type", "submission_update")
+        elif tab == "crm":
+            # CRM types use prefix — query builder doesn't support LIKE on update, use raw SQL
+            execute_update(
+                "UPDATE notifications SET is_read = true WHERE user_id = :uid AND is_read = false AND type LIKE 'crm_%'",
+                {"uid": user_id},
+            )
+            return {"message": "Marked all crm notifications as read"}
         # else tab == "all" or "unread" - no type filter
 
         query.execute()

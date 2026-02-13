@@ -4838,6 +4838,20 @@ async def create_training_resource(
             "pinned": payload.get("is_pinned", False),
         },
     )
+
+    try:
+        from app.services.crm_notifications import notify_crm_users
+        res_title = payload.get("title", "Untitled")
+        await notify_crm_users(
+            event_type="crm_training",
+            title=f"New training: {res_title}",
+            body=payload.get("description", "")[:200] if payload.get("description") else None,
+            related_id=result.get("id") if result else None,
+            exclude_profile_id=profile["id"],
+        )
+    except Exception:
+        pass
+
     return {"resource": result}
 
 
@@ -5091,6 +5105,19 @@ async def create_discussion_thread(
             "resource_id": payload.get("resource_id"),
         },
     )
+
+    try:
+        from app.services.crm_notifications import notify_crm_users
+        await notify_crm_users(
+            event_type="crm_discussion",
+            title=f"New thread: {title}",
+            body=content[:200] if content else None,
+            related_id=result.get("id") if result else None,
+            exclude_profile_id=profile["id"],
+        )
+    except Exception:
+        pass
+
     return {"thread": result}
 
 
@@ -5212,6 +5239,25 @@ async def create_discussion_reply(
             "content": content,
         },
     )
+
+    try:
+        from app.services.crm_notifications import notify_crm_users
+        thread_detail = execute_single(
+            "SELECT title FROM crm_discussion_threads WHERE id = :tid",
+            {"tid": thread_id},
+        )
+        thread_title = thread_detail["title"] if thread_detail else "a thread"
+        author_name = profile.get("full_name", "Someone")
+        await notify_crm_users(
+            event_type="crm_discussion",
+            title=f"{author_name} replied to: {thread_title}",
+            body=content[:200] if content else None,
+            related_id=thread_id,
+            exclude_profile_id=profile["id"],
+        )
+    except Exception:
+        pass
+
     return {"reply": result}
 
 

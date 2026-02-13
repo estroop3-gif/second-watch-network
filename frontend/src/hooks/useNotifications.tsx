@@ -20,6 +20,7 @@ type NotificationCounts = {
   messages: number;
   connection_requests: number;
   submission_updates: number;
+  crm: number;
 };
 
 export function useNotifications() {
@@ -40,7 +41,7 @@ export function useNotifications() {
     queryKey: ['notificationCounts', user?.id],
     enabled: !!user?.id,
     queryFn: async () => {
-      if (!user) return { total: 0, messages: 0, connection_requests: 0, submission_updates: 0 };
+      if (!user) return { total: 0, messages: 0, connection_requests: 0, submission_updates: 0, crm: 0 };
       const data = await api.getNotificationCounts(user.id);
       return data as NotificationCounts;
     },
@@ -75,7 +76,7 @@ export function useNotifications() {
     queryClient.invalidateQueries({ queryKey: ['notificationCounts', user.id] });
   };
 
-  const markAllAsRead = async (tab: 'all' | 'unread' | 'messages' | 'requests' | 'submissions' = 'all') => {
+  const markAllAsRead = async (tab: 'all' | 'unread' | 'messages' | 'requests' | 'submissions' | 'crm' = 'all') => {
     if (!user?.id) return;
     await api.markAllNotificationsRead(user.id, tab);
     queryClient.invalidateQueries({ queryKey: ['notifications', user.id] });

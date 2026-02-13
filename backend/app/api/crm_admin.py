@@ -372,7 +372,7 @@ async def assign_contact(
     """Assign a contact to a specific rep."""
     # Verify contact exists and get current assignment
     contact = execute_single(
-        "SELECT id, assigned_rep_id FROM crm_contacts WHERE id = :id",
+        "SELECT id, first_name, last_name, assigned_rep_id FROM crm_contacts WHERE id = :id",
         {"id": contact_id},
     )
     if not contact:
@@ -419,6 +419,19 @@ async def assign_contact(
                RETURNING id""",
             log_params,
         )
+
+    try:
+        from app.services.crm_notifications import notify_crm_users
+        contact_name = f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip() or "Unknown"
+        rep_name = rep.get("full_name", "a rep")
+        await notify_crm_users(
+            event_type="crm_contact",
+            title=f"Contact {contact_name} assigned to {rep_name}",
+            related_id=contact_id,
+            exclude_profile_id=profile["id"],
+        )
+    except Exception:
+        pass
 
     return result
 
@@ -725,6 +738,18 @@ async def create_goal(
         f"INSERT INTO crm_sales_goals ({columns}) VALUES ({placeholders}) RETURNING *",
         goal_data,
     )
+
+    try:
+        from app.services.crm_notifications import notify_crm_users
+        await notify_crm_users(
+            event_type="crm_goal",
+            title=f"New {data.period_type} goal: {data.goal_type} ({data.target_value})",
+            related_id=result.get("id") if result else None,
+            exclude_profile_id=profile["id"],
+        )
+    except Exception:
+        pass
+
     return result
 
 
@@ -1571,6 +1596,19 @@ async def send_campaign_now(
         """,
         {"id": campaign_id},
     )
+
+    try:
+        from app.services.crm_notifications import notify_crm_users
+        campaign_name = result.get("name", "Untitled") if result else "Untitled"
+        await notify_crm_users(
+            event_type="crm_campaign",
+            title=f"Campaign launched: {campaign_name}",
+            related_id=campaign_id,
+            exclude_profile_id=profile["id"],
+        )
+    except Exception:
+        pass
+
     return result
 
 
