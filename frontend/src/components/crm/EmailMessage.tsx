@@ -206,12 +206,12 @@ const EmailMessage = ({ message, defaultExpanded = true, onForward, onReply }: E
         </p>
       )}
 
-      <div className="prose prose-invert prose-sm max-w-none">
+      <div>
         {mainHtml ? (
           <>
             <div
               dangerouslySetInnerHTML={{ __html: mainHtml }}
-              className="text-bone-white/90 text-sm [&_a]:text-accent-yellow [&_img]:max-w-full"
+              className="prose prose-invert max-w-none text-bone-white/90 [&_a]:text-accent-yellow [&_img]:max-w-full [&_p]:mb-4 [&_p:last-child]:mb-0"
             />
             {quotedHtml && !showQuoted && (
               <button
@@ -226,7 +226,7 @@ const EmailMessage = ({ message, defaultExpanded = true, onForward, onReply }: E
               <div className="mt-2 border-l-2 border-muted-gray/30 pl-3">
                 <div
                   dangerouslySetInnerHTML={{ __html: quotedHtml }}
-                  className="text-bone-white/60 text-sm [&_a]:text-accent-yellow [&_img]:max-w-full"
+                  className="prose prose-invert max-w-none text-bone-white/60 [&_a]:text-accent-yellow [&_img]:max-w-full [&_p]:mb-4 [&_p:last-child]:mb-0"
                 />
                 <button
                   onClick={() => setShowQuoted(false)}
@@ -240,7 +240,7 @@ const EmailMessage = ({ message, defaultExpanded = true, onForward, onReply }: E
         ) : message.body_html ? (
           <div
             dangerouslySetInnerHTML={{ __html: message.body_html }}
-            className="text-bone-white/90 text-sm [&_a]:text-accent-yellow [&_img]:max-w-full"
+            className="prose prose-invert max-w-none text-bone-white/90 [&_a]:text-accent-yellow [&_img]:max-w-full [&_p]:mb-4 [&_p:last-child]:mb-0"
           />
         ) : (
           <pre className="text-bone-white/90 text-sm whitespace-pre-wrap font-sans">

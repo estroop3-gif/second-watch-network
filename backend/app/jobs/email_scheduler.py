@@ -92,11 +92,12 @@ async def process_scheduled_emails():
                     logger.info(f"Delivered scheduled email {msg['id']} internally to {to_email}")
                     continue
 
+                from app.api.crm import add_email_inline_styles
                 send_params = {
                     "from": f"{msg['display_name']} <{msg['email_address']}>",
                     "to": msg["to_addresses"],
                     "subject": msg["subject"],
-                    "html": body_html,
+                    "html": add_email_inline_styles(body_html),
                     "text": plain_text,
                     "reply_to": reply_to,
                 }
@@ -267,11 +268,12 @@ async def process_sequence_sends():
                 reply_to = [enrollment["rep_email"], f"reply+{thread_id}@theswn.com"]
 
                 # Send
+                from app.api.crm import add_email_inline_styles
                 send_params = {
                     "from": f"{enrollment['rep_name']} <{enrollment['rep_email']}>",
                     "to": [enrollment["contact_email"]],
                     "subject": subject,
-                    "html": body_html,
+                    "html": add_email_inline_styles(body_html),
                     "reply_to": reply_to,
                 }
 
@@ -498,11 +500,12 @@ async def process_campaign_sends():
                         body_html += tracking_pixel
 
                         # Send via Resend
+                        from app.api.crm import add_email_inline_styles as _style
                         send_params = {
                             "from": f"{sender['display_name']} <{sender['email_address']}>",
                             "to": [send["contact_email"]],
                             "subject": subject,
-                            "html": body_html,
+                            "html": _style(body_html),
                         }
                         if campaign.get("text_template"):
                             text_body = campaign["text_template"]
@@ -873,9 +876,10 @@ def start_email_scheduler():
         scheduler.add_job(process_sequence_sends, "interval", seconds=300, id="sequence_sends")
         scheduler.add_job(process_campaign_sends, "interval", seconds=120, id="campaign_sends")
         scheduler.add_job(process_notification_digests, "interval", seconds=900, id="notification_digests")
-        scheduler.add_job(process_internal_warmup, "interval", seconds=7200, id="internal_warmup")
+        # Internal warmup disabled — no longer needed
+        # scheduler.add_job(process_internal_warmup, "interval", seconds=7200, id="internal_warmup")
         scheduler.start()
-        logger.info("Email scheduler started with 6 jobs")
+        logger.info("Email scheduler started with 5 jobs")
         return scheduler
     except ImportError:
         logger.warning("APScheduler not installed — email scheduler disabled. Install with: pip install apscheduler")

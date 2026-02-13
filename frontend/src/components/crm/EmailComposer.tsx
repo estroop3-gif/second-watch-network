@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/popover';
 import { Send, Loader2, AlertTriangle, FileText, Paperclip, X, Clock, Sparkles, MoreHorizontal } from 'lucide-react';
 import { useSendEmail, useEmailTemplates, useUploadEmailAttachment, useAICompose } from '@/hooks/crm/useEmail';
+import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import RichTextEditor from './RichTextEditor';
 import EmailToAutocomplete from './EmailToAutocomplete';
@@ -64,6 +65,7 @@ const EmailComposer = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { toast } = useToast();
+  const { profile } = useAuth();
   const sendEmail = useSendEmail();
   const { data: templatesData } = useEmailTemplates();
   const uploadAttachment = useUploadEmailAttachment();
@@ -81,6 +83,11 @@ const EmailComposer = ({
       company: contactData?.company,
       email: contactData?.email || to,
       deal_name: contactData?.deal_name,
+      rep_name: profile?.full_name,
+      rep_email: profile?.email,
+      rep_phone: profile?.phone || '',
+      rep_title: 'Sales Representative',
+      company_name: 'Second Watch Network',
     };
 
     setSubject(interpolateVariables(template.subject, vars));

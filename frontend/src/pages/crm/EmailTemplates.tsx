@@ -19,7 +19,10 @@ import { useToast } from '@/hooks/use-toast';
 import RichTextEditor from '@/components/crm/RichTextEditor';
 
 const CATEGORIES = ['general', 'follow-up', 'introduction', 'proposal', 'closing', 'support'];
-const PLACEHOLDERS = ['{{first_name}}', '{{last_name}}', '{{company}}', '{{email}}', '{{deal_name}}'];
+const PLACEHOLDERS = [
+  '{{first_name}}', '{{last_name}}', '{{company}}', '{{email}}', '{{deal_name}}',
+  '{{rep_name}}', '{{rep_email}}', '{{rep_phone}}', '{{rep_title}}', '{{company_name}}',
+];
 
 const EmailTemplates = () => {
   const { hasAnyRole } = usePermissions();
@@ -310,7 +313,7 @@ const EmailTemplates = () => {
             <div>
               <Label className="text-muted-gray text-xs">Body</Label>
               <div
-                className="mt-2 p-4 rounded-lg border border-muted-gray/30 bg-white text-charcoal-black text-sm prose prose-sm max-w-none"
+                className="mt-2 p-4 rounded-lg border border-muted-gray/30 bg-white text-charcoal-black text-sm prose max-w-none [&_p]:mb-4 [&_p:last-child]:mb-0"
                 dangerouslySetInnerHTML={{ __html: previewTemplate?.body_html || '' }}
               />
             </div>
