@@ -103,7 +103,7 @@ async def get_rep_summary(
     # Profile info
     rep = execute_single(
         """
-        SELECT id, full_name, email, avatar_url,
+        SELECT id, full_name, email, avatar_url, display_name, phone, department, job_title,
                is_sales_agent, is_sales_rep, is_sales_admin, is_admin, is_superadmin
         FROM profiles WHERE id = :rid
         """,
@@ -131,7 +131,7 @@ async def get_rep_summary(
             COUNT(*) FILTER (WHERE stage NOT IN ('closed_won', 'closed_lost')) as open_deals,
             COUNT(*) FILTER (WHERE stage = 'closed_won') as won_deals,
             COUNT(*) FILTER (WHERE stage = 'closed_lost') as lost_deals,
-            COALESCE(SUM(value) FILTER (WHERE stage NOT IN ('closed_won', 'closed_lost')), 0) as pipeline_value
+            COALESCE(SUM(amount_cents) FILTER (WHERE stage NOT IN ('closed_won', 'closed_lost')), 0) / 100.0 as pipeline_value
         FROM crm_deals WHERE assigned_rep_id = :rid
         """,
         {"rid": rep_id},

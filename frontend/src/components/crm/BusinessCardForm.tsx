@@ -63,11 +63,12 @@ const BusinessCardForm = () => {
       setPersonalEmail(card.personal_email || '');
       setPersonalPhone(card.personal_phone || '');
       setPersonalWebsite(card.personal_website || '');
-      setInstagram(card.instagram || '');
-      setLinkedin(card.linkedin || '');
-      setTwitter(card.twitter || '');
-      if (card.logo_url) {
-        setLogoPreview(card.logo_url);
+      const social = card.personal_social_links || {};
+      setInstagram(social.instagram || '');
+      setLinkedin(social.linkedin || '');
+      setTwitter(social.twitter || '');
+      if (card.personal_logo_url) {
+        setLogoPreview(card.personal_logo_url);
       }
     }
   }, [card]);

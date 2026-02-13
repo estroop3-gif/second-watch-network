@@ -39,9 +39,10 @@ interface GoalDetailDialogProps {
   goal: any;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  isAdmin?: boolean;
 }
 
-const GoalDetailDialog = ({ goal, open, onOpenChange }: GoalDetailDialogProps) => {
+const GoalDetailDialog = ({ goal, open, onOpenChange, isAdmin = false }: GoalDetailDialogProps) => {
   const { toast } = useToast();
   const setOverride = useSetGoalOverride();
   const [overrideInput, setOverrideInput] = useState('');
@@ -168,40 +169,42 @@ const GoalDetailDialog = ({ goal, open, onOpenChange }: GoalDetailDialogProps) =
             </span>
           </div>
 
-          {/* Override controls */}
-          <div className="border-t border-muted-gray/20 pt-4">
-            <label className="text-sm text-muted-gray block mb-2">
-              Override Value {isRevenue ? '($)' : ''}
-            </label>
-            <div className="flex gap-2">
-              <Input
-                type="number"
-                step={isRevenue ? '0.01' : '1'}
-                value={overrideInput}
-                onChange={(e) => setOverrideInput(e.target.value)}
-                placeholder={isRevenue ? 'e.g. 500.00' : 'e.g. 50'}
-                className="bg-charcoal-black border-muted-gray text-bone-white flex-1"
-              />
-              <Button
-                onClick={handleSetOverride}
-                disabled={!overrideInput || setOverride.isPending}
-                className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
-              >
-                Set
-              </Button>
+          {/* Override controls — admin only */}
+          {isAdmin && (
+            <div className="border-t border-muted-gray/20 pt-4">
+              <label className="text-sm text-muted-gray block mb-2">
+                Override Value {isRevenue ? '($)' : ''}
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  type="number"
+                  step={isRevenue ? '0.01' : '1'}
+                  value={overrideInput}
+                  onChange={(e) => setOverrideInput(e.target.value)}
+                  placeholder={isRevenue ? 'e.g. 500.00' : 'e.g. 50'}
+                  className="bg-charcoal-black border-muted-gray text-bone-white flex-1"
+                />
+                <Button
+                  onClick={handleSetOverride}
+                  disabled={!overrideInput || setOverride.isPending}
+                  className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+                >
+                  Set
+                </Button>
+              </div>
+              {goal.is_overridden && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleClearOverride}
+                  disabled={setOverride.isPending}
+                  className="mt-2 text-muted-gray border-muted-gray/30 hover:text-bone-white"
+                >
+                  Clear Override
+                </Button>
+              )}
             </div>
-            {goal.is_overridden && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleClearOverride}
-                disabled={setOverride.isPending}
-                className="mt-2 text-muted-gray border-muted-gray/30 hover:text-bone-white"
-              >
-                Clear Override
-              </Button>
-            )}
-          </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>

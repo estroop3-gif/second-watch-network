@@ -1,22 +1,28 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
 import {
   ArrowLeft, Users, Briefcase, Activity, Phone, Mail,
   MessageSquare, Monitor, Target, Star, DollarSign, ChevronDown,
-  Calendar, Clock, FileText, ArrowRightLeft,
+  Calendar, Clock, FileText, ArrowRightLeft, Pencil, Loader2,
 } from 'lucide-react';
 import { useRepSummary, useCRMAdminInteractions } from '@/hooks/crm/useInteractions';
 import { useContacts, useActivities, useDeals } from '@/hooks/crm';
 import ContactAssignmentDialog from '@/components/crm/ContactAssignmentDialog';
 import { api } from '@/lib/api';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatDate, formatDateTime } from '@/lib/dateUtils';
 import { subDays } from 'date-fns';
 import { format } from 'date-fns';
+import { useToast } from '@/hooks/use-toast';
 
 type Tab = 'contacts' | 'deals' | 'activities' | 'interactions' | 'email' | 'goals' | 'reviews';
 
@@ -34,7 +40,10 @@ const PAGE_SIZE = 200;
 const RepDetail = () => {
   const { repId } = useParams<{ repId: string }>();
   const navigate = useNavigate();
+  const { toast } = useToast();
+  const qc = useQueryClient();
   const [activeTab, setActiveTab] = useState<Tab>('contacts');
+  const [showEditProfile, setShowEditProfile] = useState(false);
 
   // Pagination offsets per tab
   const [contactsOffset, setContactsOffset] = useState(0);
@@ -153,6 +162,16 @@ const RepDetail = () => {
             </div>
             <p className="text-sm text-muted-gray">{profile.email}</p>
           </div>
+        </div>
+        <div className="ml-auto">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowEditProfile(true)}
+            className="border-muted-gray/30 text-bone-white hover:bg-muted-gray/20"
+          >
+            <Pencil className="h-3.5 w-3.5 mr-1.5" />Edit Profile
+          </Button>
         </div>
       </div>
 
@@ -278,9 +297,149 @@ const RepDetail = () => {
           <ReviewsTab data={reviewsData} loading={reviewsLoading} />
         )}
       </div>
+
+      {/* Edit Profile Dialog */}
+      <EditProfileDialog
+        repId={repId!}
+        profile={profile}
+        open={showEditProfile}
+        onOpenChange={setShowEditProfile}
+        onSaved={() => {
+          qc.invalidateQueries({ queryKey: ['crm-rep-summary', repId] });
+          toast({ title: 'Profile updated' });
+        }}
+      />
     </div>
   );
 };
+
+// ============================================================================
+// Edit Profile Dialog
+// ============================================================================
+
+function EditProfileDialog({ repId, profile, open, onOpenChange, onSaved }: {
+  repId: string; profile: any; open: boolean; onOpenChange: (open: boolean) => void; onSaved: () => void;
+}) {
+  const [fullName, setFullName] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [department, setDepartment] = useState('');
+  const [jobTitle, setJobTitle] = useState('');
+
+  useEffect(() => {
+    if (profile && open) {
+      setFullName(profile.full_name || '');
+      setDisplayName(profile.display_name || '');
+      setPhone(profile.phone || '');
+      setDepartment(profile.department || '');
+      setJobTitle(profile.job_title || '');
+    }
+  }, [profile, open]);
+
+  const updateProfile = useMutation({
+    mutationFn: (data: any) => api.updateProfile(repId, data),
+    onSuccess: () => {
+      onSaved();
+      onOpenChange(false);
+    },
+  });
+
+  const handleSave = () => {
+    updateProfile.mutate({
+      full_name: fullName.trim(),
+      display_name: displayName.trim() || null,
+      phone: phone.trim() || null,
+      department: department.trim() || null,
+      job_title: jobTitle.trim() || null,
+    });
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="bg-charcoal-black border-muted-gray text-bone-white max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Pencil className="h-5 w-5 text-accent-yellow" />
+            Edit Profile
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <p className="text-xs text-muted-gray">
+            Edit rep profile details. Email and role changes are managed separately.
+          </p>
+
+          <div>
+            <Label className="text-muted-gray text-xs">Full Name</Label>
+            <Input
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              className="bg-charcoal-black border-muted-gray/30 text-bone-white"
+            />
+          </div>
+
+          <div>
+            <Label className="text-muted-gray text-xs">Display Name</Label>
+            <Input
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="Optional — overrides full name"
+              className="bg-charcoal-black border-muted-gray/30 text-bone-white"
+            />
+          </div>
+
+          <div>
+            <Label className="text-muted-gray text-xs">Phone</Label>
+            <Input
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="(555) 123-4567"
+              className="bg-charcoal-black border-muted-gray/30 text-bone-white"
+            />
+          </div>
+
+          <div>
+            <Label className="text-muted-gray text-xs">Department</Label>
+            <Input
+              value={department}
+              onChange={(e) => setDepartment(e.target.value)}
+              placeholder="e.g. Sales"
+              className="bg-charcoal-black border-muted-gray/30 text-bone-white"
+            />
+          </div>
+
+          <div>
+            <Label className="text-muted-gray text-xs">Job Title</Label>
+            <Input
+              value={jobTitle}
+              onChange={(e) => setJobTitle(e.target.value)}
+              placeholder="e.g. Sales Representative"
+              className="bg-charcoal-black border-muted-gray/30 text-bone-white"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              className="border-muted-gray/30 text-muted-gray"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSave}
+              disabled={!fullName.trim() || updateProfile.isPending}
+              className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+            >
+              {updateProfile.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+              Save Changes
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 // ============================================================================
 // Pagination Controls

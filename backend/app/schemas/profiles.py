@@ -23,6 +23,9 @@ class ProfileUpdate(ProfileBase):
     """Schema for profile updates - includes all editable fields"""
     display_name: Optional[str] = None
     location_visible: Optional[bool] = None
+    phone: Optional[str] = None
+    department: Optional[str] = None
+    job_title: Optional[str] = None
 
 
 class Profile(ProfileBase):

@@ -228,6 +228,7 @@ const Goals = () => {
         goal={selectedGoal}
         open={!!selectedGoal}
         onOpenChange={(open) => { if (!open) setSelectedGoal(null); }}
+        isAdmin={isAdmin}
       />
     </div>
   );

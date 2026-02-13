@@ -1613,8 +1613,10 @@ async def set_goal_override(
     data: GoalOverrideRequest,
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
 ):
-    """Set or clear a manual override on a goal's actual_value."""
+    """Set or clear a manual override on a goal's actual_value. Admin-only."""
     is_admin = has_permission(profile, Permission.CRM_MANAGE)
+    if not is_admin:
+        raise HTTPException(403, "Only admins can override goal values")
 
     existing = execute_single(
         "SELECT id, rep_id FROM crm_sales_goals WHERE id = :id",
@@ -1622,11 +1624,6 @@ async def set_goal_override(
     )
     if not existing:
         raise HTTPException(404, "Goal not found")
-
-    # Reps can override their own goals or team goals (rep_id IS NULL)
-    if not is_admin:
-        if existing["rep_id"] is not None and existing["rep_id"] != profile["id"]:
-            raise HTTPException(403, "Not authorized to override this goal")
 
     result = execute_single(
         """
@@ -2595,6 +2592,44 @@ def _route_email_internally(
         pass
 
 
+def _resolve_inline_images_for_send(html: str) -> str:
+    """Replace inline-image API URLs with 7-day presigned S3 URLs for outbound email delivery."""
+    import re
+    import boto3
+    from app.core.config import settings
+
+    # Match both absolute (https://api.example.com/api/v1/...) and relative (/api/v1/...) URLs
+    pattern = r'(?:https?://[^/]+)?/api/v1/crm/email/inline-image/([0-9a-f\-]{36})'
+    matches = re.findall(pattern, html)
+    if not matches:
+        return html
+
+    s3 = boto3.client("s3", region_name="us-east-1")
+    for att_id in set(matches):
+        att = execute_single(
+            "SELECT s3_key, s3_bucket, content_type FROM crm_email_attachments WHERE id = :id",
+            {"id": att_id},
+        )
+        if att and att.get("s3_key"):
+            bucket = att.get("s3_bucket") or settings.AWS_S3_BACKLOT_FILES_BUCKET
+            presigned = s3.generate_presigned_url(
+                "get_object",
+                Params={
+                    "Bucket": bucket,
+                    "Key": att["s3_key"],
+                    "ResponseContentType": att.get("content_type", "image/png"),
+                },
+                ExpiresIn=604800,  # 7 days
+            )
+            # Replace all forms of the URL (absolute and relative)
+            html = re.sub(
+                r'(?:https?://[^/]+)?/api/v1/crm/email/inline-image/' + re.escape(att_id),
+                presigned,
+                html,
+            )
+    return html
+
+
 def add_email_inline_styles(html: str) -> str:
     """Add inline styles to HTML tags for email client compatibility."""
     import re
@@ -2839,11 +2874,14 @@ async def send_crm_email(
         plain_text = re.sub(r'<[^>]+>', '', plain_text)
         plain_text = plain_text.strip()
 
+    # Replace inline-image API URLs with long-lived presigned URLs for outbound delivery
+    outbound_html = _resolve_inline_images_for_send(body_html)
+
     send_params = {
         "from": f"{account['display_name']} <{account['email_address']}>",
         "to": [data.to_email],
         "subject": data.subject,
-        "html": add_email_inline_styles(body_html),
+        "html": add_email_inline_styles(outbound_html),
         "text": plain_text,
         "reply_to": reply_to,
     }
@@ -3801,6 +3839,37 @@ async def get_attachment_download_url(
     return {"download_url": url, "filename": att["filename"]}
 
 
+@router.get("/email/inline-image/{attachment_id}")
+async def serve_inline_image(
+    attachment_id: str,
+):
+    """Serve an inline image via redirect to a fresh presigned S3 URL.
+    No auth required — attachment UUIDs are unguessable and this enables <img> tags."""
+    import boto3
+    from app.core.config import settings
+    from starlette.responses import RedirectResponse
+
+    att = execute_single(
+        "SELECT * FROM crm_email_attachments WHERE id = :id",
+        {"id": attachment_id},
+    )
+    if not att or not att.get("s3_key"):
+        raise HTTPException(404, "Image not found")
+
+    bucket = att.get("s3_bucket") or settings.AWS_S3_BACKLOT_FILES_BUCKET
+    s3 = boto3.client("s3", region_name="us-east-1")
+    url = s3.generate_presigned_url(
+        "get_object",
+        Params={
+            "Bucket": bucket,
+            "Key": att["s3_key"],
+            "ResponseContentType": att.get("content_type", "image/png"),
+        },
+        ExpiresIn=3600,
+    )
+    return RedirectResponse(url=url, status_code=302)
+
+
 # ============================================================================
 # CRM Email — Scheduled Sends
 # ============================================================================
@@ -4369,7 +4438,11 @@ async def create_or_update_business_card(
         "personal_email": payload.get("personal_email"),
         "personal_phone": payload.get("personal_phone"),
         "personal_website": payload.get("personal_website"),
-        "personal_social_links": json.dumps(payload.get("personal_social_links", {})),
+        "personal_social_links": json.dumps({
+            "instagram": payload.get("instagram", ""),
+            "linkedin": payload.get("linkedin", ""),
+            "twitter": payload.get("twitter", ""),
+        }),
     }
 
     if existing:
