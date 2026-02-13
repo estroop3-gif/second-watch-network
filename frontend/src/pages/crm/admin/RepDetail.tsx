@@ -1151,7 +1151,7 @@ function ReviewsTab({ data, loading }: { data: any; loading: boolean }) {
           <CardContent className="p-4">
             <div className="flex items-center justify-between mb-2">
               <Badge variant="outline" className="text-xs capitalize">{r.review_type?.replace(/_/g, ' ')}</Badge>
-              <span className="text-xs text-muted-gray">{r.review_date ? formatDate(r.review_date) : ''}</span>
+              <span className="text-xs text-muted-gray">{r.created_at ? formatDate(r.created_at) : ''}</span>
             </div>
             {r.rating != null && (
               <div className="flex gap-0.5 mb-2">
@@ -1160,7 +1160,7 @@ function ReviewsTab({ data, loading }: { data: any; loading: boolean }) {
                 ))}
               </div>
             )}
-            {r.notes && <p className="text-sm text-bone-white">{r.notes}</p>}
+            {r.body && <p className="text-sm text-bone-white">{r.body}</p>}
             {r.reviewer_name && <p className="text-xs text-muted-gray mt-2">By {r.reviewer_name}</p>}
           </CardContent>
         </Card>

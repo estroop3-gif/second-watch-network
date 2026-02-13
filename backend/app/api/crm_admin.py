@@ -188,7 +188,7 @@ async def get_rep_summary(
     review_count = execute_single(
         """
         SELECT COUNT(*) as recent_reviews
-        FROM crm_rep_reviews WHERE rep_id = :rid AND review_date >= CURRENT_DATE - INTERVAL '90 days'
+        FROM crm_rep_reviews WHERE rep_id = :rid AND created_at >= CURRENT_DATE - INTERVAL '90 days'
         """,
         {"rid": rep_id},
     )
