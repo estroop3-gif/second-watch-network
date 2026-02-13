@@ -2023,7 +2023,7 @@ async def get_rep_email_messages(
     messages = execute_query(
         f"""
         SELECT m.id, m.direction, m.from_address, m.to_addresses, m.subject,
-               m.body_text, m.created_at, m.status, m.source_type,
+               m.body_text, m.body_html, m.created_at, m.status, m.source_type,
                t.id as thread_id, t.contact_email, t.contact_id,
                c.first_name as contact_first_name, c.last_name as contact_last_name
         FROM crm_email_messages m

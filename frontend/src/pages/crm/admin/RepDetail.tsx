@@ -813,9 +813,19 @@ function InteractionsTab({ interactions, history, loading }: {
 function EmailTab({ data, loading, offset, onLoadMore, onLoadPrev }: {
   data: any; loading: boolean; offset: number; onLoadMore: () => void; onLoadPrev: () => void;
 }) {
+  const [selectedEmail, setSelectedEmail] = useState<any>(null);
+
   if (loading) return <TabSkeleton />;
   const messages = data?.messages || [];
   if (messages.length === 0 && offset === 0) return <EmptyTab message="No emails in the last year" />;
+
+  const toAddr = (m: any) => {
+    if (m.to_addresses) {
+      return Array.isArray(m.to_addresses) ? m.to_addresses.join(', ') : m.to_addresses;
+    }
+    return m.to_address || '';
+  };
+
   return (
     <div className="space-y-2">
       <div className="rounded border border-muted-gray/30 overflow-x-auto">
@@ -833,7 +843,11 @@ function EmailTab({ data, loading, offset, onLoadMore, onLoadPrev }: {
           </thead>
           <tbody className="divide-y divide-muted-gray/20">
             {messages.map((m: any) => (
-              <tr key={m.id} className="hover:bg-muted-gray/10">
+              <tr
+                key={m.id}
+                className="hover:bg-muted-gray/10 cursor-pointer"
+                onClick={() => setSelectedEmail(m)}
+              >
                 <td className="px-4 py-2 text-muted-gray whitespace-nowrap">
                   {formatDateTime(m.created_at, 'MMM d, h:mm a')}
                 </td>
@@ -844,10 +858,10 @@ function EmailTab({ data, loading, offset, onLoadMore, onLoadPrev }: {
                 </td>
                 <td className="px-4 py-2 text-bone-white truncate max-w-[250px]">{m.subject || '(no subject)'}</td>
                 <td className="px-4 py-2 text-muted-gray truncate max-w-[200px]">
-                  {m.direction === 'outbound' ? m.to_address : m.from_address}
+                  {m.direction === 'outbound' ? toAddr(m) : m.from_address}
                 </td>
                 <td className="px-4 py-2 text-muted-gray whitespace-nowrap">
-                  {m.contact_name || '—'}
+                  {m.contact_first_name ? `${m.contact_first_name} ${m.contact_last_name || ''}`.trim() : '—'}
                 </td>
                 <td className="px-4 py-2">
                   {m.status ? (
@@ -863,6 +877,57 @@ function EmailTab({ data, loading, offset, onLoadMore, onLoadPrev }: {
         </table>
       </div>
       <PaginationControls offset={offset} count={messages.length} pageSize={PAGE_SIZE} onLoadMore={onLoadMore} onLoadPrev={onLoadPrev} />
+
+      {/* Email Detail Dialog */}
+      <Dialog open={!!selectedEmail} onOpenChange={(open) => { if (!open) setSelectedEmail(null); }}>
+        <DialogContent className="bg-charcoal-black border-muted-gray text-bone-white max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-lg">{selectedEmail?.subject || '(no subject)'}</DialogTitle>
+          </DialogHeader>
+          {selectedEmail && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+                <span className="text-muted-gray">From:</span>
+                <span className="text-bone-white">{selectedEmail.from_address}</span>
+                <span className="text-muted-gray">To:</span>
+                <span className="text-bone-white">{toAddr(selectedEmail)}</span>
+                <span className="text-muted-gray">Date:</span>
+                <span className="text-bone-white">{formatDateTime(selectedEmail.created_at, 'MMM d, yyyy h:mm a')}</span>
+                <span className="text-muted-gray">Direction:</span>
+                <span>
+                  <Badge variant={selectedEmail.direction === 'outbound' ? 'default' : 'secondary'} className="text-xs">
+                    {selectedEmail.direction === 'outbound' ? 'Sent' : 'Received'}
+                  </Badge>
+                </span>
+                {selectedEmail.contact_first_name && (
+                  <>
+                    <span className="text-muted-gray">Contact:</span>
+                    <span className="text-bone-white">{`${selectedEmail.contact_first_name} ${selectedEmail.contact_last_name || ''}`.trim()}</span>
+                  </>
+                )}
+                {selectedEmail.status && (
+                  <>
+                    <span className="text-muted-gray">Status:</span>
+                    <span><Badge variant="outline" className="text-xs capitalize">{selectedEmail.status}</Badge></span>
+                  </>
+                )}
+              </div>
+              <div className="border-t border-muted-gray/30 pt-4">
+                {selectedEmail.body_html ? (
+                  <div
+                    className="prose prose-invert prose-sm max-w-none [&_a]:text-accent-yellow [&_img]:max-w-full"
+                    dangerouslySetInnerHTML={{ __html: selectedEmail.body_html }}
+                  />
+                ) : selectedEmail.body_text ? (
+                  <pre className="text-sm text-bone-white whitespace-pre-wrap font-sans">{selectedEmail.body_text}</pre>
+                ) : (
+                  <p className="text-muted-gray italic">No content</p>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
