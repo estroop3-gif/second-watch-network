@@ -4410,10 +4410,25 @@ async def get_my_business_card(
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
 ):
     """Get the current user's business card."""
+    from app.core.storage import storage_client
+
     row = execute_single(
         "SELECT * FROM crm_business_cards WHERE profile_id = :pid ORDER BY created_at DESC LIMIT 1",
         {"pid": profile["id"]},
     )
+    if row and row.get("personal_logo_url"):
+        logo_val = row["personal_logo_url"]
+        row = dict(row)
+        # Resolve to presigned URL — handle both S3 keys and old full URLs
+        if logo_val.startswith("http"):
+            # Old format: extract S3 key from full URL
+            # e.g. https://bucket.s3.region.amazonaws.com/business-cards/logos/...
+            parts = logo_val.split(".amazonaws.com/", 1)
+            logo_key = parts[1] if len(parts) > 1 else logo_val
+        else:
+            logo_key = logo_val
+        signed = storage_client.from_("avatars").create_signed_url(logo_key, 3600)
+        row["personal_logo_url"] = signed.get("signedUrl", "")
     return {"card": row}
 
 
@@ -4501,17 +4516,19 @@ async def upload_business_card_logo(
         file_obj,
         {"content_type": file.content_type},
     )
-    logo_url = storage_client.from_("avatars").get_public_url(unique_filename)
 
-    # Update the card
+    # Store the S3 key (not a public URL — bucket is private)
     execute_update(
         """
-        UPDATE crm_business_cards SET personal_logo_url = :url, updated_at = NOW()
+        UPDATE crm_business_cards SET personal_logo_url = :key, updated_at = NOW()
         WHERE profile_id = :pid AND status IN ('draft', 'rejected')
         """,
-        {"url": logo_url, "pid": profile["id"]},
+        {"key": unique_filename, "pid": profile["id"]},
     )
-    return {"success": True, "logo_url": logo_url}
+
+    # Return a presigned URL for immediate display
+    signed = storage_client.from_("avatars").create_signed_url(unique_filename, 3600)
+    return {"success": True, "logo_url": signed.get("signedUrl", "")}
 
 
 @router.put("/business-card/submit")
