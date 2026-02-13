@@ -86,7 +86,6 @@ async def list_sales_reps(
         FROM profiles p
         LEFT JOIN crm_interaction_counts ic ON ic.rep_id = p.id AND ic.count_date = CURRENT_DATE
         WHERE p.is_sales_agent = true OR p.is_sales_rep = true OR p.is_sales_admin = true
-            OR p.is_admin = true OR p.is_superadmin = true
         ORDER BY p.full_name ASC
         """,
         {},
