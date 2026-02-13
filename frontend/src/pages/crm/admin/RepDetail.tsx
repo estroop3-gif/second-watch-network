@@ -896,30 +896,43 @@ function GoalsTab({ data, loading, repId }: { data: any; loading: boolean; repId
   const [targetValue, setTargetValue] = useState('');
   const [periodStart, setPeriodStart] = useState('');
   const [periodEnd, setPeriodEnd] = useState('');
+  const [isRecurring, setIsRecurring] = useState(false);
 
   // Inline edit state
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
 
+  // Full edit dialog state
+  const [editGoal, setEditGoal] = useState<any>(null);
+  const [editGoalType, setEditGoalType] = useState('');
+  const [editPeriodType, setEditPeriodType] = useState('');
+  const [editTargetValue, setEditTargetValue] = useState('');
+  const [editIsRecurring, setEditIsRecurring] = useState(false);
+
   const handleCreateGoal = async () => {
-    if (!targetValue || !periodStart || !periodEnd) return;
+    if (!targetValue || (!isRecurring && (!periodStart || !periodEnd))) return;
     try {
       const target = goalType === 'revenue'
         ? Math.round(parseFloat(targetValue) * 100)
         : parseInt(targetValue);
-      await createGoal.mutateAsync({
+      const payload: any = {
         goal_type: goalType,
         period_type: periodType,
         target_value: target,
-        period_start: periodStart,
-        period_end: periodEnd,
         rep_id: repId,
-      });
+        is_recurring: isRecurring,
+      };
+      if (!isRecurring) {
+        payload.period_start = periodStart;
+        payload.period_end = periodEnd;
+      }
+      await createGoal.mutateAsync(payload);
       toast({ title: 'Goal created' });
       setShowCreate(false);
       setTargetValue('');
       setPeriodStart('');
       setPeriodEnd('');
+      setIsRecurring(false);
     } catch (err: any) {
       toast({ title: 'Error', description: err.message, variant: 'destructive' });
     }
@@ -944,6 +957,36 @@ function GoalsTab({ data, loading, repId }: { data: any; loading: boolean; repId
       await updateGoal.mutateAsync({ id: goalId, data: { target_value: val } });
       toast({ title: 'Target updated' });
       setEditingId(null);
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const openEditGoal = (g: any) => {
+    setEditGoal(g);
+    setEditGoalType(g.goal_type);
+    setEditPeriodType(g.period_type);
+    setEditTargetValue(String(g.goal_type === 'revenue' ? g.target_value / 100 : g.target_value));
+    setEditIsRecurring(!!g.is_recurring);
+  };
+
+  const handleSaveEditGoal = async () => {
+    if (!editGoal || !editTargetValue) return;
+    try {
+      const target = editGoalType === 'revenue'
+        ? Math.round(parseFloat(editTargetValue) * 100)
+        : parseInt(editTargetValue);
+      await updateGoal.mutateAsync({
+        id: editGoal.id,
+        data: {
+          target_value: target,
+          goal_type: editGoalType,
+          period_type: editPeriodType,
+          is_recurring: editIsRecurring,
+        },
+      });
+      toast({ title: 'Goal updated' });
+      setEditGoal(null);
     } catch (err: any) {
       toast({ title: 'Error', description: err.message, variant: 'destructive' });
     }
@@ -987,7 +1030,16 @@ function GoalsTab({ data, loading, repId }: { data: any; loading: boolean; repId
                 const isEditing = editingId === g.id;
                 return (
                   <tr key={g.id} className="hover:bg-muted-gray/10 group">
-                    <td className="px-4 py-2 text-bone-white capitalize">{g.goal_type?.replace(/_/g, ' ')}</td>
+                    <td className="px-4 py-2 text-bone-white capitalize">
+                      <button onClick={() => openEditGoal(g)} className="hover:text-accent-yellow transition-colors" title="Click to edit goal">
+                        {g.goal_type?.replace(/_/g, ' ')}
+                        {g.is_recurring && (
+                          <Badge variant="outline" className="ml-2 text-[10px] px-1.5 py-0 text-accent-yellow border-accent-yellow/40">
+                            <RefreshCw className="h-2.5 w-2.5 mr-0.5" />Recurring
+                          </Badge>
+                        )}
+                      </button>
+                    </td>
                     <td className="px-4 py-2 text-muted-gray">{g.period_start} — {g.period_end}</td>
                     <td className="px-4 py-2">
                       {isEditing ? (
@@ -1103,34 +1155,122 @@ function GoalsTab({ data, loading, repId }: { data: any; loading: boolean; repId
                 className="bg-charcoal-black border-muted-gray text-bone-white"
               />
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-sm text-muted-gray block mb-2">Start Date</label>
-                <Input
-                  type="date"
-                  value={periodStart}
-                  onChange={(e) => setPeriodStart(e.target.value)}
-                  className="bg-charcoal-black border-muted-gray text-bone-white"
-                />
-              </div>
-              <div>
-                <label className="text-sm text-muted-gray block mb-2">End Date</label>
-                <Input
-                  type="date"
-                  value={periodEnd}
-                  onChange={(e) => setPeriodEnd(e.target.value)}
-                  className="bg-charcoal-black border-muted-gray text-bone-white"
-                />
-              </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="recurring-create"
+                checked={isRecurring}
+                onChange={(e) => setIsRecurring(e.target.checked)}
+                className="rounded border-muted-gray accent-accent-yellow"
+              />
+              <label htmlFor="recurring-create" className="text-sm text-muted-gray flex items-center gap-1.5">
+                <RefreshCw className="h-3.5 w-3.5" />Recurring (auto-repeats each period)
+              </label>
             </div>
+            {!isRecurring && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm text-muted-gray block mb-2">Start Date</label>
+                  <Input
+                    type="date"
+                    value={periodStart}
+                    onChange={(e) => setPeriodStart(e.target.value)}
+                    className="bg-charcoal-black border-muted-gray text-bone-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-muted-gray block mb-2">End Date</label>
+                  <Input
+                    type="date"
+                    value={periodEnd}
+                    onChange={(e) => setPeriodEnd(e.target.value)}
+                    className="bg-charcoal-black border-muted-gray text-bone-white"
+                  />
+                </div>
+              </div>
+            )}
+            {isRecurring && (
+              <p className="text-xs text-muted-gray">Dates auto-computed from period type. Goal will auto-renew when the period ends.</p>
+            )}
             <div className="flex justify-end gap-3 pt-2">
               <Button variant="outline" onClick={() => setShowCreate(false)}>Cancel</Button>
               <Button
                 onClick={handleCreateGoal}
-                disabled={!targetValue || !periodStart || !periodEnd || createGoal.isPending}
+                disabled={!targetValue || (!isRecurring && (!periodStart || !periodEnd)) || createGoal.isPending}
                 className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
               >
                 {createGoal.isPending ? 'Creating...' : 'Create Goal'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Goal Dialog */}
+      <Dialog open={!!editGoal} onOpenChange={(open) => { if (!open) setEditGoal(null); }}>
+        <DialogContent className="bg-charcoal-black border-muted-gray text-bone-white max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Goal</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <label className="text-sm text-muted-gray block mb-2">Goal Type</label>
+              <Select value={editGoalType} onValueChange={setEditGoalType}>
+                <SelectTrigger className="bg-charcoal-black border-muted-gray text-bone-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {GOAL_TYPES.map((g) => (
+                    <SelectItem key={g.value} value={g.value}>{g.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-sm text-muted-gray block mb-2">Period</label>
+              <Select value={editPeriodType} onValueChange={setEditPeriodType}>
+                <SelectTrigger className="bg-charcoal-black border-muted-gray text-bone-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PERIOD_TYPES.map((p) => (
+                    <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-sm text-muted-gray block mb-2">
+                Target {editGoalType === 'revenue' ? '($)' : ''}
+              </label>
+              <Input
+                type="number"
+                step={editGoalType === 'revenue' ? '0.01' : '1'}
+                value={editTargetValue}
+                onChange={(e) => setEditTargetValue(e.target.value)}
+                className="bg-charcoal-black border-muted-gray text-bone-white"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="recurring-edit"
+                checked={editIsRecurring}
+                onChange={(e) => setEditIsRecurring(e.target.checked)}
+                className="rounded border-muted-gray accent-accent-yellow"
+              />
+              <label htmlFor="recurring-edit" className="text-sm text-muted-gray flex items-center gap-1.5">
+                <RefreshCw className="h-3.5 w-3.5" />Recurring (auto-repeats each period)
+              </label>
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <Button variant="outline" onClick={() => setEditGoal(null)}>Cancel</Button>
+              <Button
+                onClick={handleSaveEditGoal}
+                disabled={!editTargetValue || updateGoal.isPending}
+                className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+              >
+                {updateGoal.isPending ? 'Saving...' : 'Save Changes'}
               </Button>
             </div>
           </div>

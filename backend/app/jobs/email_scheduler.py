@@ -865,6 +865,77 @@ async def process_internal_warmup():
         logger.error(f"process_internal_warmup error: {e}")
 
 
+async def process_recurring_goals():
+    """Auto-create next period goals for expired recurring goals. Runs daily."""
+    try:
+        import calendar
+        from datetime import date, timedelta
+
+        expired = execute_query(
+            """
+            SELECT * FROM crm_sales_goals
+            WHERE is_recurring = true AND period_end < CURRENT_DATE
+            """,
+            {},
+        )
+        if not expired:
+            return
+
+        for goal in expired:
+            old_end = date.fromisoformat(str(goal["period_end"]))
+            new_start = old_end + timedelta(days=1)
+            period_type = goal["period_type"]
+
+            if period_type == "daily":
+                new_end = new_start
+            elif period_type == "weekly":
+                new_end = new_start + timedelta(days=6)
+            elif period_type == "monthly":
+                last_day = calendar.monthrange(new_start.year, new_start.month)[1]
+                new_end = new_start.replace(day=last_day)
+            elif period_type == "quarterly":
+                q_month = ((new_start.month - 1) // 3) * 3 + 1
+                q_end_month = q_month + 2
+                q_end_day = calendar.monthrange(new_start.year, q_end_month)[1]
+                new_end = new_start.replace(month=q_end_month, day=q_end_day)
+            else:
+                new_end = new_start + timedelta(days=6)
+
+            # Create next period goal
+            insert_data = {
+                "goal_type": goal["goal_type"],
+                "period_type": period_type,
+                "period_start": new_start.isoformat(),
+                "period_end": new_end.isoformat(),
+                "target_value": goal["target_value"],
+                "actual_value": 0,
+                "is_recurring": True,
+                "set_by": goal["set_by"],
+            }
+            if goal.get("rep_id"):
+                insert_data["rep_id"] = goal["rep_id"]
+
+            columns = ", ".join(insert_data.keys())
+            placeholders = ", ".join(f":{k}" for k in insert_data.keys())
+            execute_insert(
+                f"INSERT INTO crm_sales_goals ({columns}) VALUES ({placeholders}) RETURNING id",
+                insert_data,
+            )
+
+            # Mark old goal as no longer recurring
+            execute_single(
+                "UPDATE crm_sales_goals SET is_recurring = false, updated_at = NOW() WHERE id = :id RETURNING id",
+                {"id": goal["id"]},
+            )
+
+            logger.info(f"Recurring goal: created next {period_type} goal for rep {goal.get('rep_id', 'team')} ({goal['goal_type']})")
+
+        logger.info(f"process_recurring_goals: processed {len(expired)} expired recurring goals")
+
+    except Exception as e:
+        logger.error(f"process_recurring_goals error: {e}")
+
+
 def start_email_scheduler():
     """Initialize and start the APScheduler for email jobs."""
     try:
@@ -876,10 +947,11 @@ def start_email_scheduler():
         scheduler.add_job(process_sequence_sends, "interval", seconds=300, id="sequence_sends")
         scheduler.add_job(process_campaign_sends, "interval", seconds=120, id="campaign_sends")
         scheduler.add_job(process_notification_digests, "interval", seconds=900, id="notification_digests")
+        scheduler.add_job(process_recurring_goals, "interval", seconds=86400, id="recurring_goals")
         # Internal warmup disabled — no longer needed
         # scheduler.add_job(process_internal_warmup, "interval", seconds=7200, id="internal_warmup")
         scheduler.start()
-        logger.info("Email scheduler started with 5 jobs")
+        logger.info("Email scheduler started with 6 jobs")
         return scheduler
     except ImportError:
         logger.warning("APScheduler not installed — email scheduler disabled. Install with: pip install apscheduler")

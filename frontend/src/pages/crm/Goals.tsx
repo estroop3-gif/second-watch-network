@@ -13,7 +13,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { Plus, Target } from 'lucide-react';
+import { Plus, Target, RefreshCw } from 'lucide-react';
 
 const GOAL_TYPES = [
   { value: 'revenue', label: 'Revenue ($)' },
@@ -45,6 +45,7 @@ const Goals = () => {
   const [targetValue, setTargetValue] = useState('');
   const [periodStart, setPeriodStart] = useState('');
   const [periodEnd, setPeriodEnd] = useState('');
+  const [isRecurring, setIsRecurring] = useState(false);
 
   const { data, isLoading } = useMyGoals(periodFilter !== 'all' ? { period_type: periodFilter } : undefined);
   const createGoal = useCreateGoal();
@@ -54,23 +55,28 @@ const Goals = () => {
   const activeGoals = goals.filter((g: any) => new Date(g.period_end) >= new Date());
 
   const handleCreateGoal = async () => {
-    if (!targetValue || !periodStart || !periodEnd) return;
+    if (!targetValue || (!isRecurring && (!periodStart || !periodEnd))) return;
     try {
       const target = goalType === 'revenue'
         ? Math.round(parseFloat(targetValue) * 100)
         : parseInt(targetValue);
-      await createGoal.mutateAsync({
+      const payload: any = {
         goal_type: goalType,
         period_type: periodType,
         target_value: target,
-        period_start: periodStart,
-        period_end: periodEnd,
-      });
+        is_recurring: isRecurring,
+      };
+      if (!isRecurring) {
+        payload.period_start = periodStart;
+        payload.period_end = periodEnd;
+      }
+      await createGoal.mutateAsync(payload);
       toast({ title: 'Goal created' });
       setShowCreate(false);
       setTargetValue('');
       setPeriodStart('');
       setPeriodEnd('');
+      setIsRecurring(false);
     } catch (err: any) {
       toast({ title: 'Error', description: err.message, variant: 'destructive' });
     }
@@ -190,31 +196,48 @@ const Goals = () => {
                 className="bg-charcoal-black border-muted-gray text-bone-white"
               />
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-sm text-muted-gray block mb-2">Start Date</label>
-                <Input
-                  type="date"
-                  value={periodStart}
-                  onChange={(e) => setPeriodStart(e.target.value)}
-                  className="bg-charcoal-black border-muted-gray text-bone-white"
-                />
-              </div>
-              <div>
-                <label className="text-sm text-muted-gray block mb-2">End Date</label>
-                <Input
-                  type="date"
-                  value={periodEnd}
-                  onChange={(e) => setPeriodEnd(e.target.value)}
-                  className="bg-charcoal-black border-muted-gray text-bone-white"
-                />
-              </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="recurring-goals-create"
+                checked={isRecurring}
+                onChange={(e) => setIsRecurring(e.target.checked)}
+                className="rounded border-muted-gray accent-accent-yellow"
+              />
+              <label htmlFor="recurring-goals-create" className="text-sm text-muted-gray flex items-center gap-1.5">
+                <RefreshCw className="h-3.5 w-3.5" />Recurring (auto-repeats each period)
+              </label>
             </div>
+            {!isRecurring && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm text-muted-gray block mb-2">Start Date</label>
+                  <Input
+                    type="date"
+                    value={periodStart}
+                    onChange={(e) => setPeriodStart(e.target.value)}
+                    className="bg-charcoal-black border-muted-gray text-bone-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-muted-gray block mb-2">End Date</label>
+                  <Input
+                    type="date"
+                    value={periodEnd}
+                    onChange={(e) => setPeriodEnd(e.target.value)}
+                    className="bg-charcoal-black border-muted-gray text-bone-white"
+                  />
+                </div>
+              </div>
+            )}
+            {isRecurring && (
+              <p className="text-xs text-muted-gray">Dates auto-computed from period type. Goal will auto-renew when the period ends.</p>
+            )}
             <div className="flex justify-end gap-3 pt-2">
               <Button variant="outline" onClick={() => setShowCreate(false)}>Cancel</Button>
               <Button
                 onClick={handleCreateGoal}
-                disabled={!targetValue || !periodStart || !periodEnd || createGoal.isPending}
+                disabled={!targetValue || (!isRecurring && (!periodStart || !periodEnd)) || createGoal.isPending}
                 className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
               >
                 {createGoal.isPending ? 'Creating...' : 'Create Goal'}

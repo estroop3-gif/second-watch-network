@@ -48,9 +48,10 @@ class GoalCreate(BaseModel):
     rep_id: Optional[str] = None  # NULL = team-wide
     goal_type: str
     period_type: str = "monthly"
-    period_start: str
-    period_end: str
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
     target_value: int
+    is_recurring: Optional[bool] = False
 
 
 class GoalUpdate(BaseModel):
@@ -58,6 +59,9 @@ class GoalUpdate(BaseModel):
     actual_value: Optional[int] = None
     period_end: Optional[str] = None
     manual_override: Optional[int] = None
+    is_recurring: Optional[bool] = None
+    goal_type: Optional[str] = None
+    period_type: Optional[str] = None
 
 
 # ============================================================================
@@ -635,7 +639,7 @@ async def list_goals(
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
 ):
     """List sales goals, optionally filtered by rep."""
-    conditions = ["g.period_end >= CURRENT_DATE"]
+    conditions = ["(g.period_end >= CURRENT_DATE OR g.is_recurring = true)"]
     params: Dict[str, Any] = {}
     if rep_id:
         conditions.append("(g.rep_id = :rep_id OR g.rep_id IS NULL)")
@@ -660,6 +664,9 @@ async def create_goal(
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
 ):
     """Create a sales goal for a rep or team."""
+    from datetime import date, timedelta
+    import calendar
+
     valid_types = {"revenue", "deals_closed", "calls_made", "emails_sent", "meetings_held", "demos_given", "new_contacts"}
     if data.goal_type not in valid_types:
         raise HTTPException(400, f"Invalid goal type. Must be one of: {', '.join(valid_types)}")
@@ -668,14 +675,44 @@ async def create_goal(
     if data.period_type not in valid_periods:
         raise HTTPException(400, f"Invalid period type. Must be one of: {', '.join(valid_periods)}")
 
+    # Auto-compute dates for recurring goals if not provided
+    period_start = data.period_start
+    period_end = data.period_end
+    if data.is_recurring and (not period_start or not period_end):
+        today = date.today()
+        if data.period_type == "daily":
+            period_start = today.isoformat()
+            period_end = today.isoformat()
+        elif data.period_type == "weekly":
+            monday = today - timedelta(days=today.weekday())
+            sunday = monday + timedelta(days=6)
+            period_start = monday.isoformat()
+            period_end = sunday.isoformat()
+        elif data.period_type == "monthly":
+            first = today.replace(day=1)
+            last_day = calendar.monthrange(today.year, today.month)[1]
+            period_start = first.isoformat()
+            period_end = today.replace(day=last_day).isoformat()
+        elif data.period_type == "quarterly":
+            q_month = ((today.month - 1) // 3) * 3 + 1
+            q_start = today.replace(month=q_month, day=1)
+            q_end_month = q_month + 2
+            q_end_day = calendar.monthrange(today.year, q_end_month)[1]
+            period_start = q_start.isoformat()
+            period_end = today.replace(month=q_end_month, day=q_end_day).isoformat()
+
+    if not period_start or not period_end:
+        raise HTTPException(400, "period_start and period_end are required for non-recurring goals")
+
     goal_data = {
         "goal_type": data.goal_type,
         "period_type": data.period_type,
-        "period_start": data.period_start,
-        "period_end": data.period_end,
+        "period_start": period_start,
+        "period_end": period_end,
         "target_value": data.target_value,
         "actual_value": 0,
         "set_by": profile["id"],
+        "is_recurring": data.is_recurring or False,
     }
 
     if data.rep_id:
