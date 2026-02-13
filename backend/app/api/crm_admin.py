@@ -160,7 +160,7 @@ async def get_rep_summary(
         {"rid": rep_id},
     )
 
-    # Email stats (last 30d)
+    # Email stats (last 30d) — exclude internal + warmup
     email_stats = execute_single(
         """
         SELECT
@@ -170,6 +170,7 @@ async def get_rep_summary(
         JOIN crm_email_threads t ON t.id = m.thread_id
         JOIN crm_email_accounts a ON a.id = t.account_id
         WHERE a.profile_id = :rid AND m.created_at >= CURRENT_DATE - INTERVAL '30 days'
+              AND COALESCE(m.source_type, 'manual') NOT IN ('internal', 'warmup')
         """,
         {"rid": rep_id},
     )
@@ -1877,6 +1878,7 @@ async def get_email_analytics(
         FROM crm_email_messages m
         WHERE m.created_at >= NOW() - (:days || ' days')::interval
               AND m.status NOT IN ('scheduled', 'cancelled')
+              AND COALESCE(m.source_type, 'manual') NOT IN ('internal', 'warmup')
         GROUP BY DATE(m.created_at)
         ORDER BY date ASC
         """,
@@ -1896,6 +1898,7 @@ async def get_email_analytics(
         JOIN crm_email_accounts a ON a.id = t.account_id
         WHERE m.created_at >= NOW() - (:days || ' days')::interval
               AND m.status NOT IN ('scheduled', 'cancelled')
+              AND COALESCE(m.source_type, 'manual') NOT IN ('internal', 'warmup')
         GROUP BY a.display_name, a.profile_id, a.avatar_url
         ORDER BY sent DESC
         """,
@@ -1912,6 +1915,7 @@ async def get_email_analytics(
         FROM crm_email_messages m
         WHERE m.created_at >= NOW() - (:days || ' days')::interval
               AND m.status NOT IN ('scheduled', 'cancelled')
+              AND COALESCE(m.source_type, 'manual') NOT IN ('internal', 'warmup')
         """,
         {"days": days},
     )
@@ -1924,12 +1928,14 @@ async def get_email_analytics(
             SELECT EXTRACT(EPOCH FROM (
                 (SELECT MIN(m2.created_at) FROM crm_email_messages m2
                  WHERE m2.thread_id = m.thread_id AND m2.direction = 'outbound'
-                 AND m2.created_at > m.created_at)
+                 AND m2.created_at > m.created_at
+                 AND COALESCE(m2.source_type, 'manual') NOT IN ('internal', 'warmup'))
                 - m.created_at
             )) as response_seconds
             FROM crm_email_messages m
             WHERE m.direction = 'inbound'
                   AND m.created_at >= NOW() - (:days || ' days')::interval
+                  AND COALESCE(m.source_type, 'manual') NOT IN ('internal', 'warmup')
         ) sub
         WHERE response_seconds IS NOT NULL AND response_seconds > 0
         """,

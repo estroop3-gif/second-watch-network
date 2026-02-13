@@ -2527,14 +2527,14 @@ def _route_email_internally(
         )
         recipient_thread_id = new_thread["id"]
 
-    # Insert inbound message on recipient's thread
+    # Insert inbound message on recipient's thread (tagged internal for reporting exclusion)
     execute_single(
         """
         INSERT INTO crm_email_messages
             (thread_id, direction, from_address, to_addresses, cc_addresses,
-             subject, body_html, body_text, status)
+             subject, body_html, body_text, status, source_type)
         VALUES (:tid, 'inbound', :from_addr, :to_addrs, :cc_addrs,
-                :subj, :html, :text, 'received')
+                :subj, :html, :text, 'received', 'internal')
         RETURNING id
         """,
         {
@@ -2593,6 +2593,17 @@ def _route_email_internally(
                         pass
     except Exception:
         pass
+
+
+def add_email_inline_styles(html: str) -> str:
+    """Add inline styles to HTML tags for email client compatibility."""
+    import re
+    html = re.sub(r'<p(?![^>]*style=)', '<p style="margin: 0 0 1em 0; line-height: 1.5;"', html)
+    html = re.sub(r'<br\s*/?>', '<br style="display: block; margin: 0.5em 0;" />', html)
+    html = re.sub(r'<ul(?![^>]*style=)', '<ul style="margin: 0 0 1em 0; padding-left: 1.5em;"', html)
+    html = re.sub(r'<ol(?![^>]*style=)', '<ol style="margin: 0 0 1em 0; padding-left: 1.5em;"', html)
+    html = re.sub(r'<li(?![^>]*style=)', '<li style="margin: 0 0 0.5em 0;"', html)
+    return html
 
 
 # ============================================================================
@@ -2724,9 +2735,9 @@ async def send_crm_email(
         {"email": data.to_email},
     )
     if recipient_account:
-        # Internal delivery — mark as sent, route internally, skip Resend
+        # Internal delivery — mark as sent + tag source_type, route internally, skip Resend
         message = execute_single(
-            "UPDATE crm_email_messages SET status = 'sent' WHERE id = :mid RETURNING *",
+            "UPDATE crm_email_messages SET status = 'sent', source_type = 'internal' WHERE id = :mid RETURNING *",
             {"mid": message["id"]},
         )
 
@@ -2768,10 +2779,10 @@ async def send_crm_email(
             {"tid": thread_id},
         )
 
-        # Auto-increment interaction counter (always, not gated by contact_id)
-        _increment_interaction(profile["id"], "emails")
+        # Internal emails do NOT increment interaction counter — only external sends count
+        # toward KPIs, sales goals, leaderboards, and rep performance metrics
 
-        # Auto-create CRM activity
+        # Auto-create CRM activity (for audit trail, but not counted in metrics)
         if data.contact_id:
             execute_insert(
                 """
@@ -2832,7 +2843,7 @@ async def send_crm_email(
         "from": f"{account['display_name']} <{account['email_address']}>",
         "to": [data.to_email],
         "subject": data.subject,
-        "html": body_html,
+        "html": add_email_inline_styles(body_html),
         "text": plain_text,
         "reply_to": reply_to,
     }
