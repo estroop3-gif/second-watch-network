@@ -2850,12 +2850,13 @@ async def send_crm_email(
                     {"mid": message["id"], "aid": att_id},
                 )
                 if att and att.get("s3_key"):
-                    presigned = s3.generate_presigned_url(
-                        "get_object",
-                        Params={"Bucket": att.get("s3_bucket", settings.AWS_S3_BACKLOT_FILES_BUCKET), "Key": att["s3_key"]},
-                        ExpiresIn=300,
-                    )
-                    resend_attachments.append({"path": presigned, "filename": att["filename"]})
+                    bucket = att.get("s3_bucket", settings.AWS_S3_BACKLOT_FILES_BUCKET)
+                    s3_obj = s3.get_object(Bucket=bucket, Key=att["s3_key"])
+                    file_bytes = list(s3_obj["Body"].read())
+                    resend_attachments.append({
+                        "filename": att["filename"],
+                        "content": file_bytes,
+                    })
                 else:
                     logger.warning(f"Attachment {att_id} not found or already linked, skipping")
             except Exception as e:
@@ -3864,15 +3865,15 @@ async def get_attachment_upload_url(
     if ext in BLOCKED_EXTENSIONS:
         raise HTTPException(400, f"File type .{ext} is not allowed")
 
+    # Use email account ID for S3 path if available, otherwise fall back to profile ID
     account = execute_single(
         "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
         {"pid": profile["id"]},
     )
-    if not account:
-        raise HTTPException(404, "No email account")
+    folder_id = account["id"] if account else profile["id"]
 
     attachment_id = str(uuid_mod.uuid4())
-    s3_key = f"email-attachments/{account['id']}/{attachment_id}.{ext}"
+    s3_key = f"email-attachments/{folder_id}/{attachment_id}.{ext}"
     bucket = settings.AWS_S3_BACKLOT_FILES_BUCKET
 
     try:
