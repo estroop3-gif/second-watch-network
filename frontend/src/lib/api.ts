@@ -156,6 +156,67 @@ class APIClient {
     throw new Error('Request failed after retries')
   }
 
+  // Token refresh state — prevents multiple concurrent refresh attempts
+  private _refreshPromise: Promise<boolean> | null = null
+
+  /**
+   * Attempt to refresh the access token using the stored refresh token.
+   * De-duplicates concurrent refresh attempts.
+   */
+  private async _tryRefreshToken(): Promise<boolean> {
+    if (this._refreshPromise) return this._refreshPromise
+
+    this._refreshPromise = (async () => {
+      const rt = safeStorage.getItem('refresh_token')
+      if (!rt) return false
+      try {
+        console.log('[API] Access token expired, refreshing...')
+        const resp = await this._doRequestRaw<{ access_token: string; refresh_token?: string; user: any }>(
+          '/api/v1/auth/refresh',
+          { method: 'POST', body: JSON.stringify({ refresh_token: rt }) },
+        )
+        if (resp.access_token) {
+          this.setToken(resp.access_token)
+          safeStorage.setItem('access_token', resp.access_token)
+          if (resp.refresh_token) {
+            safeStorage.setItem('refresh_token', resp.refresh_token)
+          }
+          console.log('[API] Token refreshed successfully')
+          return true
+        }
+        return false
+      } catch {
+        console.log('[API] Token refresh failed, session expired')
+        return false
+      } finally {
+        this._refreshPromise = null
+      }
+    })()
+
+    return this._refreshPromise
+  }
+
+  /**
+   * Raw request that does NOT attempt token refresh (used by the refresh flow itself).
+   */
+  private async _doRequestRaw<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+    const url = `${this.baseURL}${endpoint}`
+    const headers: HeadersInit = { 'Content-Type': 'application/json', ...options.headers }
+    const token = this.getToken()
+    if (token) headers['Authorization'] = `Bearer ${token}`
+
+    const response = await fetch(url, { ...options, headers })
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+      const detail = error.detail
+      const message = typeof detail === 'object' && detail !== null ? detail.message || 'Request failed' : detail || 'Request failed'
+      const err = new Error(message) as any
+      err.status = response.status
+      throw err
+    }
+    return response.json().catch(() => ({}))
+  }
+
   private async _doRequest<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
     const token = this.getToken()
     const url = `${this.baseURL}${endpoint}`
@@ -176,6 +237,29 @@ class APIClient {
       })
 
       if (!response.ok) {
+        // On 401, try refreshing the token and retry once
+        if (response.status === 401 && token && !endpoint.includes('/auth/refresh')) {
+          const refreshed = await this._tryRefreshToken()
+          if (refreshed) {
+            // Retry with new token
+            const newToken = this.getToken()
+            headers['Authorization'] = `Bearer ${newToken}`
+            const retryResponse = await fetch(url, { ...options, headers })
+            if (retryResponse.ok) {
+              return retryResponse.json().catch(() => ({}))
+            }
+            // Retry also failed — fall through to error handling
+            const retryError = await retryResponse.json().catch(() => ({ detail: 'Request failed' }))
+            const retryDetail = retryError.detail
+            const retryMessage = typeof retryDetail === 'object' && retryDetail !== null
+              ? retryDetail.message || 'Request failed'
+              : retryDetail || 'Request failed'
+            const err = new Error(retryMessage) as any
+            err.status = retryResponse.status
+            throw err
+          }
+        }
+
         const error = await response.json().catch(() => ({ detail: 'Request failed' }))
         // Only log errors for non-expected failures (skip 401/403 for optional features)
         const isExpectedFailure = response.status === 401 || response.status === 403 || response.status === 404

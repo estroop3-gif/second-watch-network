@@ -164,8 +164,23 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         setBootstrapErrorWithRef('Connection issue - tap to retry');
         return false;
       } else {
-        // For auth errors (401/403/invalid), clear the token
-        // This is normal when tokens expire - log as info, not warning
+        // For auth errors (401/403/invalid), try refreshing before clearing
+        const storedRefresh = safeStorage.getItem('refresh_token');
+        if (storedRefresh) {
+          try {
+            console.log('[Auth] Access token expired, attempting refresh...');
+            const refreshData = await api.refreshToken(storedRefresh);
+            if (refreshData.access_token) {
+              safeStorage.setItem('access_token', refreshData.access_token);
+              // Recursively validate with the fresh token
+              return await validateSession(refreshData.access_token, true);
+            }
+          } catch {
+            console.log('[Auth] Refresh token also expired');
+          }
+        }
+
+        // Refresh failed or unavailable — clear session
         console.log('[Auth] Token expired or invalid, clearing session');
         safeStorage.removeItem('access_token');
         safeStorage.removeItem('refresh_token');
@@ -232,8 +247,43 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       }
     } catch (error: any) {
       if (!isTransientError(error)) {
-        // Auth error (401/403) — token is invalid, sign out
-        console.log('[Auth] Background validation: token invalid, signing out');
+        // Auth error (401/403) — try refreshing the token before signing out
+        const refreshToken = safeStorage.getItem('refresh_token');
+        if (refreshToken) {
+          try {
+            console.log('[Auth] Background: access token expired, attempting refresh...');
+            const refreshData = await api.refreshToken(refreshToken);
+            if (refreshData.access_token) {
+              safeStorage.setItem('access_token', refreshData.access_token);
+              // Re-validate with fresh token
+              api.setToken(refreshData.access_token);
+              const userData = await api.getCurrentUser();
+              const newRefreshToken = safeStorage.getItem('refresh_token') || '';
+              const authSession: AuthSession = {
+                access_token: refreshData.access_token,
+                refresh_token: newRefreshToken,
+                expires_in: 3600,
+                token_type: 'bearer',
+                user: userData as AuthUser,
+              };
+              setSession(authSession);
+              setUser(userData as AuthUser);
+              try {
+                const profileData = await api.getProfile();
+                setProfile(profileData);
+                saveCachedProfile(profileData);
+                if (profileData?.id) safeStorage.setItem('profile_id', profileData.id);
+              } catch { /* profile fetch failed — keep cached */ }
+              console.log('[Auth] Background: token refreshed successfully');
+              return; // Success — don't sign out
+            }
+          } catch {
+            console.log('[Auth] Background: refresh token also expired, signing out');
+          }
+        }
+
+        // Refresh failed or no refresh token — sign out
+        console.log('[Auth] Background validation: signing out');
         safeStorage.removeItem('access_token');
         safeStorage.removeItem('refresh_token');
         safeStorage.removeItem('profile_id');
