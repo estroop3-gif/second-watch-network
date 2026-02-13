@@ -28,11 +28,10 @@ export const useProfile = () => {
   const { data: profile, isLoading: queryLoading, isError, refetch } = useQuery({
     queryKey: ['profile', user?.id],
     queryFn: fetchProfile,
-    enabled: !!user,
+    enabled: !!user && !authProfile && !cachedProfile,
     // Use profile from AuthContext as initial data, fall back to cached profile
     initialData: authProfile || cachedProfile || undefined,
-    // Don't refetch immediately if we have initial data from auth or cache
-    staleTime: (authProfile || cachedProfile) ? 30000 : 0,
+    staleTime: 5 * 60 * 1000,
   });
 
   // If auth is still loading, show loading. Otherwise use query loading state.

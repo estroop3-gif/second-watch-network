@@ -5,26 +5,23 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { performanceMetrics } from "@/lib/performanceMetrics";
+import React, { Suspense } from "react";
+
+// --- Eager imports (critical render path) ---
 import Index from "./pages/Index";
 import LandingPage from "./pages/LandingPage";
 import NotFound from "./pages/NotFound";
-import Originals from "./pages/Originals";
-import SubmitContent from "./pages/SubmitContent";
-import TermsOfSubmission from "./pages/TermsOfSubmission";
-import Shop from "./pages/Shop";
-import WatchNow from "./pages/WatchNow";
-import DashboardFree from "./pages/DashboardFree";
 import ScrollToTop from "./components/ScrollToTop";
-import ServeItUp from "./pages/ServeItUp";
-import CoastalTorque from "./pages/CoastalTorque";
-import ServingForGreece from "./pages/ServingForGreece";
-import FailureToThrive from "./pages/FailureToThrive";
-import CuedUp from "./pages/CuedUp";
-import Terms from "./pages/Terms";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import AuthCallback from "./pages/AuthCallback";
 import ResetPassword from "./pages/ResetPassword";
+import ConfirmEmail from "./pages/ConfirmEmail";
+import Dashboard from "./pages/Dashboard";
+import Account from "./pages/Account";
+import NotificationSettings from "./pages/NotificationSettings";
+import Connections from "./pages/Connections";
+import BillingReturn from "./pages/BillingReturn";
 import { AuthProvider } from "./context/AuthContext";
 import { SettingsProvider } from "./context/SettingsContext";
 import { EnrichedProfileProvider } from "./context/EnrichedProfileContext";
@@ -33,175 +30,157 @@ import { ThemeProvider } from "./context/ThemeContext";
 import { DashboardSettingsProvider } from "./context/DashboardSettingsContext";
 import { GearCartProvider } from "./context/GearCartContext";
 import { SetHouseCartProvider } from "./context/SetHouseCartContext";
-import Dashboard from "./pages/Dashboard";
-import Account from "./pages/Account";
-import ThemeEditorPage from "./pages/ThemeEditorPage";
-import ConfirmEmail from "./pages/ConfirmEmail";
 import AuthenticatedLayout from "./components/AuthenticatedLayout";
 import PublicLayout from "./components/PublicLayout";
-import TheBacklot from "./pages/TheBacklot";
-import ThreadPage from "./pages/ThreadPage";
-import FilmmakerSubmissions from "./pages/FilmmakerSubmissions";
-import Messages from "./pages/Messages";
-import Filmmakers from "./pages/Filmmakers";
-import FilmmakerProfile from "./pages/FilmmakerProfile";
-import MyProfile from "./pages/MyProfile";
-import MySubmissions from "./pages/MySubmissions";
-import Notifications from "./pages/Notifications";
-import Connections from "./pages/Connections";
-import MyApplications from "./pages/MyApplications";
-import ApplicationsReceived from "./pages/ApplicationsReceived";
 import OnboardingGate from "./components/OnboardingGate";
-import FilmmakerOnboarding from "./pages/FilmmakerOnboarding";
-import FilmmakerOnboardingSuccess from "./pages/FilmmakerOnboardingSuccess";
 import PlatformStatusGate from "./components/PlatformStatusGate";
 import PermissionRoute from "./components/PermissionRoute";
-import SubscriptionsAndRolesPage from "./pages/SubscriptionsAndRolesPage";
-import SubscriptionSettingsPage from "./pages/SubscriptionSettings";
-import FilmmakerApplicationPage from "./pages/FilmmakerApplication";
-import SubmissionDetail from "./pages/SubmissionDetail";
-import NotificationSettings from "./pages/NotificationSettings";
-import BillingReturn from "./pages/BillingReturn";
-import Donations from "./pages/Donations";
-import PartnerApply from "./pages/PartnerApply";
-import OrderSettings from "./pages/OrderSettings";
-import OrganizationsPage from "./pages/Organizations";
+
+// --- Lazy imports (code-split by feature area) ---
+
+// Public pages
+const Originals = React.lazy(() => import("./pages/Originals"));
+const SubmitContent = React.lazy(() => import("./pages/SubmitContent"));
+const TermsOfSubmission = React.lazy(() => import("./pages/TermsOfSubmission"));
+const Shop = React.lazy(() => import("./pages/Shop"));
+const WatchNow = React.lazy(() => import("./pages/WatchNow"));
+const DashboardFree = React.lazy(() => import("./pages/DashboardFree"));
+const ServeItUp = React.lazy(() => import("./pages/ServeItUp"));
+const CoastalTorque = React.lazy(() => import("./pages/CoastalTorque"));
+const ServingForGreece = React.lazy(() => import("./pages/ServingForGreece"));
+const FailureToThrive = React.lazy(() => import("./pages/FailureToThrive"));
+const CuedUp = React.lazy(() => import("./pages/CuedUp"));
+const Terms = React.lazy(() => import("./pages/Terms"));
+const Donations = React.lazy(() => import("./pages/Donations"));
+const PartnerApply = React.lazy(() => import("./pages/PartnerApply"));
+const SubscriptionsAndRolesPage = React.lazy(() => import("./pages/SubscriptionsAndRolesPage"));
+const FilmmakerProfile = React.lazy(() => import("./pages/FilmmakerProfile"));
+
+// Authenticated general pages
+const ThemeEditorPage = React.lazy(() => import("./pages/ThemeEditorPage"));
+const TheBacklot = React.lazy(() => import("./pages/TheBacklot"));
+const ThreadPage = React.lazy(() => import("./pages/ThreadPage"));
+const FilmmakerSubmissions = React.lazy(() => import("./pages/FilmmakerSubmissions"));
+const Messages = React.lazy(() => import("./pages/Messages"));
+const Filmmakers = React.lazy(() => import("./pages/Filmmakers"));
+const MyProfile = React.lazy(() => import("./pages/MyProfile"));
+const MySubmissions = React.lazy(() => import("./pages/MySubmissions"));
+const Notifications = React.lazy(() => import("./pages/Notifications"));
+const MyApplications = React.lazy(() => import("./pages/MyApplications"));
+const ApplicationsReceived = React.lazy(() => import("./pages/ApplicationsReceived"));
+const FilmmakerOnboarding = React.lazy(() => import("./pages/FilmmakerOnboarding"));
+const FilmmakerOnboardingSuccess = React.lazy(() => import("./pages/FilmmakerOnboardingSuccess"));
+const FilmmakerApplicationPage = React.lazy(() => import("./pages/FilmmakerApplication"));
+const SubscriptionSettingsPage = React.lazy(() => import("./pages/SubscriptionSettings"));
+const SubmissionDetail = React.lazy(() => import("./pages/SubmissionDetail"));
+const OrderSettings = React.lazy(() => import("./pages/OrderSettings"));
+const OrganizationsPage = React.lazy(() => import("./pages/Organizations"));
 
 // Green Room Pages
-import GreenRoom from "./pages/GreenRoom";
-import GreenRoomCycle from "./pages/GreenRoomCycle";
-import GreenRoomSubmit from "./pages/GreenRoomSubmit";
+const GreenRoom = React.lazy(() => import("./pages/GreenRoom"));
+const GreenRoomCycle = React.lazy(() => import("./pages/GreenRoomCycle"));
+const GreenRoomSubmit = React.lazy(() => import("./pages/GreenRoomSubmit"));
 
 // Order Pages
-import {
-  OrderLanding,
-  OrderApply,
-  OrderDashboard,
-  OrderDirectory,
-  OrderMemberProfile,
-  OrderJobs,
-  OrderJobDetail,
-  OrderLodges,
-  OrderLodgeDetail,
-  OrderCraftHouses,
-  OrderCraftHouseDetail,
-  OrderFellowships,
-  OrderFellowshipDetail,
-  OrderGovernance,
-} from "./pages/order";
+const OrderLanding = React.lazy(() => import("./pages/order/OrderLanding"));
+const OrderApply = React.lazy(() => import("./pages/order/OrderApply"));
+const OrderDashboard = React.lazy(() => import("./pages/order/OrderDashboard"));
+const OrderDirectory = React.lazy(() => import("./pages/order/OrderDirectory"));
+const OrderMemberProfile = React.lazy(() => import("./pages/order/OrderMemberProfile"));
+const OrderJobs = React.lazy(() => import("./pages/order/OrderJobs"));
+const OrderJobDetail = React.lazy(() => import("./pages/order/OrderJobDetail"));
+const OrderLodges = React.lazy(() => import("./pages/order/OrderLodges"));
+const OrderLodgeDetail = React.lazy(() => import("./pages/order/OrderLodgeDetail"));
+const OrderCraftHouses = React.lazy(() => import("./pages/order/OrderCraftHouses"));
+const OrderCraftHouseDetail = React.lazy(() => import("./pages/order/OrderCraftHouseDetail"));
+const OrderFellowships = React.lazy(() => import("./pages/order/OrderFellowships"));
+const OrderFellowshipDetail = React.lazy(() => import("./pages/order/OrderFellowshipDetail"));
+const OrderGovernance = React.lazy(() => import("./pages/order/OrderGovernance"));
 
 // Admin Pages
-import AdminLayout from "./pages/admin/Layout";
-import AdminDashboard from "./pages/admin/Dashboard";
-import UserManagement from "./pages/admin/Users";
-import SubmissionManagement from "./pages/admin/Submissions";
-import ApplicationsManagement from "./pages/admin/Applications";
-import ForumManagement from "./pages/admin/ForumManagement";
-import ContentManagement from "./pages/admin/ContentManagement";
-import FilmmakerProfileManagement from "./pages/admin/FilmmakerProfiles";
-import AvailabilityManagement from "./pages/admin/Availability";
-import SiteSettings from "./pages/admin/SiteSettings";
-import GreenRoomManagement from "./pages/admin/GreenRoomManagement";
-import OrderManagement from "./pages/admin/OrderManagement";
-import BacklotOversight from "./pages/admin/BacklotOversight";
-import BillingManagement from "./pages/admin/Billing";
-import PartnerManagement from "./pages/admin/PartnerManagement";
-import Moderation from "./pages/admin/Moderation";
-import MessageModeration from "./pages/admin/MessageModeration";
-import CommunityManagement from "./pages/admin/CommunityManagement";
-import AuditLog from "./pages/admin/AuditLog";
-import AdminDonations from "./pages/admin/Donations";
-import AlphaTesting from "./pages/admin/AlphaTesting";
-import EmailLogs from "./pages/admin/EmailLogs";
-import AdminOrganizations from "./pages/admin/Organizations";
+const AdminLayout = React.lazy(() => import("./pages/admin/Layout"));
+const AdminDashboard = React.lazy(() => import("./pages/admin/Dashboard"));
+const UserManagement = React.lazy(() => import("./pages/admin/Users"));
+const SubmissionManagement = React.lazy(() => import("./pages/admin/Submissions"));
+const ApplicationsManagement = React.lazy(() => import("./pages/admin/Applications"));
+const ForumManagement = React.lazy(() => import("./pages/admin/ForumManagement"));
+const ContentManagement = React.lazy(() => import("./pages/admin/ContentManagement"));
+const FilmmakerProfileManagement = React.lazy(() => import("./pages/admin/FilmmakerProfiles"));
+const AvailabilityManagement = React.lazy(() => import("./pages/admin/Availability"));
+const SiteSettings = React.lazy(() => import("./pages/admin/SiteSettings"));
+const GreenRoomManagement = React.lazy(() => import("./pages/admin/GreenRoomManagement"));
+const OrderManagement = React.lazy(() => import("./pages/admin/OrderManagement"));
+const BacklotOversight = React.lazy(() => import("./pages/admin/BacklotOversight"));
+const BillingManagement = React.lazy(() => import("./pages/admin/Billing"));
+const PartnerManagement = React.lazy(() => import("./pages/admin/PartnerManagement"));
+const Moderation = React.lazy(() => import("./pages/admin/Moderation"));
+const MessageModeration = React.lazy(() => import("./pages/admin/MessageModeration"));
+const CommunityManagement = React.lazy(() => import("./pages/admin/CommunityManagement"));
+const AuditLog = React.lazy(() => import("./pages/admin/AuditLog"));
+const AdminDonations = React.lazy(() => import("./pages/admin/Donations"));
+const AlphaTesting = React.lazy(() => import("./pages/admin/AlphaTesting"));
+const EmailLogs = React.lazy(() => import("./pages/admin/EmailLogs"));
+const AdminOrganizations = React.lazy(() => import("./pages/admin/Organizations"));
 
 // Partner Pages
-import PartnerLayout from "./pages/partner/Layout";
-import PartnerDashboard from "./pages/partner/Dashboard";
-import AdPlacements from "./pages/partner/AdPlacements";
-import Analytics from "./pages/partner/Analytics";
-import PartnerPromotions from "./pages/partner/Promotions";
+const PartnerLayout = React.lazy(() => import("./pages/partner/Layout"));
+const PartnerDashboard = React.lazy(() => import("./pages/partner/Dashboard"));
+const AdPlacements = React.lazy(() => import("./pages/partner/AdPlacements"));
+const Analytics = React.lazy(() => import("./pages/partner/Analytics"));
+const PartnerPromotions = React.lazy(() => import("./pages/partner/Promotions"));
 
 // CRM Pages
-import CRMLayout from "./pages/crm/Layout";
-import CRMDashboard from "./pages/crm/CRMDashboard";
-import CRMContacts from "./pages/crm/Contacts";
-import CRMContactDetail from "./pages/crm/ContactDetail";
-import CRMActivityCalendar from "./pages/crm/ActivityCalendar";
-import CRMInteractionTracker from "./pages/crm/InteractionTracker";
-import CRMTeamView from "./pages/crm/TeamView";
-import CRMReports from "./pages/crm/Reports";
-import CRMPipeline from "./pages/crm/Pipeline";
-import CRMDealDetail from "./pages/crm/DealDetail";
-import CRMLeads from "./pages/crm/Leads";
-import CRMAdminLeads from "./pages/crm/admin/AdminLeads";
-import CRMGoals from "./pages/crm/Goals";
-import CRMKPIDashboard from "./pages/crm/KPIDashboard";
-import CRMCustomerLog from "./pages/crm/CustomerLog";
-import CRMRepReviews from "./pages/crm/RepReviews";
-import CRMAdminReviews from "./pages/crm/AdminReviews";
-import CRMCampaigns from "./pages/crm/Campaigns";
-import CRMCampaignDetail from "./pages/crm/CampaignDetail";
-import CRMDNCList from "./pages/crm/DNCList";
-import CRMRepDNCList from "./pages/crm/RepDNCList";
-import CRMEmail from "./pages/crm/Email";
-import CRMAdminLayout from "./pages/crm/AdminLayout";
-import CRMAdminEmail from "./pages/crm/AdminEmail";
-import CRMAdminBusinessCards from "./pages/crm/AdminBusinessCards";
-import CRMRepDetail from "./pages/crm/admin/RepDetail";
-import CRMTraining from "./pages/crm/Training";
-import CRMDiscussions from "./pages/crm/Discussions";
-import CRMBusinessCardForm from "./components/crm/BusinessCardForm";
-import { EmailComposeProvider } from "./context/EmailComposeContext";
+const CRMLayout = React.lazy(() => import("./pages/crm/Layout"));
+const CRMDashboard = React.lazy(() => import("./pages/crm/CRMDashboard"));
+const CRMContacts = React.lazy(() => import("./pages/crm/Contacts"));
+const CRMContactDetail = React.lazy(() => import("./pages/crm/ContactDetail"));
+const CRMActivityCalendar = React.lazy(() => import("./pages/crm/ActivityCalendar"));
+const CRMInteractionTracker = React.lazy(() => import("./pages/crm/InteractionTracker"));
+const CRMTeamView = React.lazy(() => import("./pages/crm/TeamView"));
+const CRMReports = React.lazy(() => import("./pages/crm/Reports"));
+const CRMPipeline = React.lazy(() => import("./pages/crm/Pipeline"));
+const CRMDealDetail = React.lazy(() => import("./pages/crm/DealDetail"));
+const CRMLeads = React.lazy(() => import("./pages/crm/Leads"));
+const CRMAdminLeads = React.lazy(() => import("./pages/crm/admin/AdminLeads"));
+const CRMGoals = React.lazy(() => import("./pages/crm/Goals"));
+const CRMKPIDashboard = React.lazy(() => import("./pages/crm/KPIDashboard"));
+const CRMCustomerLog = React.lazy(() => import("./pages/crm/CustomerLog"));
+const CRMRepReviews = React.lazy(() => import("./pages/crm/RepReviews"));
+const CRMAdminReviews = React.lazy(() => import("./pages/crm/AdminReviews"));
+const CRMCampaigns = React.lazy(() => import("./pages/crm/Campaigns"));
+const CRMCampaignDetail = React.lazy(() => import("./pages/crm/CampaignDetail"));
+const CRMDNCList = React.lazy(() => import("./pages/crm/DNCList"));
+const CRMRepDNCList = React.lazy(() => import("./pages/crm/RepDNCList"));
+const CRMEmail = React.lazy(() => import("./pages/crm/Email"));
+const CRMAdminLayout = React.lazy(() => import("./pages/crm/AdminLayout"));
+const CRMAdminEmail = React.lazy(() => import("./pages/crm/AdminEmail"));
+const CRMAdminBusinessCards = React.lazy(() => import("./pages/crm/AdminBusinessCards"));
+const CRMRepDetail = React.lazy(() => import("./pages/crm/admin/RepDetail"));
+const CRMTraining = React.lazy(() => import("./pages/crm/Training"));
+const CRMDiscussions = React.lazy(() => import("./pages/crm/Discussions"));
+const CRMBusinessCardForm = React.lazy(() => import("./components/crm/BusinessCardForm"));
+const EmailComposeProvider = React.lazy(() =>
+  import("./context/EmailComposeContext").then(m => ({ default: m.EmailComposeProvider }))
+);
 
 // Backlot Production Hub Pages
-import { BacklotHome, ProjectWorkspace, PublicProjectPage, PublicCallSheetPage, CollabApplicantsPage, ApplicantDetailPage } from "./pages/backlot";
-import React, { Suspense } from "react";
-
-// Lazy load the external reviewer view since it's a public route
+const BacklotHome = React.lazy(() => import("./pages/backlot/BacklotHome"));
+const ProjectWorkspace = React.lazy(() => import("./pages/backlot/ProjectWorkspace"));
+const PublicProjectPage = React.lazy(() => import("./pages/backlot/PublicProjectPage"));
+const PublicCallSheetPage = React.lazy(() => import("./pages/backlot/PublicCallSheetPage"));
+const CollabApplicantsPage = React.lazy(() => import("./pages/backlot/CollabApplicantsPage"));
+const ApplicantDetailPage = React.lazy(() => import("./pages/backlot/ApplicantDetailPage"));
 const ExternalReviewerView = React.lazy(() =>
   import("./components/backlot/review/external/ExternalReviewerView")
 );
-
-// Lazy load clearance view page for public document viewing/signing
-const ClearanceViewPage = React.lazy(() =>
-  import("./pages/ClearanceViewPage")
-);
-
-// Lazy load moodboard print page
-const MoodboardPrintPage = React.lazy(() =>
-  import("./pages/backlot/MoodboardPrintPage")
-);
-
-// Lazy load storyboard print page
-const StoryboardPrintPage = React.lazy(() =>
-  import("./pages/backlot/StoryboardPrintPage")
-);
-
-// Lazy load story print page
-const StoryPrintPage = React.lazy(() =>
-  import("./pages/backlot/StoryPrintPage")
-);
-
-// Lazy load sides print page
-const SidesPrintPage = React.lazy(() =>
-  import("./pages/backlot/SidesPrintPage")
-);
-
-// Lazy load stripboard print page
-const StripboardPrintPage = React.lazy(() =>
-  import("./pages/backlot/StripboardPrintPage")
-);
-
-// Lazy load deal memo signing page (public, no auth)
-const DealMemoSignPage = React.lazy(() =>
-  import("./pages/DealMemoSignPage")
-);
-
-// Lazy load onboarding wizard pages
-const OnboardingWizardPage = React.lazy(() =>
-  import("./pages/backlot/OnboardingWizardPage")
-);
+const ClearanceViewPage = React.lazy(() => import("./pages/ClearanceViewPage"));
+const MoodboardPrintPage = React.lazy(() => import("./pages/backlot/MoodboardPrintPage"));
+const StoryboardPrintPage = React.lazy(() => import("./pages/backlot/StoryboardPrintPage"));
+const StoryPrintPage = React.lazy(() => import("./pages/backlot/StoryPrintPage"));
+const SidesPrintPage = React.lazy(() => import("./pages/backlot/SidesPrintPage"));
+const StripboardPrintPage = React.lazy(() => import("./pages/backlot/StripboardPrintPage"));
+const DealMemoSignPage = React.lazy(() => import("./pages/DealMemoSignPage"));
+const OnboardingWizardPage = React.lazy(() => import("./pages/backlot/OnboardingWizardPage"));
 const ExternalOnboardingWizardPage = React.lazy(() =>
   import("./pages/backlot/OnboardingWizardPage").then(module => ({
     default: module.ExternalOnboardingWizardPage
@@ -209,35 +188,53 @@ const ExternalOnboardingWizardPage = React.lazy(() =>
 );
 
 // Church Production Tools Pages
-import { ChurchToolsHome, ChurchToolPage } from "./pages/church";
+const ChurchToolsHome = React.lazy(() => import("./pages/church/ChurchToolsHome"));
+const ChurchToolPage = React.lazy(() => import("./pages/church/ChurchToolPage"));
 
 // Gear House Pages
-import GearHousePage from "./pages/gear/GearHousePage";
-import GearWorkspacePage from "./pages/gear/GearWorkspacePage";
-import IncidentDetailPage from "./pages/gear/IncidentDetailPage";
-import UserStrikeDetailPage from "./pages/gear/UserStrikeDetailPage";
-import { AsyncVerificationPage } from "./pages/gear/AsyncVerificationPage";
-import MyGearLite from "./pages/MyGearLite";
+const GearHousePage = React.lazy(() => import("./pages/gear/GearHousePage"));
+const GearWorkspacePage = React.lazy(() => import("./pages/gear/GearWorkspacePage"));
+const IncidentDetailPage = React.lazy(() => import("./pages/gear/IncidentDetailPage"));
+const UserStrikeDetailPage = React.lazy(() => import("./pages/gear/UserStrikeDetailPage"));
+const AsyncVerificationPage = React.lazy(() =>
+  import("./pages/gear/AsyncVerificationPage").then(m => ({ default: m.AsyncVerificationPage }))
+);
+const MyGearLite = React.lazy(() => import("./pages/MyGearLite"));
 
 // Set House Pages
-import { SetHousePage, SetHouseWorkspacePage } from "./pages/set-house";
+const SetHousePage = React.lazy(() => import("./pages/set-house/SetHousePage"));
+const SetHouseWorkspacePage = React.lazy(() => import("./pages/set-house/SetHouseWorkspacePage"));
 
 // Watch/Streaming Pages
-import {
-  WatchHome,
-  WorldDetail,
-  ShortsPlayer,
-  EpisodePlayer,
-  BrowsePage,
-  SearchPage,
-  LiveEventsPage,
-  HistoryPage,
-  VideoLibrary,
-} from "./pages/watch";
-import { StreamLayout } from "./components/watch";
+const WatchHome = React.lazy(() => import("./pages/watch/WatchHome"));
+const WorldDetail = React.lazy(() => import("./pages/watch/WorldDetail"));
+const ShortsPlayer = React.lazy(() => import("./pages/watch/ShortsPlayer"));
+const EpisodePlayer = React.lazy(() => import("./pages/watch/EpisodePlayer"));
+const BrowsePage = React.lazy(() => import("./pages/watch/BrowsePage"));
+const SearchPage = React.lazy(() => import("./pages/watch/SearchPage"));
+const LiveEventsPage = React.lazy(() => import("./pages/watch/LiveEventsPage"));
+const HistoryPage = React.lazy(() => import("./pages/watch/HistoryPage"));
+const VideoLibrary = React.lazy(() => import("./pages/watch/VideoLibrary"));
+const StreamLayout = React.lazy(() => import("./components/watch/StreamLayout"));
 
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60 * 1000,        // 5 min — data stays fresh, no unnecessary refetches
+      gcTime: 10 * 60 * 1000,           // 10 min — keep unused data in cache
+      refetchOnWindowFocus: false,       // Stop refetch storm on every tab switch
+      retry: 1,                          // Retry once instead of 3 times
+    },
+  },
+});
+
+// Suspense fallback for lazy-loaded routes
+const LoadingSpinner = () => (
+  <div className="min-h-screen bg-charcoal-black flex items-center justify-center">
+    <div className="animate-spin w-8 h-8 border-2 border-accent-yellow border-t-transparent rounded-full" />
+  </div>
+);
 
 // Performance metrics: mark app mounted
 const AppMountTracker = ({ children }: { children: React.ReactNode }) => {
@@ -272,6 +269,7 @@ const App = () => (
             <Sonner />
             <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
               <ScrollToTop />
+              <Suspense fallback={<LoadingSpinner />}>
               <Routes>
                 <Route path="/" element={<Index />} />
 
@@ -305,35 +303,35 @@ const App = () => (
 
                 {/* Public External Review Route (no auth required) */}
                 <Route path="/review/:token" element={
-                  <Suspense fallback={<div className="min-h-screen bg-charcoal-black flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-accent-yellow border-t-transparent rounded-full" /></div>}>
+                  <Suspense fallback={<LoadingSpinner />}>
                     <ExternalReviewerView />
                   </Suspense>
                 } />
 
                 {/* Public Clearance View/Sign Route (no auth required) */}
                 <Route path="/clearance/view/:token" element={
-                  <Suspense fallback={<div className="min-h-screen bg-charcoal-black flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-accent-yellow border-t-transparent rounded-full" /></div>}>
+                  <Suspense fallback={<LoadingSpinner />}>
                     <ClearanceViewPage />
                   </Suspense>
                 } />
 
                 {/* Public Deal Memo Signing Route (no auth required) */}
                 <Route path="/deal-memo/sign/:token" element={
-                  <Suspense fallback={<div className="min-h-screen bg-charcoal-black flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-accent-yellow border-t-transparent rounded-full" /></div>}>
+                  <Suspense fallback={<LoadingSpinner />}>
                     <DealMemoSignPage />
                   </Suspense>
                 } />
 
                 {/* Onboarding Wizard - Authenticated */}
                 <Route path="/onboarding/:sessionId" element={
-                  <Suspense fallback={<div className="min-h-screen bg-charcoal-black flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-accent-yellow border-t-transparent rounded-full" /></div>}>
+                  <Suspense fallback={<LoadingSpinner />}>
                     <OnboardingWizardPage />
                   </Suspense>
                 } />
 
                 {/* Onboarding Wizard - External/Token-based (no auth required) */}
                 <Route path="/onboarding/external/:token" element={
-                  <Suspense fallback={<div className="min-h-screen bg-charcoal-black flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-accent-yellow border-t-transparent rounded-full" /></div>}>
+                  <Suspense fallback={<LoadingSpinner />}>
                     <ExternalOnboardingWizardPage />
                   </Suspense>
                 } />
@@ -347,7 +345,11 @@ const App = () => (
                 <Route path="/billing/return" element={<BillingReturn />} />
 
                 {/* Watch/Streaming Routes with StreamLayout */}
-                <Route path="/watch" element={<StreamLayout />}>
+                <Route path="/watch" element={
+                  <Suspense fallback={<LoadingSpinner />}>
+                    <StreamLayout />
+                  </Suspense>
+                }>
                   <Route index element={<WatchHome />} />
                   <Route path="worlds/:slug" element={<WorldDetail />} />
                   <Route path="browse" element={<BrowsePage />} />
@@ -558,6 +560,7 @@ const App = () => (
 
                 <Route path="*" element={<NotFound />} />
               </Routes>
+              </Suspense>
             </BrowserRouter>
                   </TooltipProvider>
                 </PlatformStatusGate>

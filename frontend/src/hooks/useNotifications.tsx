@@ -57,11 +57,11 @@ export function useNotifications() {
   useEffect(() => {
     if (!user?.id) return;
 
-    // Poll every 30 seconds for new notifications
+    // Poll every 60 seconds for new notifications
     const interval = setInterval(() => {
       queryClient.invalidateQueries({ queryKey: ['notifications', user.id] });
       queryClient.invalidateQueries({ queryKey: ['notificationCounts', user.id] });
-    }, 30000);
+    }, 60000);
 
     return () => {
       clearInterval(interval);

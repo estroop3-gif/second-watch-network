@@ -295,8 +295,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       console.log('[Auth] Slow path: no cached profile, validating with retry...');
       setLoading(true);
 
-      const MAX_ATTEMPTS = 5;
-      const RETRY_DELAY_MS = 2000;
+      const MAX_ATTEMPTS = 3;
+      const RETRY_DELAY_MS = 1500;
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         if (attempt > 1) {
