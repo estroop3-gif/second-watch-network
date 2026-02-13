@@ -168,6 +168,8 @@ async def get_sidebar_badges(
         "contacts_viewed": views.get("contacts"),
         "dnc_viewed": views.get("dnc"),
         "pipeline_viewed": views.get("pipeline"),
+        "calendar_viewed": views.get("calendar"),
+        "interactions_viewed": views.get("interactions"),
         "goals_viewed": views.get("goals"),
         "log_viewed": views.get("log"),
         "reviews_viewed": views.get("reviews"),
@@ -197,18 +199,23 @@ async def get_sidebar_badges(
              AND d.stage NOT IN ('won', 'lost')
              {deal_scope}) as active_deals,
 
-            -- Calendar: today's follow-ups due + overdue (unchanged — actionable, not "new")
+            -- Calendar: follow-ups that became due since last view (fallback: last 24h)
             (SELECT COUNT(*) FROM crm_activities a
              WHERE a.follow_up_date IS NOT NULL
              AND a.follow_up_date <= CURRENT_DATE
              AND a.follow_up_completed = false
+             AND GREATEST(a.created_at, a.follow_up_date::timestamptz) > COALESCE(:calendar_viewed, NOW() - INTERVAL '24 hours')
              {activity_scope}) as due_followups,
 
-            -- Interactions: today's logged count (unchanged — resets daily)
-            (SELECT COALESCE(SUM(ic.calls + ic.emails + ic.texts + ic.meetings + ic.demos), 0)
-             FROM crm_interaction_counts ic
-             WHERE ic.count_date = CURRENT_DATE
-             AND ic.rep_id = :rep_id) as todays_interactions,
+            -- Interactions: today's logged count, clears on tab view (fallback: today)
+            (CASE
+              WHEN :interactions_viewed IS NOT NULL AND :interactions_viewed::date >= CURRENT_DATE
+              THEN 0
+              ELSE (SELECT COALESCE(SUM(ic.calls + ic.emails + ic.texts + ic.meetings + ic.demos), 0)
+                    FROM crm_interaction_counts ic
+                    WHERE ic.count_date = CURRENT_DATE
+                    AND ic.rep_id = :rep_id)
+            END) as todays_interactions,
 
             -- Goals: new goals since last view (fallback: last 7d)
             (SELECT COUNT(*) FROM crm_sales_goals g
@@ -326,7 +333,7 @@ async def mark_new_leads_viewed(
 # ============================================================================
 
 ALLOWED_TAB_KEYS = {
-    "contacts", "dnc", "pipeline", "interactions", "goals",
+    "contacts", "dnc", "pipeline", "calendar", "interactions", "goals",
     "log", "reviews", "training", "discussions", "business_card",
 }
 
@@ -352,6 +359,18 @@ async def mark_tab_viewed(
         """,
         {"pid": profile["id"], "key": data.tab_key},
     )
+
+    # Viewing the Contacts tab also clears unviewed lead assignments
+    if data.tab_key == "contacts":
+        execute_query(
+            """
+            UPDATE crm_contact_assignment_log
+            SET viewed_at = NOW()
+            WHERE to_rep_id = :pid AND viewed_at IS NULL
+            """,
+            {"pid": profile["id"]},
+        )
+
     return {"success": True}
 
 

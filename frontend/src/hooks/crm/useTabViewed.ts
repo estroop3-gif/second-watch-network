@@ -7,6 +7,7 @@ export function getTabKeyFromPath(pathname: string): string | null {
     '/crm/contacts': 'contacts',
     '/crm/dnc': 'dnc',
     '/crm/pipeline': 'pipeline',
+    '/crm/calendar': 'calendar',
     '/crm/interactions': 'interactions',
     '/crm/goals': 'goals',
     '/crm/log': 'log',
@@ -34,7 +35,12 @@ export function useMarkTabViewed() {
       await queryClient.cancelQueries({ queryKey: ['crm-sidebar-badges'] });
       const prev = queryClient.getQueryData<Record<string, number>>(['crm-sidebar-badges']);
       if (prev) {
-        queryClient.setQueryData(['crm-sidebar-badges'], { ...prev, [tabKey]: 0 });
+        const updated = { ...prev, [tabKey]: 0 };
+        // Viewing contacts also clears new_leads badge
+        if (tabKey === 'contacts') {
+          updated.new_leads = 0;
+        }
+        queryClient.setQueryData(['crm-sidebar-badges'], updated);
       }
       return { prev };
     },
