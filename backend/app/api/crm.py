@@ -2951,84 +2951,36 @@ async def send_crm_email(
 
 from fastapi import Request
 
-@router.post("/email/webhook/inbound")
-async def email_inbound_webhook_handler(request: Request):
+
+def _clean_email_address(addr: str) -> str:
+    """Normalize email: strip whitespace, lowercase, extract from angle brackets."""
+    clean = addr.strip().lower()
+    if "<" in clean:
+        clean = clean.split("<")[-1].rstrip(">")
+    return clean
+
+
+def _deliver_inbound_to_account(
+    account: dict,
+    from_address: str,
+    subject: str,
+    html_body: str,
+    text_body: str,
+    to_addresses: list,
+    cc_addresses: list,
+    thread_id_override: str | None = None,
+) -> dict | None:
     """
-    Resend inbound email webhook with signature verification.
-    Parses reply+{thread_id} from the to address, stores the message,
-    updates thread unread count. Sends WebSocket notification.
+    Deliver an inbound email to a single CRM email account.
+    Creates/finds a thread, stores the message, sends notifications.
+    Returns the stored message dict, or None on failure.
     """
-    import re
-    import hmac
-    import hashlib
-    import base64
-    import json
-    from app.core.config import settings
+    import logging
+    _log = logging.getLogger(__name__)
 
-    # Verify Resend webhook signature
-    raw_body = await request.body()
-    signature = request.headers.get("svix-signature", "")
-    if settings.RESEND_WEBHOOK_SIGNING_SECRET and signature:
-        # Resend uses Svix for webhook signing
-        msg_id = request.headers.get("svix-id", "")
-        timestamp = request.headers.get("svix-timestamp", "")
-        to_sign = f"{msg_id}.{timestamp}.{raw_body.decode()}"
-        secret = settings.RESEND_WEBHOOK_SIGNING_SECRET
-        # Svix secrets are base64-encoded with "whsec_" prefix
-        if secret.startswith("whsec_"):
-            secret_bytes = base64.b64decode(secret[6:])
-        else:
-            secret_bytes = secret.encode()
-        expected = base64.b64encode(
-            hmac.new(secret_bytes, to_sign.encode(), hashlib.sha256).digest()
-        ).decode()
-        # Svix sends multiple signatures separated by spaces, each prefixed with "v1,"
-        valid = any(
-            hmac.compare_digest(expected, sig.replace("v1,", ""))
-            for sig in signature.split(" ")
-        )
-        if not valid:
-            raise HTTPException(401, "Invalid webhook signature")
-
-    body = json.loads(raw_body)
-    event_type = body.get("type", "")
-
-    # Only process inbound email events
-    if event_type != "email.received":
-        return {"status": "ignored", "type": event_type}
-
-    payload = body.get("data", {})
-    to_addresses = payload.get("to", [])
-    from_address = payload.get("from", "")
-    subject = payload.get("subject", "")
-    email_id = payload.get("email_id", "")
-
-    # Find reply+{thread_id} in to addresses
-    thread_id = None
-    for addr in to_addresses:
-        match = re.search(r"reply\+([a-f0-9-]+)@", addr)
-        if match:
-            thread_id = match.group(1)
-            break
+    thread_id = thread_id_override
 
     if not thread_id:
-        # No reply+ address — check if email was sent directly to a CRM account
-        matched_account = None
-        for addr in to_addresses:
-            # Normalize: strip display name, lowercase
-            clean = addr.strip().lower()
-            if "<" in clean:
-                clean = clean.split("<")[-1].rstrip(">")
-            matched_account = execute_single(
-                "SELECT * FROM crm_email_accounts WHERE LOWER(email_address) = :email LIMIT 1",
-                {"email": clean},
-            )
-            if matched_account:
-                break
-
-        if not matched_account:
-            return {"status": "no_thread_match", "from": from_address}
-
         # Auto-link contact by from_address
         linked_contact = execute_single(
             "SELECT id FROM crm_contacts WHERE LOWER(email) = LOWER(:email) LIMIT 1",
@@ -3037,7 +2989,6 @@ async def email_inbound_webhook_handler(request: Request):
         contact_id = linked_contact["id"] if linked_contact else None
 
         # Try to find an existing thread for this sender + account
-        # (catches replies where the client dropped the reply+ routing address)
         existing_thread = execute_single(
             """
             SELECT id FROM crm_email_threads
@@ -3046,20 +2997,19 @@ async def email_inbound_webhook_handler(request: Request):
             ORDER BY last_message_at DESC NULLS LAST
             LIMIT 1
             """,
-            {"aid": matched_account["id"], "email": from_address},
+            {"aid": account["id"], "email": from_address},
         )
 
         if existing_thread:
             thread_id = str(existing_thread["id"])
         else:
-            # Create a new thread for this direct inbound email
             new_thread = execute_single(
                 """
                 INSERT INTO crm_email_threads (account_id, contact_id, contact_email, subject)
                 VALUES (:aid, :cid, :email, :subj) RETURNING *
                 """,
                 {
-                    "aid": matched_account["id"],
+                    "aid": account["id"],
                     "cid": contact_id,
                     "email": from_address,
                     "subj": subject,
@@ -3067,44 +3017,19 @@ async def email_inbound_webhook_handler(request: Request):
             )
             thread_id = str(new_thread["id"])
 
-    # Fetch full email content from Resend API (webhook only sends metadata)
-    import logging as _logging
-    import httpx
-    _log = _logging.getLogger(__name__)
-    html_body = ""
-    text_body = ""
-    if email_id and settings.RESEND_API_KEY:
-        try:
-            resp = httpx.get(
-                f"https://api.resend.com/emails/receiving/{email_id}",
-                headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                email_data = resp.json()
-                html_body = email_data.get("html") or ""
-                text_body = email_data.get("text") or ""
-                if not from_address:
-                    from_address = email_data.get("from", "")
-                if not subject:
-                    subject = email_data.get("subject", "")
-            else:
-                _log.warning(f"Resend API returned {resp.status_code} for email {email_id}")
-        except Exception as e:
-            _log.error(f"Failed to fetch inbound email content: {e}")
-
     # Verify thread exists
     thread = execute_single(
         "SELECT * FROM crm_email_threads WHERE id = :tid",
         {"tid": thread_id},
     )
     if not thread:
-        return {"status": "thread_not_found", "thread_id": thread_id}
+        _log.warning(f"Thread {thread_id} not found for account {account['id']}")
+        return None
 
     # Auto-link contact if thread has no contact_id
     if not thread.get("contact_id"):
         linked_contact = execute_single(
-            "SELECT id FROM crm_contacts WHERE email = :email LIMIT 1",
+            "SELECT id FROM crm_contacts WHERE LOWER(email) = LOWER(:email) LIMIT 1",
             {"email": from_address},
         )
         if linked_contact:
@@ -3112,14 +3037,15 @@ async def email_inbound_webhook_handler(request: Request):
                 "UPDATE crm_email_threads SET contact_id = :cid WHERE id = :tid RETURNING id",
                 {"cid": linked_contact["id"], "tid": thread_id},
             )
+            thread["contact_id"] = linked_contact["id"]
 
-    # Store inbound message
+    # Store inbound message (include cc_addresses)
     message = execute_single(
         """
         INSERT INTO crm_email_messages
-            (thread_id, direction, from_address, to_addresses, subject,
+            (thread_id, direction, from_address, to_addresses, cc_addresses, subject,
              body_html, body_text, status)
-        VALUES (:tid, 'inbound', :from_addr, :to_addrs, :subj,
+        VALUES (:tid, 'inbound', :from_addr, :to_addrs, :cc_addrs, :subj,
                 :html, :text, 'received')
         RETURNING *
         """,
@@ -3127,6 +3053,7 @@ async def email_inbound_webhook_handler(request: Request):
             "tid": thread_id,
             "from_addr": from_address,
             "to_addrs": to_addresses,
+            "cc_addrs": cc_addresses if cc_addresses else [],
             "subj": subject,
             "html": html_body,
             "text": text_body,
@@ -3156,76 +3083,66 @@ async def email_inbound_webhook_handler(request: Request):
             {"cid": thread["contact_id"]},
         )
 
-    # Auto-increment interaction counter + create activity for inbound email
-    account = execute_single(
-        "SELECT * FROM crm_email_accounts WHERE id = :aid",
-        {"aid": thread["account_id"]},
-    )
-    if account:
-        from app.api.crm_email_helpers import increment_email_interaction, create_email_activity
-        increment_email_interaction(account["profile_id"], "emails_received")
-        contact_id = thread.get("contact_id")
-        if contact_id:
-            create_email_activity(
-                contact_id=contact_id,
-                rep_id=account["profile_id"],
-                activity_type="email_received",
-                subject=f"Received: {subject}",
-                description=f"Inbound email from {from_address}",
-                deal_id=thread.get("deal_id"),
-            )
+    # Auto-increment interaction counter + create activity
+    from app.api.crm_email_helpers import increment_email_interaction, create_email_activity
+    increment_email_interaction(account["profile_id"], "emails_received")
+    contact_id = thread.get("contact_id")
+    if contact_id:
+        create_email_activity(
+            contact_id=contact_id,
+            rep_id=account["profile_id"],
+            activity_type="email_received",
+            subject=f"Received: {subject}",
+            description=f"Inbound email from {from_address}",
+            deal_id=thread.get("deal_id"),
+        )
 
     # WebSocket notification (best-effort)
-    # account already fetched above
-    if account:
-        try:
-            import boto3
-            import json as json_mod
-            dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
-            table = dynamodb.Table("second-watch-websocket-connections")
+    try:
+        import boto3
+        import json as json_mod
+        dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+        ws_table = dynamodb.Table("second-watch-websocket-connections")
 
-            resp = table.query(
-                IndexName="GSI1",
-                KeyConditionExpression="GSI1PK = :pk",
-                ExpressionAttributeValues={":pk": f"PROFILE#{account['profile_id']}"},
-            )
-            if resp.get("Items"):
-                apigw = boto3.client("apigatewaymanagementapi",
-                    endpoint_url="https://j4f73g2zp0.execute-api.us-east-1.amazonaws.com/prod")
-                notification = json_mod.dumps({
-                    "action": "crm:email:new",
-                    "thread_id": thread_id,
-                    "from": from_address,
-                    "subject": subject,
-                    "preview": (text_body or "")[:100],
-                })
-                for item in resp["Items"]:
-                    conn_id = item.get("SK", "").replace("CONN#", "")
-                    if conn_id:
-                        try:
-                            apigw.post_to_connection(
-                                ConnectionId=conn_id,
-                                Data=notification.encode("utf-8"),
-                            )
-                        except Exception:
-                            pass
-        except Exception:
-            pass
+        resp = ws_table.query(
+            IndexName="GSI1",
+            KeyConditionExpression="GSI1PK = :pk",
+            ExpressionAttributeValues={":pk": f"PROFILE#{account['profile_id']}"},
+        )
+        if resp.get("Items"):
+            apigw = boto3.client("apigatewaymanagementapi",
+                endpoint_url="https://j4f73g2zp0.execute-api.us-east-1.amazonaws.com/prod")
+            notification = json_mod.dumps({
+                "action": "crm:email:new",
+                "thread_id": thread_id,
+                "from": from_address,
+                "subject": subject,
+                "preview": (text_body or "")[:100],
+            })
+            for item in resp["Items"]:
+                conn_id = item.get("SK", "").replace("CONN#", "")
+                if conn_id:
+                    try:
+                        apigw.post_to_connection(
+                            ConnectionId=conn_id,
+                            Data=notification.encode("utf-8"),
+                        )
+                    except Exception:
+                        pass
+    except Exception:
+        pass
 
-    # Email notification (best-effort, after WebSocket)
-    if account and message:
-        import logging
-        notif_logger = logging.getLogger(__name__)
+    # Email notification (best-effort)
+    if message:
         try:
             notif_mode = account.get("notification_mode", "off")
             notif_email = account.get("notification_email")
             if notif_mode != "off" and notif_email:
-                # Prevent loops: don't notify to the CRM work email itself
                 account_email = account.get("email_address", "")
                 if notif_email.lower() != account_email.lower():
                     if notif_mode == "instant":
                         import resend as resend_sdk
-                        from app.core.config import settings
+                        from app.core.config import settings as _settings
                         from app.services.email_templates import build_instant_notification_email
                         thread_url = f"https://www.secondwatchnetwork.com/crm/email?thread={thread_id}"
                         html = build_instant_notification_email(
@@ -3235,16 +3152,15 @@ async def email_inbound_webhook_handler(request: Request):
                             preview=(text_body or "")[:300],
                             thread_url=thread_url,
                         )
-                        resend_sdk.api_key = settings.RESEND_API_KEY
+                        resend_sdk.api_key = _settings.RESEND_API_KEY
                         resend_sdk.Emails.send({
                             "from": "Second Watch Network <notifications@theswn.com>",
                             "to": [notif_email],
                             "subject": f"New email from {from_address or 'Unknown'}: {subject or '(no subject)'}",
                             "html": html,
                         })
-                        notif_logger.info(f"Instant notification sent to {notif_email} for thread {thread_id}")
+                        _log.info(f"Instant notification sent to {notif_email} for thread {thread_id}")
                     elif notif_mode == "digest":
-                        # Queue for digest
                         execute_insert(
                             """
                             INSERT INTO crm_email_notification_queue
@@ -3262,9 +3178,179 @@ async def email_inbound_webhook_handler(request: Request):
                             },
                         )
         except Exception as e:
-            notif_logger.error(f"Failed to send inbound email notification for thread {thread_id}: {e}")
+            _log.error(f"Failed to send inbound email notification for thread {thread_id}: {e}")
 
-    return {"status": "stored", "message_id": message["id"] if message else None}
+    return message
+
+
+@router.post("/email/webhook/inbound")
+async def email_inbound_webhook_handler(request: Request):
+    """
+    Resend inbound email webhook with signature verification.
+    Supports group/multi-recipient emails: delivers to ALL matching CRM
+    accounts found in TO and CC, not just the first match.
+    """
+    import re
+    import hmac
+    import hashlib
+    import base64
+    import logging as _logging
+    import httpx
+    from app.core.config import settings
+
+    _log = _logging.getLogger(__name__)
+
+    # --- Verify Resend webhook signature ---
+    raw_body = await request.body()
+    signature = request.headers.get("svix-signature", "")
+    if settings.RESEND_WEBHOOK_SIGNING_SECRET and signature:
+        msg_id = request.headers.get("svix-id", "")
+        timestamp = request.headers.get("svix-timestamp", "")
+        to_sign = f"{msg_id}.{timestamp}.{raw_body.decode()}"
+        secret = settings.RESEND_WEBHOOK_SIGNING_SECRET
+        if secret.startswith("whsec_"):
+            secret_bytes = base64.b64decode(secret[6:])
+        else:
+            secret_bytes = secret.encode()
+        expected = base64.b64encode(
+            hmac.new(secret_bytes, to_sign.encode(), hashlib.sha256).digest()
+        ).decode()
+        valid = any(
+            hmac.compare_digest(expected, sig.replace("v1,", ""))
+            for sig in signature.split(" ")
+        )
+        if not valid:
+            raise HTTPException(401, "Invalid webhook signature")
+
+    body = json.loads(raw_body)
+    event_type = body.get("type", "")
+
+    if event_type != "email.received":
+        return {"status": "ignored", "type": event_type}
+
+    # --- Phase A: Parse payload (with CC extraction) ---
+    payload = body.get("data", {})
+    to_addresses = payload.get("to", [])
+    cc_addresses_raw = payload.get("cc", [])
+    from_address = payload.get("from", "")
+    subject = payload.get("subject", "")
+    email_id = payload.get("email_id", "")
+
+    # --- Phase B: Scan for reply+ thread ID in TO + CC ---
+    reply_thread_id = None
+    for addr in to_addresses + cc_addresses_raw:
+        match = re.search(r"reply\+([a-f0-9-]+)@", addr)
+        if match:
+            reply_thread_id = match.group(1)
+            break
+
+    # --- Phase C: Fetch full email body BEFORE delivery loop ---
+    html_body = ""
+    text_body = ""
+    cc_from_api = []
+    if email_id and settings.RESEND_API_KEY:
+        try:
+            resp = httpx.get(
+                f"https://api.resend.com/emails/receiving/{email_id}",
+                headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                email_data = resp.json()
+                html_body = email_data.get("html") or ""
+                text_body = email_data.get("text") or ""
+                cc_from_api = email_data.get("cc") or []
+                if not from_address:
+                    from_address = email_data.get("from", "")
+                if not subject:
+                    subject = email_data.get("subject", "")
+            else:
+                _log.warning(f"Resend API returned {resp.status_code} for email {email_id}")
+        except Exception as e:
+            _log.error(f"Failed to fetch inbound email content: {e}")
+
+    # Merge and deduplicate CC addresses from webhook payload + API response
+    all_cc_raw = cc_addresses_raw + cc_from_api
+    seen_cc = set()
+    all_cc = []
+    for addr in all_cc_raw:
+        normalized = _clean_email_address(addr)
+        if normalized and normalized not in seen_cc:
+            seen_cc.add(normalized)
+            all_cc.append(addr)
+
+    # --- Phase D: Find ALL matching CRM accounts in TO + CC ---
+    matched_accounts = []
+    seen_account_ids = set()
+    for addr in to_addresses + all_cc_raw:
+        clean = _clean_email_address(addr)
+        if not clean or "reply+" in clean:
+            continue
+        acct = execute_single(
+            "SELECT * FROM crm_email_accounts WHERE LOWER(email_address) = :email AND is_active = true LIMIT 1",
+            {"email": clean},
+        )
+        if acct and acct["id"] not in seen_account_ids:
+            matched_accounts.append(acct)
+            seen_account_ids.add(acct["id"])
+
+    # --- Phase E: Deliver to reply+ thread first (if applicable) ---
+    delivered_account_ids = set()
+    message_ids = []
+
+    if reply_thread_id:
+        reply_thread = execute_single(
+            "SELECT * FROM crm_email_threads WHERE id = :tid",
+            {"tid": reply_thread_id},
+        )
+        if reply_thread:
+            reply_account = execute_single(
+                "SELECT * FROM crm_email_accounts WHERE id = :aid",
+                {"aid": reply_thread["account_id"]},
+            )
+            if reply_account:
+                msg = _deliver_inbound_to_account(
+                    account=reply_account,
+                    from_address=from_address,
+                    subject=subject,
+                    html_body=html_body,
+                    text_body=text_body,
+                    to_addresses=to_addresses,
+                    cc_addresses=all_cc,
+                    thread_id_override=reply_thread_id,
+                )
+                if msg:
+                    message_ids.append(msg["id"])
+                delivered_account_ids.add(reply_account["id"])
+        else:
+            _log.warning(f"Reply+ thread {reply_thread_id} not found")
+
+    # --- Phase F: Deliver to all other matched CRM accounts ---
+    for acct in matched_accounts:
+        if acct["id"] in delivered_account_ids:
+            continue
+        msg = _deliver_inbound_to_account(
+            account=acct,
+            from_address=from_address,
+            subject=subject,
+            html_body=html_body,
+            text_body=text_body,
+            to_addresses=to_addresses,
+            cc_addresses=all_cc,
+        )
+        if msg:
+            message_ids.append(msg["id"])
+        delivered_account_ids.add(acct["id"])
+
+    # --- Phase G: Return ---
+    if not message_ids and not reply_thread_id:
+        return {"status": "no_thread_match", "from": from_address}
+
+    return {
+        "status": "stored",
+        "message_ids": message_ids,
+        "delivered_to": len(delivered_account_ids),
+    }
 
 
 # ============================================================================
