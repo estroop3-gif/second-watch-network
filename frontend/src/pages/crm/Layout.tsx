@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   LayoutDashboard, Users, CalendarDays,
   Activity, Kanban, Target,
@@ -11,6 +12,7 @@ import { usePermissions } from '@/hooks/usePermissions';
 import { useUnreadCount } from '@/hooks/crm/useEmail';
 import { useSidebarBadges } from '@/hooks/crm/useSidebarBadges';
 import { useMarkTabViewed, getTabKeyFromPath } from '@/hooks/crm/useTabViewed';
+import { api } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -28,6 +30,19 @@ const CRMLayout = () => {
   const isEmailRoute = location.pathname.startsWith('/crm/email');
   const markTabViewed = useMarkTabViewed();
   const lastMarkedTab = useRef<string | null>(null);
+  const qc = useQueryClient();
+
+  // Prefetch business card data so the tab loads instantly
+  useEffect(() => {
+    qc.prefetchQuery({
+      queryKey: ['crm-my-business-card'],
+      queryFn: async () => {
+        const res = await api.getCRMBusinessCard();
+        return res.card;
+      },
+      staleTime: 5 * 60 * 1000,
+    });
+  }, []);
 
   // Mark tab as viewed when navigating to a new CRM tab
   useEffect(() => {
