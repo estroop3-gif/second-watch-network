@@ -4504,7 +4504,7 @@ async def upload_business_card_logo(
     logo_url = storage_client.from_("avatars").get_public_url(unique_filename)
 
     # Update the card
-    execute_query(
+    execute_update(
         """
         UPDATE crm_business_cards SET personal_logo_url = :url, updated_at = NOW()
         WHERE profile_id = :pid AND status IN ('draft', 'rejected')
