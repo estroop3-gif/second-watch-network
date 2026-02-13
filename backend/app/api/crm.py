@@ -4977,8 +4977,8 @@ async def update_discussion_category(
         raise HTTPException(status_code=400, detail="No fields to update")
 
     set_clauses = ", ".join(f"{k} = :{k}" for k in fields)
-    execute_query(
-        f"UPDATE crm_discussion_categories SET {set_clauses} WHERE id = :cid",
+    execute_single(
+        f"UPDATE crm_discussion_categories SET {set_clauses} WHERE id = :cid RETURNING id",
         {**fields, "cid": category_id},
     )
     return {"status": "updated"}
@@ -5118,8 +5118,8 @@ async def update_discussion_thread(
         raise HTTPException(status_code=400, detail="No fields to update")
 
     set_clauses = ", ".join(f"{k} = :{k}" for k in fields)
-    execute_query(
-        f"UPDATE crm_discussion_threads SET {set_clauses}, updated_at = NOW() WHERE id = :tid",
+    execute_single(
+        f"UPDATE crm_discussion_threads SET {set_clauses}, updated_at = NOW() WHERE id = :tid RETURNING id",
         {**fields, "tid": thread_id},
     )
     return {"status": "updated"}
