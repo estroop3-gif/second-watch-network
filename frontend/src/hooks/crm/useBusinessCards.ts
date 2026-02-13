@@ -8,7 +8,10 @@ import { api } from '@/lib/api';
 export function useMyBusinessCard() {
   return useQuery({
     queryKey: ['crm-my-business-card'],
-    queryFn: () => api.getCRMBusinessCard(),
+    queryFn: async () => {
+      const res = await api.getCRMBusinessCard();
+      return res.card;
+    },
   });
 }
 
