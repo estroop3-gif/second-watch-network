@@ -2,6 +2,8 @@ import { useState, useMemo } from 'react';
 import {
   useDiscussionCategories,
   useCreateDiscussionCategory,
+  useUpdateDiscussionCategory,
+  useDeleteDiscussionCategory,
   useDiscussionThreads,
   useCreateDiscussionThread,
   useUpdateDiscussionThread,
@@ -131,6 +133,11 @@ const Discussions = () => {
   const [editingReplyId, setEditingReplyId] = useState<string | null>(null);
   const [editReplyContent, setEditReplyContent] = useState('');
 
+  // ---- Edit category state ----
+  const [editingCategory, setEditingCategory] = useState<any>(null);
+  const [editCatName, setEditCatName] = useState('');
+  const [editCatDescription, setEditCatDescription] = useState('');
+
   // ---- Queries ----
   const { data: categoriesData, isLoading: loadingCategories } = useDiscussionCategories();
   const categories: any[] = categoriesData?.categories || categoriesData || [];
@@ -154,6 +161,8 @@ const Discussions = () => {
 
   // ---- Mutations ----
   const createCategory = useCreateDiscussionCategory();
+  const updateCategory = useUpdateDiscussionCategory();
+  const deleteCategory = useDeleteDiscussionCategory();
   const createThread = useCreateDiscussionThread();
   const updateThread = useUpdateDiscussionThread();
   const deleteThread = useDeleteDiscussionThread();
@@ -189,6 +198,40 @@ const Discussions = () => {
     } catch (err: any) {
       toast({ title: 'Error', description: err.message, variant: 'destructive' });
     }
+  };
+
+  const handleUpdateCategory = async () => {
+    if (!editingCategory || !editCatName.trim()) return;
+    try {
+      await updateCategory.mutateAsync({
+        id: editingCategory.id,
+        name: editCatName.trim(),
+        description: editCatDescription.trim() || undefined,
+      });
+      toast({ title: 'Category updated' });
+      setEditingCategory(null);
+      setEditCatName('');
+      setEditCatDescription('');
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleDeleteCategory = async (cat: any) => {
+    if (!confirm(`Delete category "${cat.name}"? It must have no threads.`)) return;
+    try {
+      await deleteCategory.mutateAsync(cat.id);
+      toast({ title: 'Category deleted' });
+      if (selectedCategorySlug === cat.slug) setSelectedCategorySlug('all');
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const startEditCategory = (cat: any) => {
+    setEditingCategory(cat);
+    setEditCatName(cat.name || '');
+    setEditCatDescription(cat.description || '');
   };
 
   const handleCreateThread = async () => {
@@ -350,8 +393,8 @@ const Discussions = () => {
               <div className="flex items-start justify-between gap-4">
                 <div className="flex items-start gap-4 flex-1 min-w-0">
                   <AuthorAvatar
-                    name={thread.author?.display_name || thread.author_display_name}
-                    avatarUrl={thread.author?.avatar_url || thread.author_avatar_url}
+                    name={thread.author_name || thread.author?.display_name}
+                    avatarUrl={thread.author_avatar || thread.author?.avatar_url}
                   />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -367,7 +410,7 @@ const Discussions = () => {
                     </div>
                     <div className="flex items-center gap-3 mt-1 text-sm text-muted-gray">
                       <span className="font-medium text-bone-white/80">
-                        {thread.author?.display_name || thread.author_display_name || 'Unknown'}
+                        {thread.author_name || thread.author?.display_name || 'Unknown'}
                       </span>
                       <span className="flex items-center gap-1">
                         <Clock className="h-3 w-3" />
@@ -502,15 +545,15 @@ const Discussions = () => {
                       <div className="flex items-start gap-3">
                         <CornerDownRight className="h-4 w-4 text-muted-gray/40 mt-1 shrink-0" />
                         <AuthorAvatar
-                          name={reply.author?.display_name || reply.author_display_name}
-                          avatarUrl={reply.author?.avatar_url || reply.author_avatar_url}
+                          name={reply.author_name || reply.author?.display_name}
+                          avatarUrl={reply.author_avatar || reply.author?.avatar_url}
                           size="sm"
                         />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2 text-sm">
                               <span className="font-medium text-bone-white/80">
-                                {reply.author?.display_name || reply.author_display_name || 'Unknown'}
+                                {reply.author_name || reply.author?.display_name || 'Unknown'}
                               </span>
                               <span className="text-muted-gray flex items-center gap-1">
                                 <Clock className="h-3 w-3" />
@@ -699,19 +742,38 @@ const Discussions = () => {
           </span>
         ) : (
           categories.map((cat: any) => (
-            <Button
-              key={cat.id}
-              variant={selectedCategorySlug === cat.slug ? 'default' : 'ghost'}
-              size="sm"
-              onClick={() => setSelectedCategorySlug(cat.slug)}
-              className={
-                selectedCategorySlug === cat.slug
-                  ? 'bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90 rounded-full shrink-0'
-                  : 'text-muted-gray hover:text-bone-white rounded-full shrink-0'
-              }
-            >
-              {cat.name}
-            </Button>
+            <div key={cat.id} className="flex items-center gap-0.5 shrink-0 group/cat">
+              <Button
+                variant={selectedCategorySlug === cat.slug ? 'default' : 'ghost'}
+                size="sm"
+                onClick={() => setSelectedCategorySlug(cat.slug)}
+                className={
+                  selectedCategorySlug === cat.slug
+                    ? 'bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90 rounded-full'
+                    : 'text-muted-gray hover:text-bone-white rounded-full'
+                }
+              >
+                {cat.name}
+              </Button>
+              {isAdmin && (
+                <div className="flex items-center opacity-0 group-hover/cat:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => startEditCategory(cat)}
+                    className="p-1 text-muted-gray hover:text-accent-yellow transition-colors"
+                    title="Edit category"
+                  >
+                    <Pencil className="h-3 w-3" />
+                  </button>
+                  <button
+                    onClick={() => handleDeleteCategory(cat)}
+                    className="p-1 text-muted-gray hover:text-red-400 transition-colors"
+                    title="Delete category"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
+            </div>
           ))
         )}
       </div>
@@ -765,8 +827,8 @@ const Discussions = () => {
               <div className="flex items-center gap-4 p-4">
                 {/* Author avatar */}
                 <AuthorAvatar
-                  name={t.author?.display_name || t.author_display_name || t.author_name}
-                  avatarUrl={t.author?.avatar_url || t.author_avatar_url}
+                  name={t.author_name || t.author?.display_name}
+                  avatarUrl={t.author_avatar || t.author?.avatar_url}
                 />
 
                 {/* Thread info */}
@@ -794,7 +856,7 @@ const Discussions = () => {
                   <div className="flex items-center gap-3 mt-1 text-xs text-muted-gray">
                     <span className="flex items-center gap-1">
                       <User className="h-3 w-3" />
-                      {t.author?.display_name || t.author_display_name || t.author_name || 'Unknown'}
+                      {t.author_name || t.author?.display_name || 'Unknown'}
                     </span>
                     <span className="flex items-center gap-1">
                       <Clock className="h-3 w-3" />
@@ -890,6 +952,59 @@ const Discussions = () => {
                   </>
                 ) : (
                   'Create Category'
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---- Edit Category Dialog (admin only) ---- */}
+      <Dialog open={!!editingCategory} onOpenChange={(open) => { if (!open) setEditingCategory(null); }}>
+        <DialogContent className="bg-[#1a1a1a] border-muted-gray/30 text-bone-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-accent-yellow flex items-center gap-2">
+              <Pencil className="h-5 w-5" />
+              Edit Category
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label className="text-sm text-muted-gray block mb-2">Name</Label>
+              <Input
+                value={editCatName}
+                onChange={(e) => setEditCatName(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30 text-bone-white"
+              />
+            </div>
+            <div>
+              <Label className="text-sm text-muted-gray block mb-2">Description (optional)</Label>
+              <Textarea
+                value={editCatDescription}
+                onChange={(e) => setEditCatDescription(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30 text-bone-white min-h-[80px]"
+              />
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <Button
+                variant="outline"
+                onClick={() => setEditingCategory(null)}
+                className="border-muted-gray/30 text-bone-white"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleUpdateCategory}
+                disabled={!editCatName.trim() || updateCategory.isPending}
+                className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+              >
+                {updateCategory.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  'Save Changes'
                 )}
               </Button>
             </div>
