@@ -123,8 +123,10 @@ const AdminBusinessCards = () => {
   };
 
   const getRepName = (card: any): string => {
+    if (card.profile_name) return card.profile_name;
     if (card.full_name) return card.full_name;
     if (card.rep_name) return card.rep_name;
+    if (card.swn_name) return card.swn_name;
     const first = card.first_name || '';
     const last = card.last_name || '';
     return `${first} ${last}`.trim() || 'Unknown';
