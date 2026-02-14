@@ -41,6 +41,9 @@ class Profile(ProfileBase):
     is_moderator: Optional[bool] = False
     is_order_member: Optional[bool] = False
     is_lodge_officer: Optional[bool] = False
+    is_sales_agent: Optional[bool] = False
+    is_sales_admin: Optional[bool] = False
+    is_sales_rep: Optional[bool] = False
     subscription_tier: Optional[str] = None
     subscription_status: Optional[str] = None
     created_at: datetime

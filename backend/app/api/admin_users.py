@@ -9,7 +9,7 @@ from datetime import datetime
 import secrets
 import string
 
-from app.core.database import get_client
+from app.core.database import get_client, get_db_session
 
 router = APIRouter()
 
@@ -582,9 +582,30 @@ async def delete_user(user_id: str, authorization: str = Header(None)):
 
     try:
         from app.core.cognito import CognitoAuth
+        from sqlalchemy import text
 
         # Delete from Cognito
         CognitoAuth.admin_delete_user(user.data["email"])
+
+        # Clean up tables with non-CASCADE FK constraints before deleting profile.
+        # Tables with ON DELETE CASCADE or ON DELETE SET NULL are handled by the DB.
+        with get_db_session() as db:
+            # CRM tables
+            db.execute(text("DELETE FROM crm_email_accounts WHERE profile_id = :uid"), {"uid": user_id})
+            db.execute(text("DELETE FROM crm_email_internal_notes WHERE author_id = :uid"), {"uid": user_id})
+            db.execute(text("DELETE FROM crm_email_sequence_enrollments WHERE enrolled_by = :uid"), {"uid": user_id})
+            db.execute(text("DELETE FROM crm_email_sequences WHERE created_by = :uid"), {"uid": user_id})
+            db.execute(text("DELETE FROM crm_email_templates WHERE created_by = :uid"), {"uid": user_id})
+            db.execute(text("DELETE FROM crm_discussion_replies WHERE author_id = :uid"), {"uid": user_id})
+            db.execute(text("DELETE FROM crm_discussion_threads WHERE author_id = :uid"), {"uid": user_id})
+            db.execute(text("DELETE FROM crm_discussion_categories WHERE created_by = :uid"), {"uid": user_id})
+            db.execute(text("DELETE FROM crm_business_cards WHERE profile_id = :uid"), {"uid": user_id})
+            db.execute(text("DELETE FROM crm_ai_usage WHERE profile_id = :uid"), {"uid": user_id})
+            db.execute(text("DELETE FROM crm_contact_notes WHERE author_id = :uid"), {"uid": user_id})
+            db.execute(text("DELETE FROM crm_training_resources WHERE author_id = :uid"), {"uid": user_id})
+            db.execute(text("UPDATE crm_email_threads SET assigned_to = NULL WHERE assigned_to = :uid"), {"uid": user_id})
+            # Notifications
+            db.execute(text("DELETE FROM notifications WHERE user_id = :uid"), {"uid": user_id})
 
         # Delete from database (cascades to user_roles, user_storage_usage, etc.)
         client.table("profiles").delete().eq("id", user_id).execute()
