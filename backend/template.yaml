@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Second Watch Network API - FastAPI on Lambda with WebSocket - Updated 2026-02-09
+Description: Second Watch Network API - FastAPI on Lambda with WebSocket - Updated 2026-02-14
 
 Globals:
   Function:

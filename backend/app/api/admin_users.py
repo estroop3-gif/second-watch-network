@@ -584,30 +584,56 @@ async def delete_user(user_id: str, authorization: str = Header(None)):
         from app.core.cognito import CognitoAuth
         from sqlalchemy import text
 
-        # Delete from Cognito
-        CognitoAuth.admin_delete_user(user.data["email"])
+        # Delete from Cognito (do this first; if profile delete fails later we can recreate)
+        try:
+            CognitoAuth.admin_delete_user(user.data["email"])
+        except Exception:
+            pass  # Cognito user may already be gone
 
-        # Clean up tables with non-CASCADE FK constraints before deleting profile.
-        # Tables with ON DELETE CASCADE or ON DELETE SET NULL are handled by the DB.
+        # Dynamically clear ALL foreign key references to this profile.
+        # For each FK pointing at profiles.id with NO ACTION or RESTRICT,
+        # SET NULL if the column is nullable, otherwise DELETE the row.
         with get_db_session() as db:
-            # CRM tables
-            db.execute(text("DELETE FROM crm_email_accounts WHERE profile_id = :uid"), {"uid": user_id})
-            db.execute(text("DELETE FROM crm_email_internal_notes WHERE author_id = :uid"), {"uid": user_id})
-            db.execute(text("DELETE FROM crm_email_sequence_enrollments WHERE enrolled_by = :uid"), {"uid": user_id})
-            db.execute(text("DELETE FROM crm_email_sequences WHERE created_by = :uid"), {"uid": user_id})
-            db.execute(text("DELETE FROM crm_email_templates WHERE created_by = :uid"), {"uid": user_id})
-            db.execute(text("DELETE FROM crm_discussion_replies WHERE author_id = :uid"), {"uid": user_id})
-            db.execute(text("DELETE FROM crm_discussion_threads WHERE author_id = :uid"), {"uid": user_id})
-            db.execute(text("DELETE FROM crm_discussion_categories WHERE created_by = :uid"), {"uid": user_id})
-            db.execute(text("DELETE FROM crm_business_cards WHERE profile_id = :uid"), {"uid": user_id})
-            db.execute(text("DELETE FROM crm_ai_usage WHERE profile_id = :uid"), {"uid": user_id})
-            db.execute(text("DELETE FROM crm_contact_notes WHERE author_id = :uid"), {"uid": user_id})
-            db.execute(text("DELETE FROM crm_training_resources WHERE author_id = :uid"), {"uid": user_id})
-            db.execute(text("UPDATE crm_email_threads SET assigned_to = NULL WHERE assigned_to = :uid"), {"uid": user_id})
-            # Notifications
-            db.execute(text("DELETE FROM notifications WHERE user_id = :uid"), {"uid": user_id})
+            fk_refs = db.execute(text("""
+                SELECT
+                    tc.table_name,
+                    kcu.column_name,
+                    rc.delete_rule,
+                    c.is_nullable
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                    AND tc.table_schema = kcu.table_schema
+                JOIN information_schema.referential_constraints rc
+                    ON tc.constraint_name = rc.constraint_name
+                    AND tc.table_schema = rc.constraint_schema
+                JOIN information_schema.constraint_column_usage ccu
+                    ON tc.constraint_name = ccu.constraint_name
+                    AND tc.table_schema = ccu.constraint_schema
+                JOIN information_schema.columns c
+                    ON c.table_name = tc.table_name
+                    AND c.column_name = kcu.column_name
+                    AND c.table_schema = tc.table_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                    AND ccu.table_name = 'profiles'
+                    AND ccu.column_name = 'id'
+                    AND rc.delete_rule IN ('NO ACTION', 'RESTRICT')
+            """)).fetchall()
 
-        # Delete from database (cascades to user_roles, user_storage_usage, etc.)
+            for ref in fk_refs:
+                tbl = ref[0]
+                col = ref[1]
+                nullable = ref[3] == "YES"
+                if nullable:
+                    db.execute(text(
+                        f'UPDATE "{tbl}" SET "{col}" = NULL WHERE "{col}" = :uid'
+                    ), {"uid": user_id})
+                else:
+                    db.execute(text(
+                        f'DELETE FROM "{tbl}" WHERE "{col}" = :uid'
+                    ), {"uid": user_id})
+
+        # Delete from database (CASCADE/SET NULL FKs handled by the DB)
         client.table("profiles").delete().eq("id", user_id).execute()
 
         return {
