@@ -287,11 +287,13 @@ Resources:
         ApiRoot:
           Type: HttpApi
           Properties:
+            ApiId: !Ref ServerlessHttpApi
             Path: /
             Method: ANY
         ApiProxy:
           Type: HttpApi
           Properties:
+            ApiId: !Ref ServerlessHttpApi
             Path: /{proxy+}
             Method: ANY
         # Keep-warm: EventBridge pings every 1 minute to prevent cold starts
