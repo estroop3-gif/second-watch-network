@@ -5018,6 +5018,8 @@ async def get_business_card(
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
 ):
     """Get a specific business card (admin)."""
+    from app.core.storage import storage_client
+
     row = execute_single(
         """
         SELECT bc.*, p.full_name as profile_name, p.avatar_url as profile_avatar
@@ -5029,6 +5031,17 @@ async def get_business_card(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Card not found")
+    # Resolve logo to presigned URL
+    if row.get("personal_logo_url"):
+        row = dict(row)
+        logo_val = row["personal_logo_url"]
+        if logo_val.startswith("http"):
+            parts = logo_val.split(".amazonaws.com/", 1)
+            logo_key = parts[1] if len(parts) > 1 else logo_val
+        else:
+            logo_key = logo_val
+        signed = storage_client.from_("avatars").create_signed_url(logo_key, 3600)
+        row["personal_logo_url"] = signed.get("signedUrl", "")
     return {"card": row}
 
 

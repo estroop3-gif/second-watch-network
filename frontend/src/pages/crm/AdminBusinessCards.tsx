@@ -294,24 +294,22 @@ const AdminBusinessCards = () => {
                     <div>
                       <span className="text-muted-gray block text-xs">Name</span>
                       <p className="text-bone-white">
-                        {selectedCard.full_name ||
-                          `${selectedCard.first_name || ''} ${selectedCard.last_name || ''}`.trim() ||
-                          'N/A'}
+                        {selectedCard.swn_name || selectedCard.profile_name || 'N/A'}
                       </p>
                     </div>
                     <div>
                       <span className="text-muted-gray block text-xs">Title</span>
                       <p className="text-bone-white">
-                        {selectedCard.title || selectedCard.job_title || 'N/A'}
+                        {selectedCard.swn_title || 'N/A'}
                       </p>
                     </div>
                     <div>
                       <span className="text-muted-gray block text-xs">Email</span>
-                      <p className="text-bone-white">{selectedCard.email || 'N/A'}</p>
+                      <p className="text-bone-white">{selectedCard.swn_email || 'N/A'}</p>
                     </div>
                     <div>
                       <span className="text-muted-gray block text-xs">Phone</span>
-                      <p className="text-bone-white">{selectedCard.phone || 'N/A'}</p>
+                      <p className="text-bone-white">{selectedCard.swn_phone || 'N/A'}</p>
                     </div>
                   </div>
                 </div>
@@ -324,34 +322,38 @@ const AdminBusinessCards = () => {
                 </Label>
                 <div className="rounded-lg border border-muted-gray/30 bg-charcoal-black p-4 space-y-3">
                   <div className="grid grid-cols-2 gap-3 text-sm">
-                    {selectedCard.website && (
+                    <div>
+                      <span className="text-muted-gray block text-xs">Name</span>
+                      <p className="text-bone-white">{selectedCard.personal_name || 'N/A'}</p>
+                    </div>
+                    <div>
+                      <span className="text-muted-gray block text-xs">Title</span>
+                      <p className="text-bone-white">{selectedCard.personal_title || 'N/A'}</p>
+                    </div>
+                    <div>
+                      <span className="text-muted-gray block text-xs">Email</span>
+                      <p className="text-bone-white">{selectedCard.personal_email || 'N/A'}</p>
+                    </div>
+                    <div>
+                      <span className="text-muted-gray block text-xs">Phone</span>
+                      <p className="text-bone-white">{selectedCard.personal_phone || 'N/A'}</p>
+                    </div>
+                    {selectedCard.personal_website && (
                       <div className="col-span-2">
                         <span className="text-muted-gray block text-xs">Website</span>
-                        <p className="text-bone-white">{selectedCard.website}</p>
-                      </div>
-                    )}
-                    {selectedCard.address && (
-                      <div className="col-span-2">
-                        <span className="text-muted-gray block text-xs">Address</span>
-                        <p className="text-bone-white">{selectedCard.address}</p>
-                      </div>
-                    )}
-                    {selectedCard.tagline && (
-                      <div className="col-span-2">
-                        <span className="text-muted-gray block text-xs">Tagline</span>
-                        <p className="text-bone-white">{selectedCard.tagline}</p>
+                        <p className="text-bone-white">{selectedCard.personal_website}</p>
                       </div>
                     )}
                   </div>
 
                   {/* Personal Logo */}
-                  {selectedCard.logo_url && (
+                  {selectedCard.personal_logo_url && (
                     <div className="pt-3 border-t border-muted-gray/30">
                       <span className="text-muted-gray text-xs block mb-1">
                         Personal Logo
                       </span>
                       <img
-                        src={selectedCard.logo_url}
+                        src={selectedCard.personal_logo_url}
                         alt="Business card logo"
                         className="max-h-20 object-contain rounded"
                       />
@@ -359,72 +361,28 @@ const AdminBusinessCards = () => {
                   )}
 
                   {/* Social Links */}
-                  {(selectedCard.linkedin ||
-                    selectedCard.twitter ||
-                    selectedCard.instagram ||
-                    selectedCard.facebook ||
-                    selectedCard.social_links) && (
+                  {selectedCard.personal_social_links &&
+                    typeof selectedCard.personal_social_links === 'object' &&
+                    Object.values(selectedCard.personal_social_links).some((v: any) => !!v) && (
                     <div className="pt-3 border-t border-muted-gray/30">
                       <span className="text-muted-gray text-xs block mb-2">
                         Social Links
                       </span>
                       <div className="flex flex-wrap gap-2 text-sm">
-                        {selectedCard.linkedin && (
-                          <a
-                            href={selectedCard.linkedin}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-400 hover:text-blue-300 underline"
-                          >
-                            LinkedIn
-                          </a>
+                        {Object.entries(selectedCard.personal_social_links).map(
+                          ([platform, url]: [string, any]) =>
+                            url && (
+                              <a
+                                key={platform}
+                                href={url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-400 hover:text-blue-300 underline"
+                              >
+                                {platform.charAt(0).toUpperCase() + platform.slice(1)}
+                              </a>
+                            )
                         )}
-                        {selectedCard.twitter && (
-                          <a
-                            href={selectedCard.twitter}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-400 hover:text-blue-300 underline"
-                          >
-                            Twitter
-                          </a>
-                        )}
-                        {selectedCard.instagram && (
-                          <a
-                            href={selectedCard.instagram}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-400 hover:text-blue-300 underline"
-                          >
-                            Instagram
-                          </a>
-                        )}
-                        {selectedCard.facebook && (
-                          <a
-                            href={selectedCard.facebook}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-400 hover:text-blue-300 underline"
-                          >
-                            Facebook
-                          </a>
-                        )}
-                        {selectedCard.social_links &&
-                          typeof selectedCard.social_links === 'object' &&
-                          Object.entries(selectedCard.social_links).map(
-                            ([platform, url]: [string, any]) =>
-                              url && (
-                                <a
-                                  key={platform}
-                                  href={url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-blue-400 hover:text-blue-300 underline"
-                                >
-                                  {platform.charAt(0).toUpperCase() + platform.slice(1)}
-                                </a>
-                              )
-                          )}
                       </div>
                     </div>
                   )}
