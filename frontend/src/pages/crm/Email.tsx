@@ -34,6 +34,9 @@ import { useEmailCompose } from '@/context/EmailComposeContext';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useToast } from '@/hooks/use-toast';
 import { useCRMReps } from '@/hooks/crm/useInteractions';
+import { useCreateActivity } from '@/hooks/crm/useActivities';
+import { useContacts } from '@/hooks/crm/useContacts';
+import CalendarActivityDialog from '@/components/crm/CalendarActivityDialog';
 import { normalizeSubject } from '@/lib/emailUtils';
 import { formatDateTime } from '@/lib/dateUtils';
 
@@ -69,6 +72,8 @@ const CRMEmail = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showTeamDirectory, setShowTeamDirectory] = useState(false);
   const [replyAllCc, setReplyAllCc] = useState<string[]>([]);
+  const [activityDialogOpen, setActivityDialogOpen] = useState(false);
+  const [activityPrefill, setActivityPrefill] = useState<any>(null);
 
   const searchRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
@@ -106,6 +111,8 @@ const CRMEmail = () => {
   const bulkAction = useBulkThreadAction();
   const cancelScheduled = useCancelScheduledEmail();
   const assignThread = useAssignThread();
+  const createActivity = useCreateActivity();
+  const { data: contactsData } = useContacts({ limit: 200 });
 
   const threads = filterTab === 'scheduled' ? [] : (inboxData?.threads || []);
   const scheduledMessages = scheduledData?.messages || [];
@@ -580,6 +587,11 @@ const CRMEmail = () => {
                           defaultExpanded={i === messages.length - 1}
                           onForward={() => handleForward(msg)}
                           onReply={() => setShowReply(true)}
+                          contactId={thread?.contact_id}
+                          onAddToCalendar={(prefilled) => {
+                            setActivityPrefill(prefilled);
+                            setActivityDialogOpen(true);
+                          }}
                         />
                       ))
                     )}
@@ -641,6 +653,22 @@ const CRMEmail = () => {
           onOpenChange={setShowLinkContact}
         />
       )}
+      <CalendarActivityDialog
+        open={activityDialogOpen}
+        onOpenChange={setActivityDialogOpen}
+        contacts={contactsData?.contacts || []}
+        onSubmit={(data) => {
+          createActivity.mutate(data, {
+            onSuccess: () => {
+              setActivityDialogOpen(false);
+              setActivityPrefill(null);
+            },
+          });
+        }}
+        isSubmitting={createActivity.isPending}
+        editActivity={activityPrefill}
+        defaultDate={activityPrefill?.activity_date}
+      />
     </div>
   );
 };

@@ -666,6 +666,7 @@ async def list_activities(
     activity_type: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),
+    tz: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
@@ -673,8 +674,15 @@ async def list_activities(
     """List activities. Filter by contact, rep, date range, type."""
     is_admin = has_permission(profile, Permission.CRM_MANAGE)
 
+    # Validate timezone
+    user_tz = "UTC"
+    if tz:
+        import pytz
+        if tz in pytz.all_timezones:
+            user_tz = tz
+
     conditions = []
-    params = {}
+    params = {"tz": user_tz}
 
     if not is_admin:
         conditions.append("a.rep_id = :my_rep_id")
@@ -693,11 +701,11 @@ async def list_activities(
         params["activity_type"] = activity_type
 
     if date_from:
-        conditions.append("a.activity_date >= :date_from")
+        conditions.append("(a.activity_date AT TIME ZONE :tz)::date >= :date_from::date")
         params["date_from"] = date_from
 
     if date_to:
-        conditions.append("a.activity_date <= :date_to")
+        conditions.append("(a.activity_date AT TIME ZONE :tz)::date <= :date_to::date")
         params["date_to"] = date_to
 
     where = " AND ".join(conditions) if conditions else "1=1"
@@ -840,19 +848,28 @@ async def delete_activity(
 async def get_activity_calendar(
     month: Optional[int] = Query(None),
     year: Optional[int] = Query(None),
+    tz: Optional[str] = Query(None),
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
 ):
     """Get activities grouped by date for calendar view."""
     is_admin = has_permission(profile, Permission.CRM_MANAGE)
+
+    # Validate timezone
+    user_tz = "UTC"
+    if tz:
+        import pytz
+        if tz in pytz.all_timezones:
+            user_tz = tz
+
     now = datetime.utcnow()
     target_month = month or now.month
     target_year = year or now.year
 
     conditions = [
-        "EXTRACT(MONTH FROM a.activity_date) = :month",
-        "EXTRACT(YEAR FROM a.activity_date) = :year",
+        "EXTRACT(MONTH FROM a.activity_date AT TIME ZONE :tz) = :month",
+        "EXTRACT(YEAR FROM a.activity_date AT TIME ZONE :tz) = :year",
     ]
-    params = {"month": target_month, "year": target_year}
+    params = {"month": target_month, "year": target_year, "tz": user_tz}
 
     if not is_admin:
         conditions.append("a.rep_id = :rep_id")
@@ -862,7 +879,7 @@ async def get_activity_calendar(
 
     rows = execute_query(
         f"""
-        SELECT a.activity_date::date as date,
+        SELECT (a.activity_date AT TIME ZONE :tz)::date as date,
                a.activity_type,
                a.subject,
                a.id,
@@ -887,11 +904,11 @@ async def get_activity_calendar(
 
     # Also fetch follow-ups scheduled in this month
     fu_conditions = [
-        "EXTRACT(MONTH FROM a.follow_up_date) = :month",
-        "EXTRACT(YEAR FROM a.follow_up_date) = :year",
+        "EXTRACT(MONTH FROM a.follow_up_date AT TIME ZONE :tz) = :month",
+        "EXTRACT(YEAR FROM a.follow_up_date AT TIME ZONE :tz) = :year",
         "a.follow_up_date IS NOT NULL",
     ]
-    fu_params = {"month": target_month, "year": target_year}
+    fu_params = {"month": target_month, "year": target_year, "tz": user_tz}
 
     if not is_admin:
         fu_conditions.append("a.rep_id = :rep_id")
@@ -901,7 +918,7 @@ async def get_activity_calendar(
 
     fu_rows = execute_query(
         f"""
-        SELECT a.follow_up_date::date as date,
+        SELECT (a.follow_up_date AT TIME ZONE :tz)::date as date,
                a.follow_up_notes,
                a.subject,
                a.id,
@@ -929,9 +946,16 @@ async def get_activity_calendar(
 
 @router.get("/activities/follow-ups")
 async def get_follow_ups(
+    tz: Optional[str] = Query(None),
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
 ):
     """Get upcoming follow-ups for the current rep."""
+    user_tz = "UTC"
+    if tz:
+        import pytz
+        if tz in pytz.all_timezones:
+            user_tz = tz
+
     rows = execute_query(
         """
         SELECT a.*, c.first_name as contact_first_name, c.last_name as contact_last_name,
@@ -940,11 +964,11 @@ async def get_follow_ups(
         LEFT JOIN crm_contacts c ON c.id = a.contact_id
         WHERE a.rep_id = :rep_id
           AND a.follow_up_date IS NOT NULL
-          AND a.follow_up_date >= CURRENT_DATE
+          AND (a.follow_up_date AT TIME ZONE :tz)::date >= CURRENT_DATE
         ORDER BY a.follow_up_date ASC
         LIMIT 50
         """,
-        {"rep_id": profile["id"]},
+        {"rep_id": profile["id"], "tz": user_tz},
     )
     return {"follow_ups": rows}
 
@@ -2323,7 +2347,10 @@ async def get_email_thread(
                (SELECT COALESCE(json_agg(json_build_object(
                    'id', a.id, 'filename', a.filename, 'content_type', a.content_type,
                    'size_bytes', a.size_bytes
-               )), '[]'::json) FROM crm_email_attachments a WHERE a.message_id = m.id) as attachments
+               )), '[]'::json) FROM crm_email_attachments a WHERE a.message_id = m.id) as attachments,
+               cal_event.ce_id, cal_event.ce_title, cal_event.ce_starts_at, cal_event.ce_ends_at,
+               cal_event.ce_location, cal_event.ce_meet_link, cal_event.ce_organizer_email,
+               cal_event.ce_status, cal_event.ce_all_day
         FROM crm_email_messages m
         LEFT JOIN LATERAL (
             SELECT COUNT(*) as cnt, MIN(o.opened_at) as first_opened_at, MAX(o.opened_at) as last_opened_at
@@ -2333,13 +2360,19 @@ async def get_email_thread(
             ON LOWER(sender_acct.email_address) = LOWER(m.from_address) AND sender_acct.is_active = true
         LEFT JOIN profiles sender_prof
             ON sender_prof.id = sender_acct.profile_id
+        LEFT JOIN LATERAL (
+            SELECT ce.id as ce_id, ce.title as ce_title, ce.starts_at as ce_starts_at,
+                   ce.ends_at as ce_ends_at, ce.location as ce_location, ce.meet_link as ce_meet_link,
+                   ce.organizer_email as ce_organizer_email, ce.status as ce_status, ce.all_day as ce_all_day
+            FROM crm_calendar_events ce WHERE ce.message_id = m.id LIMIT 1
+        ) cal_event ON true
         WHERE m.thread_id = :tid
         ORDER BY m.created_at ASC
         """,
         {"tid": thread_id},
     )
 
-    # Resolve sender avatars
+    # Resolve sender avatars + nest calendar events
     import hashlib
     from app.core.storage import storage_client
     resolved_messages = []
@@ -2355,6 +2388,31 @@ async def get_email_thread(
             # External sender — Gravatar fallback
             email_hash = hashlib.md5(msg["from_address"].strip().lower().encode()).hexdigest()
             msg["sender_avatar_url"] = f"https://www.gravatar.com/avatar/{email_hash}?d=mp&s=64"
+
+        # Nest calendar event if present
+        ce_id = msg.pop("ce_id", None)
+        ce_title = msg.pop("ce_title", None)
+        ce_starts_at = msg.pop("ce_starts_at", None)
+        ce_ends_at = msg.pop("ce_ends_at", None)
+        ce_location = msg.pop("ce_location", None)
+        ce_meet_link = msg.pop("ce_meet_link", None)
+        ce_organizer_email = msg.pop("ce_organizer_email", None)
+        ce_status = msg.pop("ce_status", None)
+        ce_all_day = msg.pop("ce_all_day", None)
+        if ce_id:
+            msg["calendar_event"] = {
+                "id": ce_id,
+                "title": ce_title,
+                "starts_at": ce_starts_at,
+                "ends_at": ce_ends_at,
+                "location": ce_location,
+                "meet_link": ce_meet_link,
+                "organizer_email": ce_organizer_email,
+                "status": ce_status,
+                "all_day": ce_all_day,
+            }
+        else:
+            msg["calendar_event"] = None
         resolved_messages.append(msg)
 
     return {"thread": thread, "messages": resolved_messages}
@@ -3234,6 +3292,17 @@ def _deliver_inbound_to_account(
                 )
             except Exception as e:
                 _log.warning(f"Failed to store inbound attachment {att.get('filename')}: {e}")
+
+    # Parse ICS calendar invites from attachments
+    if attachments and message:
+        for att in attachments:
+            ct = (att.get("content_type") or "").lower()
+            fn = (att.get("filename") or "").lower()
+            if "calendar" in ct or fn.endswith(".ics"):
+                try:
+                    _parse_and_store_calendar_event(att, message, account, _log)
+                except Exception as e:
+                    _log.warning(f"Failed to parse ICS from {fn}: {e}")
 
     # Update thread: bump last_message_at, increment unread, clear snooze
     execute_single(
@@ -5596,3 +5665,341 @@ async def get_team_directory(
         {},
     )
     return rows
+
+
+# ============================================================================
+# ICS Calendar Invite Parsing
+# ============================================================================
+
+def _parse_and_store_calendar_event(att: dict, message: dict, account: dict, _log):
+    """Parse an ICS attachment and store as a calendar event."""
+    import httpx as _httpx
+    import re
+
+    # Download the ICS content
+    ics_bytes = None
+    download_url = att.get("download_url")
+    if download_url:
+        resp = _httpx.get(download_url, timeout=30)
+        if resp.status_code == 200:
+            ics_bytes = resp.content
+    if not ics_bytes:
+        return
+
+    ics_text = ics_bytes.decode("utf-8", errors="replace")
+
+    # Parse with icalendar
+    try:
+        from icalendar import Calendar
+    except ImportError:
+        _log.warning("icalendar package not installed, skipping ICS parse")
+        return
+
+    cal = Calendar.from_ical(ics_text)
+    for component in cal.walk():
+        if component.name != "VEVENT":
+            continue
+
+        title = str(component.get("SUMMARY", "")) or "Untitled Event"
+        description = str(component.get("DESCRIPTION", "")) or None
+        location = str(component.get("LOCATION", "")) or None
+        organizer = component.get("ORGANIZER")
+        organizer_email = None
+        organizer_name = None
+        if organizer:
+            org_str = str(organizer)
+            if org_str.lower().startswith("mailto:"):
+                organizer_email = org_str[7:]
+            org_params = getattr(organizer, "params", {})
+            organizer_name = str(org_params.get("CN", "")) or None
+
+        uid = str(component.get("UID", "")) or None
+
+        dtstart = component.get("DTSTART")
+        dtend = component.get("DTEND")
+
+        starts_at = dtstart.dt if dtstart else None
+        ends_at = dtend.dt if dtend else None
+        if not starts_at:
+            continue
+
+        # Detect all-day events (date vs datetime)
+        all_day = not hasattr(starts_at, "hour")
+        if all_day:
+            from datetime import datetime as _dt, timezone as _tz
+            starts_at = _dt.combine(starts_at, _dt.min.time(), tzinfo=_tz.utc)
+            if ends_at:
+                ends_at = _dt.combine(ends_at, _dt.min.time(), tzinfo=_tz.utc)
+
+        # Make timezone-aware if naive
+        if hasattr(starts_at, "tzinfo") and starts_at.tzinfo is None:
+            from datetime import timezone as _tz
+            starts_at = starts_at.replace(tzinfo=_tz.utc)
+        if ends_at and hasattr(ends_at, "tzinfo") and ends_at.tzinfo is None:
+            from datetime import timezone as _tz
+            ends_at = ends_at.replace(tzinfo=_tz.utc)
+
+        # Detect Google Meet link
+        meet_link = None
+        x_conf = component.get("X-GOOGLE-CONFERENCE")
+        if x_conf:
+            meet_link = str(x_conf)
+        if not meet_link and description:
+            meet_match = re.search(r'https://meet\.google\.com/[a-z\-]+', description)
+            if meet_match:
+                meet_link = meet_match.group(0)
+        if not meet_link and location:
+            meet_match = re.search(r'https://meet\.google\.com/[a-z\-]+', location)
+            if meet_match:
+                meet_link = meet_match.group(0)
+
+        # Upsert: use uid + account_id for dedup
+        execute_insert(
+            """
+            INSERT INTO crm_calendar_events
+                (message_id, account_id, rep_id, title, description, location, meet_link,
+                 starts_at, ends_at, all_day, organizer_email, organizer_name, uid, status, raw_ics)
+            VALUES (:mid, :aid, :rid, :title, :desc, :loc, :meet,
+                    :starts, :ends, :all_day, :org_email, :org_name, :uid, 'pending', :raw)
+            ON CONFLICT (uid, account_id) WHERE uid IS NOT NULL
+            DO UPDATE SET title = EXCLUDED.title, description = EXCLUDED.description,
+                          location = EXCLUDED.location, meet_link = EXCLUDED.meet_link,
+                          starts_at = EXCLUDED.starts_at, ends_at = EXCLUDED.ends_at,
+                          organizer_email = EXCLUDED.organizer_email, organizer_name = EXCLUDED.organizer_name,
+                          raw_ics = EXCLUDED.raw_ics
+            RETURNING id
+            """,
+            {
+                "mid": message["id"],
+                "aid": account["id"],
+                "rid": account["profile_id"],
+                "title": title,
+                "desc": description,
+                "loc": location,
+                "meet": meet_link,
+                "starts": starts_at.isoformat(),
+                "ends": ends_at.isoformat() if ends_at else None,
+                "all_day": all_day,
+                "org_email": organizer_email,
+                "org_name": organizer_name,
+                "uid": uid,
+                "raw": ics_text,
+            },
+        )
+        _log.info(f"Stored calendar event '{title}' from ICS (uid={uid})")
+        break  # Only handle the first VEVENT
+
+
+# ============================================================================
+# CRM Calendar Events
+# ============================================================================
+
+@router.get("/calendar/events")
+async def list_calendar_events(
+    month: Optional[int] = Query(None),
+    year: Optional[int] = Query(None),
+    status: Optional[str] = Query(None),
+    tz: Optional[str] = Query(None),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get calendar events (parsed from ICS invites) for a month."""
+    user_tz = "UTC"
+    if tz:
+        import pytz
+        if tz in pytz.all_timezones:
+            user_tz = tz
+
+    now = datetime.utcnow()
+    target_month = month or now.month
+    target_year = year or now.year
+
+    conditions = [
+        "ce.rep_id = :rep_id",
+        "EXTRACT(MONTH FROM ce.starts_at AT TIME ZONE :tz) = :month",
+        "EXTRACT(YEAR FROM ce.starts_at AT TIME ZONE :tz) = :year",
+    ]
+    params = {"rep_id": profile["id"], "month": target_month, "year": target_year, "tz": user_tz}
+
+    if status:
+        conditions.append("ce.status = :status")
+        params["status"] = status
+
+    where = " AND ".join(conditions)
+
+    rows = execute_query(
+        f"""
+        SELECT ce.*,
+               (ce.starts_at AT TIME ZONE :tz)::date as date,
+               t.subject as thread_subject,
+               t.id as thread_id
+        FROM crm_calendar_events ce
+        LEFT JOIN crm_email_messages m ON m.id = ce.message_id
+        LEFT JOIN crm_email_threads t ON t.id = m.thread_id
+        WHERE {where}
+        ORDER BY ce.starts_at ASC
+        """,
+        params,
+    )
+
+    # Group by date for calendar view
+    events_by_date = {}
+    for row in rows:
+        d = str(row["date"])
+        if d not in events_by_date:
+            events_by_date[d] = []
+        events_by_date[d].append(row)
+
+    return {"events": events_by_date, "month": target_month, "year": target_year}
+
+
+@router.get("/calendar/events/pending/count")
+async def pending_invite_count(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get count of pending calendar invites for sidebar badge."""
+    row = execute_single(
+        "SELECT COUNT(*) as count FROM crm_calendar_events WHERE rep_id = :rid AND status = 'pending'",
+        {"rid": profile["id"]},
+    )
+    return {"count": row["count"] if row else 0}
+
+
+@router.post("/calendar/events/{event_id}/accept")
+async def accept_calendar_event(
+    event_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Accept a calendar invite: create a CRM activity and send RSVP."""
+    event = execute_single(
+        "SELECT * FROM crm_calendar_events WHERE id = :eid AND rep_id = :rid",
+        {"eid": event_id, "rid": profile["id"]},
+    )
+    if not event:
+        raise HTTPException(404, "Calendar event not found")
+    if event["status"] == "accepted":
+        return {"message": "Already accepted", "event": event}
+
+    # Create a CRM activity from the event
+    activity = execute_single(
+        """
+        INSERT INTO crm_activities
+            (rep_id, activity_type, subject, description, activity_date, duration_minutes)
+        VALUES (:rid, 'meeting', :subj, :desc, :date, :dur)
+        RETURNING *
+        """,
+        {
+            "rid": profile["id"],
+            "subj": event["title"],
+            "desc": "\n".join(filter(None, [
+                event.get("description"),
+                f"Location: {event['location']}" if event.get("location") else None,
+                f"Google Meet: {event['meet_link']}" if event.get("meet_link") else None,
+                f"Organizer: {event.get('organizer_name', '')} <{event.get('organizer_email', '')}>",
+            ])),
+            "date": event["starts_at"],
+            "dur": int((event["ends_at"] - event["starts_at"]).total_seconds() / 60) if event.get("ends_at") else None,
+        },
+    )
+
+    # Link activity to calendar event and update status
+    execute_single(
+        """
+        UPDATE crm_calendar_events SET status = 'accepted', activity_id = :aid
+        WHERE id = :eid RETURNING id
+        """,
+        {"aid": activity["id"], "eid": event_id},
+    )
+
+    # Send RSVP reply if we have the organizer email and an email account
+    if event.get("organizer_email") and event.get("raw_ics"):
+        try:
+            _send_rsvp_reply(event, account_id=event["account_id"], accepted=True)
+        except Exception:
+            pass  # Best-effort RSVP
+
+    updated = execute_single(
+        "SELECT * FROM crm_calendar_events WHERE id = :eid",
+        {"eid": event_id},
+    )
+    return {"message": "Event accepted and added to calendar", "event": updated, "activity": activity}
+
+
+@router.post("/calendar/events/{event_id}/decline")
+async def decline_calendar_event(
+    event_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Decline a calendar invite."""
+    event = execute_single(
+        "SELECT * FROM crm_calendar_events WHERE id = :eid AND rep_id = :rid",
+        {"eid": event_id, "rid": profile["id"]},
+    )
+    if not event:
+        raise HTTPException(404, "Calendar event not found")
+
+    execute_single(
+        "UPDATE crm_calendar_events SET status = 'declined' WHERE id = :eid RETURNING id",
+        {"eid": event_id},
+    )
+
+    # Send decline RSVP (best-effort)
+    if event.get("organizer_email") and event.get("raw_ics"):
+        try:
+            _send_rsvp_reply(event, account_id=event["account_id"], accepted=False)
+        except Exception:
+            pass
+
+    return {"message": "Event declined"}
+
+
+def _send_rsvp_reply(event: dict, account_id: str, accepted: bool):
+    """Send an RSVP reply email with an ICS attachment."""
+    import resend as resend_sdk
+    from app.core.config import settings
+    from icalendar import Calendar, Event, vCalAddress, vText
+    from datetime import timezone as _tz
+
+    account = execute_single(
+        "SELECT * FROM crm_email_accounts WHERE id = :aid",
+        {"aid": account_id},
+    )
+    if not account:
+        return
+
+    # Build RSVP ICS
+    cal = Calendar()
+    cal.add("prodid", "-//SWN CRM//EN")
+    cal.add("version", "2.0")
+    cal.add("method", "REPLY")
+
+    evt = Event()
+    evt.add("uid", event["uid"])
+    evt.add("dtstart", event["starts_at"])
+    if event.get("ends_at"):
+        evt.add("dtend", event["ends_at"])
+    evt.add("summary", event["title"])
+
+    attendee = vCalAddress(f"mailto:{account['email_address']}")
+    attendee.params["PARTSTAT"] = vText("ACCEPTED" if accepted else "DECLINED")
+    attendee.params["CN"] = vText(account.get("display_name", ""))
+    evt.add("attendee", attendee)
+
+    if event.get("organizer_email"):
+        organizer = vCalAddress(f"mailto:{event['organizer_email']}")
+        if event.get("organizer_name"):
+            organizer.params["CN"] = vText(event["organizer_name"])
+        evt.add("organizer", organizer)
+
+    cal.add_component(evt)
+
+    ics_bytes = cal.to_ical()
+    status_text = "Accepted" if accepted else "Declined"
+
+    resend_sdk.api_key = settings.RESEND_API_KEY
+    resend_sdk.Emails.send({
+        "from": f"{account['display_name']} <{account['email_address']}>",
+        "to": [event["organizer_email"]],
+        "subject": f"{status_text}: {event['title']}",
+        "text": f"{account.get('display_name', '')} has {status_text.lower()} the invitation: {event['title']}",
+        "attachments": [{"filename": "invite.ics", "content": ics_bytes}],
+    })

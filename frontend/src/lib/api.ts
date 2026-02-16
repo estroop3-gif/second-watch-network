@@ -4675,6 +4675,7 @@ class APIClient {
     activity_type?: string
     date_from?: string
     date_to?: string
+    tz?: string
     limit?: number
     offset?: number
   }) {
@@ -4684,6 +4685,7 @@ class APIClient {
     if (params?.activity_type) query.append('activity_type', params.activity_type)
     if (params?.date_from) query.append('date_from', params.date_from)
     if (params?.date_to) query.append('date_to', params.date_to)
+    if (params?.tz) query.append('tz', params.tz)
     if (params?.limit !== undefined) query.append('limit', params.limit.toString())
     if (params?.offset !== undefined) query.append('offset', params.offset.toString())
     const qs = query.toString()
@@ -4702,18 +4704,45 @@ class APIClient {
     return this.delete<any>(`/api/v1/crm/activities/${id}`)
   }
 
-  async getCRMActivityCalendar(month?: number, year?: number) {
+  async getCRMActivityCalendar(month?: number, year?: number, tz?: string) {
     const query = new URLSearchParams()
     if (month !== undefined) query.append('month', month.toString())
     if (year !== undefined) query.append('year', year.toString())
+    if (tz) query.append('tz', tz)
     const qs = query.toString()
     return this.get<{ calendar: Record<string, any[]>; follow_ups: Record<string, any[]>; month: number; year: number }>(
       `/api/v1/crm/activities/calendar${qs ? `?${qs}` : ''}`
     )
   }
 
-  async getCRMFollowUps() {
-    return this.get<{ follow_ups: any[] }>('/api/v1/crm/activities/follow-ups')
+  async getCRMFollowUps(tz?: string) {
+    const query = new URLSearchParams()
+    if (tz) query.append('tz', tz)
+    const qs = query.toString()
+    return this.get<{ follow_ups: any[] }>(`/api/v1/crm/activities/follow-ups${qs ? `?${qs}` : ''}`)
+  }
+
+  async getCRMCalendarEvents(month?: number, year?: number, tz?: string) {
+    const query = new URLSearchParams()
+    if (month !== undefined) query.append('month', month.toString())
+    if (year !== undefined) query.append('year', year.toString())
+    if (tz) query.append('tz', tz)
+    const qs = query.toString()
+    return this.get<{ events: Record<string, any[]>; month: number; year: number }>(
+      `/api/v1/crm/calendar/events${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  async acceptCRMCalendarEvent(eventId: string) {
+    return this.post<any>(`/api/v1/crm/calendar/events/${eventId}/accept`, {})
+  }
+
+  async declineCRMCalendarEvent(eventId: string) {
+    return this.post<any>(`/api/v1/crm/calendar/events/${eventId}/decline`, {})
+  }
+
+  async getCRMPendingInviteCount() {
+    return this.get<{ count: number }>('/api/v1/crm/calendar/events/pending/count')
   }
 
   async getCRMMyInteractionsToday() {

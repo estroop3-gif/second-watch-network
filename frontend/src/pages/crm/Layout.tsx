@@ -11,6 +11,7 @@ import {
 import { usePermissions } from '@/hooks/usePermissions';
 import { useUnreadCount, useEmailSocket } from '@/hooks/crm/useEmail';
 import { useSidebarBadges } from '@/hooks/crm/useSidebarBadges';
+import { usePendingInviteCount } from '@/hooks/crm/useActivities';
 import { useMarkTabViewed, getTabKeyFromPath } from '@/hooks/crm/useTabViewed';
 import { api } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
@@ -24,6 +25,8 @@ const CRMLayout = () => {
   const isAdmin = hasAnyRole(['admin', 'superadmin', 'sales_admin']);
   const { data: unreadData } = useUnreadCount();
   const unreadCount = unreadData?.count || 0;
+  const { data: pendingInviteData } = usePendingInviteCount();
+  const pendingInvites = pendingInviteData?.count || 0;
 
   // Real-time WebSocket updates for sidebar badge
   useEmailSocket();
@@ -62,7 +65,7 @@ const CRMLayout = () => {
     { name: 'DNC List', href: '/crm/dnc', icon: ShieldOff, badge: badges?.dnc || 0 },
     { name: 'Email', href: '/crm/email', icon: AtSign, badge: unreadCount },
     { name: 'Pipeline', href: '/crm/pipeline', icon: Kanban, badge: badges?.pipeline || 0 },
-    { name: 'Calendar', href: '/crm/calendar', icon: CalendarDays, badge: badges?.calendar || 0 },
+    { name: 'Calendar', href: '/crm/calendar', icon: CalendarDays, badge: (badges?.calendar || 0) + pendingInvites },
     { name: 'Interactions', href: '/crm/interactions', icon: Activity, badge: badges?.interactions || 0 },
     { name: 'Goals', href: '/crm/goals', icon: Target, badge: badges?.goals || 0 },
     { name: 'Log', href: '/crm/log', icon: ClipboardList, badge: badges?.log || 0 },
