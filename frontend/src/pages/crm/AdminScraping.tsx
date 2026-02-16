@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import {
   useScrapeSources,
   useCreateScrapeSource,
@@ -11,6 +11,8 @@ import {
   useBulkApproveLeads,
   useBulkRejectLeads,
   useMergeScrapedLead,
+  useExportLeads,
+  useBulkImportContacts,
 } from '@/hooks/crm/useDataScraping';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -53,9 +55,16 @@ import {
   Merge,
   ChevronLeft,
   ChevronRight,
+  Download,
+  Upload,
+  Copy,
+  FileSpreadsheet,
+  Sparkles,
+  CheckCircle2,
+  AlertCircle,
 } from 'lucide-react';
 
-const TABS = ['Sources', 'Jobs', 'Staged Leads'] as const;
+const TABS = ['Sources', 'Jobs', 'Staged Leads', 'Clean & Import'] as const;
 type Tab = typeof TABS[number];
 
 const STATUS_COLORS: Record<string, string> = {
@@ -751,6 +760,397 @@ function StagedLeadsTab() {
 }
 
 // ============================================================================
+// Clean & Import Tab
+// ============================================================================
+
+const CHATGPT_PROMPT = `You are a B2B lead-data cleaning assistant for a film/TV production SaaS company called Backlot (by Second Watch Network).
+
+I'm going to paste a CSV or table of scraped company leads. For each row, please:
+
+1. **Standardise the company name** — proper casing, remove trailing "Inc.", "LLC" etc. unless it's clearly part of the brand.
+2. **Find a real contact person** — search the company's website or LinkedIn to fill in "contact_name" (Full Name) and "contact_title" (e.g. Head of Post, EP, Owner). If you can't find one, leave blank.
+3. **Validate / find email** — if the email column is empty or is a generic info@ address, try to find a direct business email for the contact person. If uncertain, leave blank rather than guess.
+4. **Validate phone** — format as +1 (XXX) XXX-XXXX for US numbers. Remove extensions or invalid numbers.
+5. **Normalise address fields** — split into address_line1, city, state_region, postal_code, country (ISO 2-letter). Fix obvious typos.
+6. **Normalise website** — ensure it starts with https://, remove trailing slashes.
+7. **Add tags** — suggest 1-3 comma-separated tags from this list that best describe the company: "Production Company", "Post House", "VFX Studio", "Animation Studio", "Rental House", "Broadcaster", "Streaming", "Agency", "Faith-Based", "Independent", "Studio/Major"
+8. **Flag duplicates** — if two rows look like the same company, mark the duplicate row with tag "DUPLICATE".
+9. **Remove junk rows** — if a row is clearly not a real company (e.g. a navigation link, footer text, or personal blog), delete it entirely.
+
+Output a clean table with these exact columns (in this order):
+company_name, contact_name, contact_title, email, phone, website, address_line1, city, state_region, postal_code, country, tags, source_url, notes, import_source
+
+Keep import_source as "scraped" for all rows. Put the original website in source_url.
+
+Here is the data:
+
+[PASTE YOUR EXPORTED DATA HERE]`;
+
+function CleanImportTab() {
+  const { toast } = useToast();
+  const { data: jobsData } = useScrapeJobs();
+  const exportLeads = useExportLeads();
+  const bulkImport = useBulkImportContacts();
+
+  // Step tracking
+  const [step, setStep] = useState(1);
+
+  // Step 1: export options
+  const [exportJobFilter, setExportJobFilter] = useState('all');
+  const [exportStatusFilter, setExportStatusFilter] = useState('pending');
+  const [exportMinScore, setExportMinScore] = useState('');
+  const [exported, setExported] = useState(false);
+
+  // Step 2: ChatGPT prompt
+  const [copied, setCopied] = useState(false);
+
+  // Step 3: file upload
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [importTags, setImportTags] = useState('Backlot Prospect');
+  const [importResult, setImportResult] = useState<{
+    created: number; skipped: number; errors: string[]; total_rows: number;
+  } | null>(null);
+
+  const jobs = jobsData?.jobs || [];
+
+  const handleExport = async () => {
+    try {
+      const params: any = {};
+      if (exportJobFilter !== 'all') params.job_id = exportJobFilter;
+      if (exportStatusFilter !== 'all') params.status = exportStatusFilter;
+      if (exportMinScore) params.min_score = parseInt(exportMinScore);
+
+      const blob = await exportLeads.mutateAsync(params);
+
+      // Trigger download
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `scraped_leads_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      setExported(true);
+      toast({ title: 'Leads exported to Excel' });
+    } catch (err: any) {
+      toast({ title: 'Export failed', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleCopyPrompt = useCallback(() => {
+    navigator.clipboard.writeText(CHATGPT_PROMPT);
+    setCopied(true);
+    toast({ title: 'ChatGPT prompt copied to clipboard' });
+    setTimeout(() => setCopied(false), 3000);
+  }, [toast]);
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
+        toast({ title: 'Invalid file type', description: 'Please upload an .xlsx file', variant: 'destructive' });
+        return;
+      }
+      setSelectedFile(file);
+      setImportResult(null);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!selectedFile) return;
+    try {
+      const result = await bulkImport.mutateAsync({
+        file: selectedFile,
+        params: {
+          tags: importTags || undefined,
+          source: 'other',
+          source_detail: 'Clean & Import',
+          temperature: 'cold',
+        },
+      });
+      setImportResult(result);
+      toast({
+        title: `Imported ${result.created} contacts`,
+        description: result.skipped > 0 ? `${result.skipped} rows skipped` : undefined,
+      });
+    } catch (err: any) {
+      toast({ title: 'Import failed', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  return (
+    <div className="max-w-3xl">
+      {/* Step indicators */}
+      <div className="flex items-center gap-0 mb-8">
+        {[1, 2, 3].map((s) => (
+          <div key={s} className="flex items-center">
+            <button
+              onClick={() => setStep(s)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-colors ${
+                step === s
+                  ? 'bg-accent-yellow text-charcoal-black'
+                  : s < step
+                    ? 'bg-green-500/20 text-green-400'
+                    : 'bg-muted-gray/10 text-muted-gray'
+              }`}
+            >
+              {s < step ? (
+                <CheckCircle2 className="h-4 w-4" />
+              ) : (
+                <span className="w-5 h-5 rounded-full border border-current flex items-center justify-center text-xs">{s}</span>
+              )}
+              {s === 1 ? 'Export' : s === 2 ? 'Clean with AI' : 'Upload'}
+            </button>
+            {s < 3 && <div className={`w-8 h-px mx-1 ${s < step ? 'bg-green-500/40' : 'bg-muted-gray/20'}`} />}
+          </div>
+        ))}
+      </div>
+
+      {/* Step 1: Export */}
+      {step === 1 && (
+        <div className="space-y-6">
+          <div>
+            <h3 className="text-base font-medium text-bone-white mb-1">Step 1: Export Scraped Leads</h3>
+            <p className="text-sm text-muted-gray">
+              Download your scraped leads as an Excel file. This file will be cleaned with ChatGPT in the next step.
+            </p>
+          </div>
+
+          <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4 space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <Label className="text-xs text-muted-gray">Job</Label>
+                <Select value={exportJobFilter} onValueChange={setExportJobFilter}>
+                  <SelectTrigger className="mt-1"><SelectValue placeholder="All jobs" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All jobs</SelectItem>
+                    {jobs.map((j: any) => (
+                      <SelectItem key={j.id} value={j.id}>
+                        {j.source_name} ({new Date(j.created_at).toLocaleDateString()})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs text-muted-gray">Status</Label>
+                <Select value={exportStatusFilter} onValueChange={setExportStatusFilter}>
+                  <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All</SelectItem>
+                    <SelectItem value="pending">Pending</SelectItem>
+                    <SelectItem value="approved">Approved</SelectItem>
+                    <SelectItem value="rejected">Rejected</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs text-muted-gray">Min Score</Label>
+                <Input className="mt-1" type="number" placeholder="Any" value={exportMinScore} onChange={(e) => setExportMinScore(e.target.value)} />
+              </div>
+            </div>
+
+            <Button onClick={handleExport} disabled={exportLeads.isPending} className="w-full">
+              {exportLeads.isPending ? (
+                <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Exporting...</>
+              ) : (
+                <><Download className="h-4 w-4 mr-2" /> Export to Excel</>
+              )}
+            </Button>
+
+            {exported && (
+              <div className="flex items-center gap-2 text-sm text-green-400">
+                <CheckCircle2 className="h-4 w-4" />
+                File downloaded. Proceed to Step 2.
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end">
+            <Button variant="outline" onClick={() => setStep(2)}>
+              Next: Clean with AI <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2: Clean with ChatGPT */}
+      {step === 2 && (
+        <div className="space-y-6">
+          <div>
+            <h3 className="text-base font-medium text-bone-white mb-1">Step 2: Clean with ChatGPT</h3>
+            <p className="text-sm text-muted-gray">
+              Copy the prompt below, paste it into ChatGPT, then paste your exported data after the prompt.
+              ChatGPT will clean, validate, and enrich your leads.
+            </p>
+          </div>
+
+          <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-2 bg-muted-gray/10 border-b border-muted-gray/20">
+              <div className="flex items-center gap-2 text-sm text-muted-gray">
+                <Sparkles className="h-4 w-4 text-accent-yellow" />
+                ChatGPT Cleaning Prompt
+              </div>
+              <Button size="sm" variant="outline" onClick={handleCopyPrompt}>
+                {copied ? (
+                  <><Check className="h-3.5 w-3.5 mr-1" /> Copied!</>
+                ) : (
+                  <><Copy className="h-3.5 w-3.5 mr-1" /> Copy Prompt</>
+                )}
+              </Button>
+            </div>
+            <pre className="p-4 text-xs text-muted-gray/80 whitespace-pre-wrap max-h-[300px] overflow-y-auto font-mono leading-relaxed">
+              {CHATGPT_PROMPT}
+            </pre>
+          </div>
+
+          <div className="bg-accent-yellow/5 border border-accent-yellow/20 rounded-lg p-4">
+            <h4 className="text-sm font-medium text-accent-yellow mb-2">Instructions</h4>
+            <ol className="text-sm text-muted-gray space-y-1 list-decimal list-inside">
+              <li>Open ChatGPT (GPT-4 recommended for best results)</li>
+              <li>Paste the prompt above</li>
+              <li>Open your exported Excel file and copy all data rows</li>
+              <li>Paste the data after the prompt in ChatGPT</li>
+              <li>ChatGPT will return a cleaned table</li>
+              <li>Copy the cleaned data into a new Excel file with the same column headers</li>
+              <li>Save as .xlsx and proceed to Step 3</li>
+            </ol>
+          </div>
+
+          <div className="flex justify-between">
+            <Button variant="outline" onClick={() => setStep(1)}>
+              <ChevronLeft className="h-4 w-4 mr-1" /> Back
+            </Button>
+            <Button variant="outline" onClick={() => setStep(3)}>
+              Next: Upload <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 3: Upload */}
+      {step === 3 && (
+        <div className="space-y-6">
+          <div>
+            <h3 className="text-base font-medium text-bone-white mb-1">Step 3: Upload Cleaned File</h3>
+            <p className="text-sm text-muted-gray">
+              Upload your ChatGPT-cleaned .xlsx file. Each row will be imported as a CRM contact.
+            </p>
+          </div>
+
+          <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4 space-y-4">
+            {/* File drop area */}
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              className="border-2 border-dashed border-muted-gray/30 rounded-lg p-8 text-center cursor-pointer hover:border-accent-yellow/40 transition-colors"
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx,.xls"
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+              {selectedFile ? (
+                <div className="flex items-center justify-center gap-3">
+                  <FileSpreadsheet className="h-8 w-8 text-green-400" />
+                  <div className="text-left">
+                    <p className="text-sm font-medium text-bone-white">{selectedFile.name}</p>
+                    <p className="text-xs text-muted-gray">{(selectedFile.size / 1024).toFixed(1)} KB</p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-gray"
+                    onClick={(e) => { e.stopPropagation(); setSelectedFile(null); setImportResult(null); }}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <Upload className="h-8 w-8 mx-auto text-muted-gray/50 mb-2" />
+                  <p className="text-sm text-muted-gray">Click to select your cleaned .xlsx file</p>
+                  <p className="text-xs text-muted-gray/50 mt-1">Max 10MB</p>
+                </>
+              )}
+            </div>
+
+            {/* Tags */}
+            <div>
+              <Label className="text-xs text-muted-gray">Tags (comma-separated)</Label>
+              <Input
+                className="mt-1"
+                value={importTags}
+                onChange={(e) => setImportTags(e.target.value)}
+                placeholder="e.g. Backlot Prospect, Q1 2026"
+              />
+              <p className="text-xs text-muted-gray/60 mt-1">Applied to all imported contacts</p>
+            </div>
+
+            {/* Import button */}
+            <Button
+              onClick={handleImport}
+              disabled={!selectedFile || bulkImport.isPending}
+              className="w-full"
+            >
+              {bulkImport.isPending ? (
+                <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Importing...</>
+              ) : (
+                <><Upload className="h-4 w-4 mr-2" /> Import Contacts</>
+              )}
+            </Button>
+
+            {/* Results */}
+            {importResult && (
+              <div className="border border-muted-gray/20 rounded-lg p-4 space-y-3">
+                <h4 className="text-sm font-medium text-bone-white">Import Results</h4>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="bg-green-500/10 rounded p-3 text-center">
+                    <p className="text-2xl font-bold text-green-400">{importResult.created}</p>
+                    <p className="text-xs text-muted-gray">Created</p>
+                  </div>
+                  <div className="bg-amber-500/10 rounded p-3 text-center">
+                    <p className="text-2xl font-bold text-amber-400">{importResult.skipped}</p>
+                    <p className="text-xs text-muted-gray">Skipped</p>
+                  </div>
+                  <div className="bg-red-500/10 rounded p-3 text-center">
+                    <p className="text-2xl font-bold text-red-400">{importResult.errors.length}</p>
+                    <p className="text-xs text-muted-gray">Errors</p>
+                  </div>
+                </div>
+                {importResult.errors.length > 0 && (
+                  <div className="mt-2">
+                    <p className="text-xs text-red-400 font-medium mb-1">Errors:</p>
+                    <div className="max-h-[120px] overflow-y-auto space-y-0.5">
+                      {importResult.errors.map((err, i) => (
+                        <p key={i} className="text-xs text-red-400/70 flex items-start gap-1">
+                          <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                          {err}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-between">
+            <Button variant="outline" onClick={() => setStep(2)}>
+              <ChevronLeft className="h-4 w-4 mr-1" /> Back
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
 // Main Page
 // ============================================================================
 
@@ -783,6 +1183,7 @@ const AdminScraping = () => {
       {activeTab === 'Sources' && <SourcesTab />}
       {activeTab === 'Jobs' && <JobsTab />}
       {activeTab === 'Staged Leads' && <StagedLeadsTab />}
+      {activeTab === 'Clean & Import' && <CleanImportTab />}
     </div>
   );
 };

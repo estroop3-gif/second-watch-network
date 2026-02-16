@@ -6541,6 +6541,239 @@ async def merge_scraped_lead(
 
 
 # ============================================================================
+# Scraping — Export & Bulk Import
+# ============================================================================
+
+@router.post("/scraping/leads/export")
+async def export_scraped_leads(
+    job_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    min_score: Optional[int] = Query(None),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Export scraped leads to Excel (.xlsx)."""
+    from openpyxl import Workbook
+    from io import BytesIO
+    from starlette.responses import StreamingResponse
+
+    conditions = []
+    params: Dict[str, Any] = {}
+
+    if job_id:
+        conditions.append("l.job_id = :job_id")
+        params["job_id"] = job_id
+    if status:
+        conditions.append("l.status = :status")
+        params["status"] = status
+    if min_score is not None:
+        conditions.append("l.match_score >= :min_score")
+        params["min_score"] = min_score
+
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+    rows = execute_query(
+        f"""
+        SELECT l.company_name, l.website, l.email, l.phone,
+               l.address, l.city, l.state, l.country,
+               l.description, l.tags, l.match_score, l.status,
+               l.raw_data
+        FROM crm_scraped_leads l
+        {where}
+        ORDER BY l.match_score DESC
+        """,
+        params,
+    )
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Scraped Leads"
+
+    headers = [
+        "company_name", "contact_name", "contact_title", "email", "phone",
+        "website", "address_line1", "city", "state_region", "postal_code",
+        "country", "tags", "source_url", "notes", "import_source",
+    ]
+    ws.append(headers)
+
+    for row in (rows or []):
+        tags_val = row.get("tags") or []
+        if isinstance(tags_val, str):
+            tags_val = [tags_val]
+        ws.append([
+            row.get("company_name", ""),
+            "",  # contact_name — to be filled by ChatGPT cleaning
+            "",  # contact_title
+            row.get("email", ""),
+            row.get("phone", ""),
+            row.get("website", ""),
+            row.get("address", ""),
+            row.get("city", ""),
+            row.get("state", ""),
+            "",  # postal_code
+            row.get("country", ""),
+            ", ".join(tags_val) if tags_val else "",
+            row.get("website", ""),
+            row.get("description", ""),
+            "scraped",
+        ])
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=scraped_leads.xlsx"},
+    )
+
+
+@router.post("/contacts/bulk-import")
+async def bulk_import_contacts(
+    file: UploadFile = File(...),
+    tags: Optional[str] = Query(None),
+    source: Optional[str] = Query("other"),
+    source_detail: Optional[str] = Query("Excel Import"),
+    temperature: Optional[str] = Query("cold"),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Bulk import contacts from an .xlsx file. Expects columns matching the export template."""
+    from openpyxl import load_workbook
+    from io import BytesIO
+
+    if not file.filename or not file.filename.endswith((".xlsx", ".xls")):
+        raise HTTPException(400, "File must be .xlsx or .xls")
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(400, "File too large (max 10MB)")
+
+    wb = load_workbook(BytesIO(content), read_only=True)
+    ws = wb.active
+    rows_iter = ws.iter_rows(values_only=True)
+
+    # Read header row
+    header_row = next(rows_iter, None)
+    if not header_row:
+        raise HTTPException(400, "Empty spreadsheet")
+
+    # Normalize headers
+    headers = [str(h).strip().lower().replace(" ", "_") if h else "" for h in header_row]
+
+    # Build column index map
+    col_map = {name: idx for idx, name in enumerate(headers) if name}
+
+    # Parse extra tags
+    extra_tags = []
+    if tags:
+        extra_tags = [t.strip() for t in tags.split(",") if t.strip()]
+
+    created = 0
+    skipped = 0
+    errors = []
+
+    for row_num, row in enumerate(rows_iter, start=2):
+        try:
+            def get_val(col_name: str, default=""):
+                idx = col_map.get(col_name)
+                if idx is not None and idx < len(row) and row[idx] is not None:
+                    return str(row[idx]).strip()
+                return default
+
+            company = get_val("company_name") or get_val("company")
+            contact_name = get_val("contact_name")
+            email = get_val("email")
+            phone = get_val("phone")
+
+            # Skip rows with no useful data
+            if not company and not contact_name and not email:
+                skipped += 1
+                continue
+
+            # Split contact_name into first/last
+            first_name = "Unknown"
+            last_name = "(Import)"
+            if contact_name:
+                parts = contact_name.split(None, 1)
+                first_name = parts[0]
+                last_name = parts[1] if len(parts) > 1 else "(Import)"
+            elif company:
+                first_name = company.split()[0] if company.split() else "Unknown"
+                last_name = "(Company)"
+
+            # Build tags
+            row_tags = list(extra_tags)
+            row_tags_val = get_val("tags")
+            if row_tags_val:
+                row_tags.extend([t.strip() for t in row_tags_val.split(",") if t.strip()])
+
+            import_src = get_val("import_source", "excel_import")
+            if import_src and import_src not in row_tags:
+                row_tags.append(f"import:{import_src}")
+
+            # Build notes
+            notes_parts = []
+            notes_val = get_val("notes")
+            if notes_val:
+                notes_parts.append(notes_val)
+            contact_title = get_val("contact_title")
+            if contact_title:
+                notes_parts.append(f"Title: {contact_title}")
+            source_url = get_val("source_url")
+            if source_url:
+                notes_parts.append(f"Source URL: {source_url}")
+
+            execute_single(
+                """
+                INSERT INTO crm_contacts (
+                    first_name, last_name, email, phone, company,
+                    job_title, address_line1, city, state, zip, country,
+                    source, source_detail, temperature, tags,
+                    assigned_rep_id, visibility, notes
+                ) VALUES (
+                    :first_name, :last_name, :email, :phone, :company,
+                    :job_title, :address_line1, :city, :state, :zip, :country,
+                    :source, :source_detail, :temperature, :tags,
+                    :rep_id, 'team', :notes
+                ) RETURNING id
+                """,
+                {
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "email": email or None,
+                    "phone": phone or None,
+                    "company": company or None,
+                    "job_title": contact_title or None,
+                    "address_line1": get_val("address_line1") or get_val("address") or None,
+                    "city": get_val("city") or None,
+                    "state": get_val("state_region") or get_val("state") or None,
+                    "zip": get_val("postal_code") or get_val("zip") or None,
+                    "country": get_val("country") or "US",
+                    "source": source or "other",
+                    "source_detail": source_detail or file.filename,
+                    "temperature": temperature or "cold",
+                    "tags": row_tags if row_tags else [],
+                    "rep_id": profile["id"],
+                    "notes": "\n".join(notes_parts) if notes_parts else None,
+                },
+            )
+            created += 1
+        except Exception as e:
+            errors.append(f"Row {row_num}: {str(e)}")
+            if len(errors) > 50:
+                break
+
+    wb.close()
+
+    return {
+        "created": created,
+        "skipped": skipped,
+        "errors": errors[:20],
+        "total_rows": created + skipped + len(errors),
+    }
+
+
+# ============================================================================
 # Pricing — Backlot Subscription Quotes (CPQ)
 # ============================================================================
 

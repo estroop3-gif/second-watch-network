@@ -5744,6 +5744,45 @@ class APIClient {
     return this.post<{ status: string; contact_id: string }>(`/api/v1/crm/scraping/leads/${id}/merge`, data)
   }
 
+  async exportScrapedLeads(params?: { job_id?: string; status?: string; min_score?: number }): Promise<Blob> {
+    const searchParams = new URLSearchParams()
+    if (params?.job_id) searchParams.set('job_id', params.job_id)
+    if (params?.status) searchParams.set('status', params.status)
+    if (params?.min_score !== undefined) searchParams.set('min_score', String(params.min_score))
+    const qs = searchParams.toString()
+    const token = this.getToken()
+    const baseUrl = this.getBaseUrl()
+    const response = await fetch(`${baseUrl}/api/v1/crm/scraping/leads/export${qs ? `?${qs}` : ''}`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+    })
+    if (!response.ok) throw new Error('Export failed')
+    return response.blob()
+  }
+
+  async bulkImportContacts(file: File, params?: { tags?: string; source?: string; source_detail?: string; temperature?: string }) {
+    const searchParams = new URLSearchParams()
+    if (params?.tags) searchParams.set('tags', params.tags)
+    if (params?.source) searchParams.set('source', params.source)
+    if (params?.source_detail) searchParams.set('source_detail', params.source_detail)
+    if (params?.temperature) searchParams.set('temperature', params.temperature)
+    const qs = searchParams.toString()
+    const formData = new FormData()
+    formData.append('file', file)
+    const token = this.getToken()
+    const baseUrl = this.getBaseUrl()
+    const response = await fetch(`${baseUrl}/api/v1/crm/contacts/bulk-import${qs ? `?${qs}` : ''}`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: formData,
+    })
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ detail: 'Import failed' }))
+      throw new Error(err.detail || 'Import failed')
+    }
+    return response.json() as Promise<{ created: number; skipped: number; errors: string[]; total_rows: number }>
+  }
+
   // CRM Pricing / Quotes
   async getPricingTiers() {
     return this.get<{ tiers: any; addon_prices: any }>('/api/v1/crm/pricing/tiers')

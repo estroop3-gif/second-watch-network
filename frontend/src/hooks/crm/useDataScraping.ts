@@ -127,3 +127,27 @@ export function useMergeScrapedLead() {
     },
   });
 }
+
+// ============================================================================
+// Export & Bulk Import
+// ============================================================================
+
+export function useExportLeads() {
+  return useMutation({
+    mutationFn: (params?: { job_id?: string; status?: string; min_score?: number }) =>
+      api.exportScrapedLeads(params),
+  });
+}
+
+export function useBulkImportContacts() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ file, params }: {
+      file: File;
+      params?: { tags?: string; source?: string; source_detail?: string; temperature?: string };
+    }) => api.bulkImportContacts(file, params),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-contacts'] });
+    },
+  });
+}
