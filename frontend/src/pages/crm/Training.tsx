@@ -85,6 +85,16 @@ function getVimeoEmbedUrl(url: string): string {
   return url;
 }
 
+function getYouTubeVideoId(url: string): string | null {
+  const match = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]+)/);
+  return match ? match[1] : null;
+}
+
+function getYouTubeThumbnail(url: string): string | null {
+  const id = getYouTubeVideoId(url);
+  return id ? `https://img.youtube.com/vi/${id}/hqdefault.jpg` : null;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -292,9 +302,9 @@ const Training = () => {
         {/* Thumbnail / Icon area */}
         {isVideo ? (
           <div className="relative aspect-video bg-[#2a2a2a] overflow-hidden">
-            {resource.thumbnail_url ? (
+            {(resource.thumbnail_url || getYouTubeThumbnail(resource.url)) ? (
               <img
-                src={resource.thumbnail_url}
+                src={resource.thumbnail_url || getYouTubeThumbnail(resource.url) || ''}
                 alt={resource.title}
                 className="w-full h-full object-cover"
               />
@@ -595,10 +605,32 @@ const Training = () => {
               <Input
                 id="form-url"
                 value={formUrl}
-                onChange={(e) => setFormUrl(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setFormUrl(val);
+                  // Auto-populate thumbnail for YouTube URLs
+                  const ytThumb = getYouTubeThumbnail(val);
+                  if (ytThumb && !formThumbnailUrl) {
+                    setFormThumbnailUrl(ytThumb);
+                  }
+                }}
                 placeholder="https://youtube.com/watch?v=..."
                 className="mt-1 bg-charcoal-black border-muted-gray/30 text-bone-white"
               />
+              {/* YouTube preview */}
+              {formUrl && isYouTubeUrl(formUrl) && (
+                <div className="mt-2 rounded-lg overflow-hidden border border-muted-gray/30 bg-[#2a2a2a]">
+                  <div className="aspect-video">
+                    <iframe
+                      src={getYouTubeEmbedUrl(formUrl)}
+                      title="YouTube preview"
+                      className="w-full h-full"
+                      allow="accelerometer; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
