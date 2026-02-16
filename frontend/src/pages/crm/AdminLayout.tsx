@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
-  TrendingUp, UserCheck, Inbox, Mail, Shield, ShieldOff, BarChart3, Star, CreditCard,
+  TrendingUp, UserCheck, Inbox, Mail, Shield, ShieldOff, BarChart3, Star, CreditCard, Database,
 } from 'lucide-react';
 
 const ADMIN_TABS = [
@@ -13,6 +13,7 @@ const ADMIN_TABS = [
   { name: 'Reviews', href: '/crm/admin/reviews', icon: Star },
   { name: 'DNC', href: '/crm/admin/dnc', icon: ShieldOff },
   { name: 'Reports', href: '/crm/admin/reports', icon: BarChart3 },
+  { name: 'Scraping', href: '/crm/admin/scraping', icon: Database },
 ];
 
 const AdminLayout = () => {

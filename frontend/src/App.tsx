@@ -158,6 +158,7 @@ const CRMAdminLayout = React.lazy(() => import("./pages/crm/AdminLayout"));
 const CRMAdminEmail = React.lazy(() => import("./pages/crm/AdminEmail"));
 const CRMAdminBusinessCards = React.lazy(() => import("./pages/crm/AdminBusinessCards"));
 const CRMRepDetail = React.lazy(() => import("./pages/crm/admin/RepDetail"));
+const CRMAdminScraping = React.lazy(() => import("./pages/crm/AdminScraping"));
 const CRMTraining = React.lazy(() => import("./pages/crm/Training"));
 const CRMDiscussions = React.lazy(() => import("./pages/crm/Discussions"));
 const CRMBusinessCardForm = React.lazy(() => import("./components/crm/BusinessCardForm"));
@@ -520,6 +521,7 @@ const App = () => (
                           <Route path="reviews" element={<CRMAdminReviews />} />
                           <Route path="dnc" element={<CRMDNCList />} />
                           <Route path="reports" element={<CRMReports />} />
+                          <Route path="scraping" element={<CRMAdminScraping />} />
                         </Route>
 
                         {/* Redirects from old admin routes */}

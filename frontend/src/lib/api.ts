@@ -5681,6 +5681,68 @@ class APIClient {
   async getTeamDirectory() {
     return this.get<any[]>('/api/v1/crm/team-directory')
   }
+
+  // CRM Data Scraping
+  async getCRMScrapeSources() {
+    return this.get<{ sources: any[] }>('/api/v1/crm/scraping/sources')
+  }
+
+  async createCRMScrapeSource(data: any) {
+    return this.post<{ source: any }>('/api/v1/crm/scraping/sources', data)
+  }
+
+  async updateCRMScrapeSource(id: string, data: any) {
+    return this.put<{ source: any }>(`/api/v1/crm/scraping/sources/${id}`, data)
+  }
+
+  async deleteCRMScrapeSource(id: string) {
+    return this.delete<any>(`/api/v1/crm/scraping/sources/${id}`)
+  }
+
+  async getCRMScrapeJobs(params?: { source_id?: string; status?: string; limit?: number; offset?: number }) {
+    const searchParams = new URLSearchParams()
+    if (params?.source_id) searchParams.set('source_id', params.source_id)
+    if (params?.status) searchParams.set('status', params.status)
+    if (params?.limit) searchParams.set('limit', String(params.limit))
+    if (params?.offset) searchParams.set('offset', String(params.offset))
+    const qs = searchParams.toString()
+    return this.get<{ jobs: any[] }>(`/api/v1/crm/scraping/jobs${qs ? `?${qs}` : ''}`)
+  }
+
+  async createCRMScrapeJob(data: { source_id: string; filters?: any }) {
+    return this.post<{ job: any }>('/api/v1/crm/scraping/jobs', data)
+  }
+
+  async getCRMScrapeJob(id: string) {
+    return this.get<{ job: any }>(`/api/v1/crm/scraping/jobs/${id}`)
+  }
+
+  async getCRMScrapedLeads(params?: {
+    job_id?: string; status?: string; min_score?: number; max_score?: number;
+    country?: string; has_email?: boolean; search?: string;
+    sort_by?: string; sort_order?: string; limit?: number; offset?: number
+  }) {
+    const searchParams = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') searchParams.set(k, String(v))
+      })
+    }
+    const qs = searchParams.toString()
+    return this.get<{ leads: any[]; total: number }>(`/api/v1/crm/scraping/leads${qs ? `?${qs}` : ''}`)
+  }
+
+  async bulkApproveCRMLeads(data: { lead_ids: string[]; tags?: string[]; enroll_sequence_id?: string }) {
+    return this.post<{ approved: number; contact_ids: string[] }>('/api/v1/crm/scraping/leads/approve', data)
+  }
+
+  async bulkRejectCRMLeads(data: { lead_ids: string[] }) {
+    return this.post<{ rejected: number }>('/api/v1/crm/scraping/leads/reject', data)
+  }
+
+  async mergeCRMScrapedLead(id: string, data: { contact_id: string }) {
+    return this.post<{ status: string; contact_id: string }>(`/api/v1/crm/scraping/leads/${id}/merge`, data)
+  }
 }
 
 // Export singleton instance

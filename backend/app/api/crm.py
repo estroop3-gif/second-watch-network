@@ -6027,3 +6027,513 @@ def _send_rsvp_reply(event: dict, account_id: str, accepted: bool):
         "text": f"{account.get('display_name', '')} has {status_text.lower()} the invitation: {event['title']}",
         "attachments": [{"filename": "invite.ics", "content": ics_bytes}],
     })
+
+
+# ============================================================================
+# Data Scraping — Sources, Jobs, Leads
+# ============================================================================
+
+class ScrapeSourceCreate(BaseModel):
+    name: str
+    base_url: str
+    source_type: str = "directory"
+    selectors: Dict[str, Any] = {}
+    max_pages: int = 10
+    rate_limit_ms: int = 2000
+    enabled: bool = True
+    notes: Optional[str] = None
+
+
+class ScrapeSourceUpdate(BaseModel):
+    name: Optional[str] = None
+    base_url: Optional[str] = None
+    source_type: Optional[str] = None
+    selectors: Optional[Dict[str, Any]] = None
+    max_pages: Optional[int] = None
+    rate_limit_ms: Optional[int] = None
+    enabled: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+class ScrapeJobCreate(BaseModel):
+    source_id: str
+    filters: Optional[Dict[str, Any]] = {}
+
+
+class BulkLeadAction(BaseModel):
+    lead_ids: List[str]
+    tags: Optional[List[str]] = []
+    enroll_sequence_id: Optional[str] = None
+
+
+class MergeLeadRequest(BaseModel):
+    contact_id: str
+
+
+# --- Scrape Sources CRUD ---
+
+@router.get("/scraping/sources")
+async def list_scrape_sources(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    rows = execute_query(
+        """
+        SELECT s.*, p.first_name || ' ' || p.last_name as created_by_name
+        FROM crm_scrape_sources s
+        LEFT JOIN profiles p ON p.id = s.created_by
+        ORDER BY s.created_at DESC
+        """,
+        {},
+    )
+    return {"sources": rows}
+
+
+@router.post("/scraping/sources")
+async def create_scrape_source(
+    data: ScrapeSourceCreate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    row = execute_single(
+        """
+        INSERT INTO crm_scrape_sources (name, base_url, source_type, selectors, max_pages, rate_limit_ms, enabled, notes, created_by)
+        VALUES (:name, :base_url, :source_type, :selectors::jsonb, :max_pages, :rate_limit_ms, :enabled, :notes, :created_by)
+        RETURNING *
+        """,
+        {
+            "name": data.name,
+            "base_url": data.base_url,
+            "source_type": data.source_type,
+            "selectors": json.dumps(data.selectors),
+            "max_pages": data.max_pages,
+            "rate_limit_ms": data.rate_limit_ms,
+            "enabled": data.enabled,
+            "notes": data.notes,
+            "created_by": profile["id"],
+        },
+    )
+    return {"source": row}
+
+
+@router.put("/scraping/sources/{source_id}")
+async def update_scrape_source(
+    source_id: str,
+    data: ScrapeSourceUpdate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    updates = []
+    params = {"id": source_id}
+
+    for field in ["name", "base_url", "source_type", "max_pages", "rate_limit_ms", "enabled", "notes"]:
+        val = getattr(data, field, None)
+        if val is not None:
+            updates.append(f"{field} = :{field}")
+            params[field] = val
+
+    if data.selectors is not None:
+        updates.append("selectors = :selectors::jsonb")
+        params["selectors"] = json.dumps(data.selectors)
+
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+
+    updates.append("updated_at = NOW()")
+    set_clause = ", ".join(updates)
+
+    row = execute_single(
+        f"UPDATE crm_scrape_sources SET {set_clause} WHERE id = :id RETURNING *",
+        params,
+    )
+    if not row:
+        raise HTTPException(404, "Source not found")
+    return {"source": row}
+
+
+@router.delete("/scraping/sources/{source_id}")
+async def delete_scrape_source(
+    source_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    row = execute_single(
+        "DELETE FROM crm_scrape_sources WHERE id = :id RETURNING id",
+        {"id": source_id},
+    )
+    if not row:
+        raise HTTPException(404, "Source not found")
+    return {"status": "deleted"}
+
+
+# --- Scrape Jobs ---
+
+@router.get("/scraping/jobs")
+async def list_scrape_jobs(
+    source_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    limit: int = Query(50),
+    offset: int = Query(0),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    conditions = []
+    params = {"limit": limit, "offset": offset}
+
+    if source_id:
+        conditions.append("j.source_id = :source_id")
+        params["source_id"] = source_id
+    if status:
+        conditions.append("j.status = :status")
+        params["status"] = status
+
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+    rows = execute_query(
+        f"""
+        SELECT j.*, s.name as source_name,
+               p.first_name || ' ' || p.last_name as created_by_name,
+               (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id) as lead_count
+        FROM crm_scrape_jobs j
+        JOIN crm_scrape_sources s ON s.id = j.source_id
+        JOIN profiles p ON p.id = j.created_by
+        {where}
+        ORDER BY j.created_at DESC
+        LIMIT :limit OFFSET :offset
+        """,
+        params,
+    )
+    return {"jobs": rows}
+
+
+@router.post("/scraping/jobs")
+async def create_scrape_job(
+    data: ScrapeJobCreate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    # Verify source exists and is enabled
+    source = execute_single(
+        "SELECT id, name, enabled FROM crm_scrape_sources WHERE id = :id",
+        {"id": data.source_id},
+    )
+    if not source:
+        raise HTTPException(404, "Source not found")
+    if not source.get("enabled"):
+        raise HTTPException(400, "Source is disabled")
+
+    # Insert job
+    job = execute_single(
+        """
+        INSERT INTO crm_scrape_jobs (source_id, created_by, filters)
+        VALUES (:source_id, :created_by, :filters::jsonb)
+        RETURNING *
+        """,
+        {
+            "source_id": data.source_id,
+            "created_by": profile["id"],
+            "filters": json.dumps(data.filters or {}),
+        },
+    )
+
+    # Trigger ECS Fargate task
+    ecs_task_arn = None
+    try:
+        import boto3
+        ecs_client = boto3.client('ecs', region_name='us-east-1')
+        response = ecs_client.run_task(
+            cluster='swn-scraper-cluster',
+            taskDefinition='swn-scraper-task',
+            launchType='FARGATE',
+            capacityProviderStrategy=[{'capacityProvider': 'FARGATE_SPOT', 'weight': 1}],
+            networkConfiguration={
+                'awsvpcConfiguration': {
+                    'subnets': ['subnet-097d1d86c1bc18b3b', 'subnet-013241dd6ffc1e819'],
+                    'securityGroups': ['sg-01b01424383262ebd'],
+                    'assignPublicIp': 'ENABLED'
+                }
+            },
+            overrides={
+                'containerOverrides': [{
+                    'name': 'scraper-worker',
+                    'environment': [
+                        {'name': 'JOB_ID', 'value': str(job["id"])},
+                    ]
+                }]
+            },
+            count=1
+        )
+        if response.get('tasks'):
+            ecs_task_arn = response['tasks'][0]['taskArn']
+            execute_single(
+                "UPDATE crm_scrape_jobs SET ecs_task_arn = :arn WHERE id = :id RETURNING id",
+                {"arn": ecs_task_arn, "id": job["id"]},
+            )
+            print(f"Started ECS scraper task: {ecs_task_arn}")
+    except Exception as ecs_error:
+        print(f"Failed to start ECS scraper task (job still queued): {ecs_error}")
+
+    job["ecs_task_arn"] = ecs_task_arn
+    job["source_name"] = source["name"]
+    return {"job": job}
+
+
+@router.get("/scraping/jobs/{job_id}")
+async def get_scrape_job(
+    job_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    job = execute_single(
+        """
+        SELECT j.*, s.name as source_name,
+               p.first_name || ' ' || p.last_name as created_by_name,
+               (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id) as lead_count,
+               (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id AND l.status = 'approved') as approved_count,
+               (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id AND l.status = 'rejected') as rejected_count,
+               (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id AND l.status = 'pending') as pending_count
+        FROM crm_scrape_jobs j
+        JOIN crm_scrape_sources s ON s.id = j.source_id
+        JOIN profiles p ON p.id = j.created_by
+        WHERE j.id = :id
+        """,
+        {"id": job_id},
+    )
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return {"job": job}
+
+
+# --- Scraped Leads ---
+
+@router.get("/scraping/leads")
+async def list_scraped_leads(
+    job_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    min_score: Optional[int] = Query(None),
+    max_score: Optional[int] = Query(None),
+    country: Optional[str] = Query(None),
+    has_email: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None),
+    sort_by: str = Query("match_score"),
+    sort_order: str = Query("desc"),
+    limit: int = Query(50),
+    offset: int = Query(0),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    conditions = []
+    params = {"limit": limit, "offset": offset}
+
+    if job_id:
+        conditions.append("l.job_id = :job_id")
+        params["job_id"] = job_id
+    if status:
+        conditions.append("l.status = :status")
+        params["status"] = status
+    if min_score is not None:
+        conditions.append("l.match_score >= :min_score")
+        params["min_score"] = min_score
+    if max_score is not None:
+        conditions.append("l.match_score <= :max_score")
+        params["max_score"] = max_score
+    if country:
+        conditions.append("UPPER(l.country) = :country")
+        params["country"] = country.upper()
+    if has_email is not None:
+        if has_email:
+            conditions.append("l.email IS NOT NULL AND l.email != ''")
+        else:
+            conditions.append("(l.email IS NULL OR l.email = '')")
+    if search:
+        conditions.append("(l.company_name ILIKE :search OR l.email ILIKE :search OR l.website ILIKE :search)")
+        params["search"] = f"%{search}%"
+
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+    allowed_sorts = {"match_score", "company_name", "created_at", "country"}
+    sort_col = sort_by if sort_by in allowed_sorts else "match_score"
+    sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
+
+    rows = execute_query(
+        f"""
+        SELECT l.*, s.name as source_name
+        FROM crm_scraped_leads l
+        JOIN crm_scrape_jobs j ON j.id = l.job_id
+        JOIN crm_scrape_sources s ON s.id = j.source_id
+        {where}
+        ORDER BY l.{sort_col} {sort_dir}
+        LIMIT :limit OFFSET :offset
+        """,
+        params,
+    )
+
+    count_row = execute_single(
+        f"""
+        SELECT COUNT(*) as total
+        FROM crm_scraped_leads l
+        JOIN crm_scrape_jobs j ON j.id = l.job_id
+        {where}
+        """,
+        {k: v for k, v in params.items() if k not in ("limit", "offset")},
+    )
+
+    return {"leads": rows, "total": count_row["total"] if count_row else 0}
+
+
+@router.post("/scraping/leads/approve")
+async def bulk_approve_leads(
+    data: BulkLeadAction,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    if not data.lead_ids:
+        raise HTTPException(400, "No lead IDs provided")
+
+    created_contacts = []
+
+    for lead_id in data.lead_ids:
+        lead = execute_single(
+            """
+            SELECT l.*, s.name as source_name
+            FROM crm_scraped_leads l
+            JOIN crm_scrape_jobs j ON j.id = l.job_id
+            JOIN crm_scrape_sources s ON s.id = j.source_id
+            WHERE l.id = :id AND l.status = 'pending'
+            """,
+            {"id": lead_id},
+        )
+        if not lead:
+            continue
+
+        # Build tags
+        tags = ["Backlot Prospect", lead["source_name"]]
+        if data.tags:
+            tags.extend(data.tags)
+
+        # Create contact
+        contact = execute_single(
+            """
+            INSERT INTO crm_contacts (
+                company, email, phone, city, state, country,
+                source, source_detail, temperature, tags,
+                assigned_rep_id, visibility, notes,
+                first_name, last_name
+            ) VALUES (
+                :company, :email, :phone, :city, :state, :country,
+                'scraped', :source_detail, 'cold', :tags,
+                :rep_id, 'team', :notes,
+                :first_name, :last_name
+            ) RETURNING *
+            """,
+            {
+                "company": lead["company_name"],
+                "email": lead.get("email"),
+                "phone": lead.get("phone"),
+                "city": lead.get("city"),
+                "state": lead.get("state"),
+                "country": lead.get("country") or "US",
+                "source_detail": lead["source_name"],
+                "tags": tags,
+                "rep_id": profile["id"],
+                "notes": lead.get("description"),
+                "first_name": (lead["company_name"] or "").split()[0] if lead.get("company_name") else "Unknown",
+                "last_name": "(Company)",
+            },
+        )
+
+        if contact:
+            # Mark lead as approved
+            execute_single(
+                "UPDATE crm_scraped_leads SET status = 'approved', merged_contact_id = :cid WHERE id = :lid RETURNING id",
+                {"cid": contact["id"], "lid": lead_id},
+            )
+            created_contacts.append(contact["id"])
+
+            # Enroll in sequence if requested
+            if data.enroll_sequence_id and contact.get("email"):
+                try:
+                    execute_single(
+                        """
+                        INSERT INTO crm_email_sequence_enrollments (sequence_id, contact_id, enrolled_by, status)
+                        VALUES (:sid, :cid, :uid, 'active')
+                        ON CONFLICT DO NOTHING
+                        RETURNING id
+                        """,
+                        {"sid": data.enroll_sequence_id, "cid": contact["id"], "uid": profile["id"]},
+                    )
+                except Exception as e:
+                    print(f"Failed to enroll contact {contact['id']} in sequence: {e}")
+
+    return {"approved": len(created_contacts), "contact_ids": created_contacts}
+
+
+@router.post("/scraping/leads/reject")
+async def bulk_reject_leads(
+    data: BulkLeadAction,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    if not data.lead_ids:
+        raise HTTPException(400, "No lead IDs provided")
+
+    # Use ANY array for bulk update
+    placeholders = ", ".join(f":id_{i}" for i in range(len(data.lead_ids)))
+    params = {f"id_{i}": lid for i, lid in enumerate(data.lead_ids)}
+
+    result = execute_query(
+        f"""
+        UPDATE crm_scraped_leads SET status = 'rejected'
+        WHERE id IN ({placeholders}) AND status = 'pending'
+        RETURNING id
+        """,
+        params,
+    )
+
+    return {"rejected": len(result) if result else 0}
+
+
+@router.post("/scraping/leads/{lead_id}/merge")
+async def merge_scraped_lead(
+    lead_id: str,
+    data: MergeLeadRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    # Verify lead and contact exist
+    lead = execute_single(
+        "SELECT * FROM crm_scraped_leads WHERE id = :id AND status = 'pending'",
+        {"id": lead_id},
+    )
+    if not lead:
+        raise HTTPException(404, "Lead not found or not pending")
+
+    contact = execute_single(
+        "SELECT id FROM crm_contacts WHERE id = :id",
+        {"id": data.contact_id},
+    )
+    if not contact:
+        raise HTTPException(404, "Contact not found")
+
+    # Update lead status
+    execute_single(
+        "UPDATE crm_scraped_leads SET status = 'merged', merged_contact_id = :cid WHERE id = :lid RETURNING id",
+        {"cid": data.contact_id, "lid": lead_id},
+    )
+
+    # Optionally update contact with scraped data if fields are empty
+    updates = []
+    params = {"cid": data.contact_id}
+    existing = execute_single("SELECT * FROM crm_contacts WHERE id = :cid", {"cid": data.contact_id})
+
+    if lead.get("email") and not existing.get("email"):
+        updates.append("email = :email")
+        params["email"] = lead["email"]
+    if lead.get("phone") and not existing.get("phone"):
+        updates.append("phone = :phone")
+        params["phone"] = lead["phone"]
+    if lead.get("website"):
+        # Add website to notes since contacts don't have a website field
+        note = f"Website: {lead['website']}"
+        if existing.get("notes"):
+            note = existing["notes"] + "\n" + note
+        updates.append("notes = :notes")
+        params["notes"] = note
+
+    if updates:
+        set_clause = ", ".join(updates)
+        execute_single(
+            f"UPDATE crm_contacts SET {set_clause} WHERE id = :cid RETURNING id",
+            params,
+        )
+
+    return {"status": "merged", "contact_id": data.contact_id}
