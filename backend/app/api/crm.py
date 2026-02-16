@@ -12,6 +12,7 @@ from datetime import date, datetime
 from app.core.database import get_client, execute_query, execute_single, execute_insert, execute_update, execute_delete
 from app.core.deps import get_user_profile
 from app.core.permissions import Permission, require_permissions, has_permission
+from app.services.pricing_engine import TIERS, ADDON_PRICES, compute_full_quote, calculate_monthly_quote
 
 router = APIRouter()
 
@@ -6542,11 +6543,6 @@ async def merge_scraped_lead(
 # ============================================================================
 # Pricing — Backlot Subscription Quotes (CPQ)
 # ============================================================================
-
-from app.services.pricing_engine import (
-    TIERS, ADDON_PRICES, compute_full_quote, calculate_monthly_quote,
-)
-
 
 class QuoteCreateInput(BaseModel):
     client_name: str

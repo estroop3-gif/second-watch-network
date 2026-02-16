@@ -246,10 +246,10 @@ function StepClientInfo({ w, set }: { w: WizardState; set: (u: Partial<WizardSta
       </div>
       <div>
         <Label>Link to Contact (optional)</Label>
-        <Select value={w.linkedContactId} onValueChange={v => set({ linkedContactId: v })}>
+        <Select value={w.linkedContactId || 'none'} onValueChange={v => set({ linkedContactId: v === 'none' ? '' : v })}>
           <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="">None</SelectItem>
+            <SelectItem value="none">None</SelectItem>
             {contacts.map((c: any) => (
               <SelectItem key={c.id} value={c.id}>{c.first_name} {c.last_name} {c.company ? `(${c.company})` : ''}</SelectItem>
             ))}
@@ -821,9 +821,9 @@ const STATUS_COLORS: Record<string, string> = {
 
 function QuoteList({ onNewQuote }: { onNewQuote: () => void }) {
   const { toast } = useToast();
-  const [statusFilter, setStatusFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
   const [search, setSearch] = useState('');
-  const { data, isLoading } = useQuotesList({ status: statusFilter || undefined, search: search || undefined });
+  const { data, isLoading } = useQuotesList({ status: statusFilter !== 'all' ? statusFilter : undefined, search: search || undefined });
   const updateStatus = useUpdateQuoteStatus();
   const [viewQuote, setViewQuote] = useState<any>(null);
 
@@ -859,7 +859,7 @@ function QuoteList({ onNewQuote }: { onNewQuote: () => void }) {
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="w-[130px]"><SelectValue placeholder="All" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All</SelectItem>
+              <SelectItem value="all">All</SelectItem>
               <SelectItem value="draft">Draft</SelectItem>
               <SelectItem value="sent">Sent</SelectItem>
               <SelectItem value="accepted">Accepted</SelectItem>
