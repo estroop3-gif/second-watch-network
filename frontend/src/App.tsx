@@ -2,7 +2,9 @@ import { useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
+import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
+import { createSyncStoragePersister } from "@tanstack/query-sync-storage-persister";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { performanceMetrics } from "@/lib/performanceMetrics";
 import React, { Suspense } from "react";
@@ -222,11 +224,19 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 5 * 60 * 1000,        // 5 min — data stays fresh, no unnecessary refetches
-      gcTime: 10 * 60 * 1000,           // 10 min — keep unused data in cache
+      gcTime: 24 * 60 * 60 * 1000,     // 24h — keep in cache so localStorage restore works
       refetchOnWindowFocus: false,       // Stop refetch storm on every tab switch
       retry: 1,                          // Retry once instead of 3 times
     },
   },
+});
+
+// Persist query cache to localStorage — tabs load instantly from cache,
+// then refetch in the background when staleTime (5 min) has passed
+const persister = createSyncStoragePersister({
+  storage: window.localStorage,
+  key: 'swn-query-cache',
+  throttleTime: 2000,                   // Batch writes to localStorage
 });
 
 // Suspense fallback for lazy-loaded routes
@@ -253,7 +263,7 @@ const AppMountTracker = ({ children }: { children: React.ReactNode }) => {
 };
 
 const App = () => (
-  <QueryClientProvider client={queryClient}>
+  <PersistQueryClientProvider client={queryClient} persistOptions={{ persister, maxAge: 24 * 60 * 60 * 1000 }}>
     <AppMountTracker>
     <AuthProvider>
       <ThemeProvider>
@@ -573,7 +583,7 @@ const App = () => (
       </ThemeProvider>
     </AuthProvider>
     </AppMountTracker>
-  </QueryClientProvider>
+  </PersistQueryClientProvider>
 );
 
 export default App;

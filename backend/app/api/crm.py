@@ -446,19 +446,30 @@ async def list_contacts(
     )
     total = count_row["total"] if count_row else 0
 
-    # Get contacts with rep name
+    # Get contacts with rep name — use CTE to paginate first, then compute counts
     rows = execute_query(
         f"""
-        SELECT c.*,
-               p.full_name as assigned_rep_name,
-               (SELECT COUNT(*) FROM crm_activities a WHERE a.contact_id = c.id) as activity_count,
-               (SELECT MAX(a.activity_date) FROM crm_activities a WHERE a.contact_id = c.id) as last_activity_date,
-               (SELECT COUNT(*) FROM crm_email_threads et WHERE et.contact_id = c.id) as email_thread_count
-        FROM crm_contacts c
-        LEFT JOIN profiles p ON p.id = c.assigned_rep_id
-        WHERE {where}
-        ORDER BY c.{sort_by} {order_dir}
-        LIMIT :limit OFFSET :offset
+        WITH paged AS (
+            SELECT c.*, p.full_name as assigned_rep_name
+            FROM crm_contacts c
+            LEFT JOIN profiles p ON p.id = c.assigned_rep_id
+            WHERE {where}
+            ORDER BY c.{sort_by} {order_dir}
+            LIMIT :limit OFFSET :offset
+        )
+        SELECT paged.*,
+               COALESCE(ac.activity_count, 0) as activity_count,
+               ac.last_activity_date,
+               COALESCE(ec.email_thread_count, 0) as email_thread_count
+        FROM paged
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) as activity_count, MAX(a.activity_date) as last_activity_date
+            FROM crm_activities a WHERE a.contact_id = paged.id
+        ) ac ON true
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) as email_thread_count
+            FROM crm_email_threads et WHERE et.contact_id = paged.id
+        ) ec ON true
         """,
         {**params, "limit": limit, "offset": offset},
     )
