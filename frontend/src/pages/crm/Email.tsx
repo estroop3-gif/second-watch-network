@@ -27,7 +27,7 @@ import { AISummarizeButton, AISentimentBadge } from '@/components/crm/AIEmailToo
 import {
   useEmailInbox, useEmailThread, useUnreadCount, useMarkRead,
   useArchiveThread, useDeleteThread, useStarThread, useBulkThreadAction, useEmailLabels,
-  useScheduledEmails, useCancelScheduledEmail, useAssignThread,
+  useScheduledEmails, useCancelScheduledEmail, useAssignThread, useEmailSocket,
 } from '@/hooks/crm/useEmail';
 import { useEmailKeyboardShortcuts } from '@/hooks/crm/useEmailKeyboardShortcuts';
 import { useEmailCompose } from '@/context/EmailComposeContext';
@@ -68,12 +68,16 @@ const CRMEmail = () => {
   const [sentiment, setSentiment] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showTeamDirectory, setShowTeamDirectory] = useState(false);
+  const [replyAllCc, setReplyAllCc] = useState<string[]>([]);
 
   const searchRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const { openCompose } = useEmailCompose();
   const { hasAnyRole } = usePermissions();
   const isAdmin = hasAnyRole(['admin', 'superadmin', 'sales_admin']);
+
+  // Real-time WebSocket updates for the active thread
+  useEmailSocket(selectedThreadId || undefined);
 
   // Build inbox params based on filter tab
   const inboxParams = {
@@ -173,13 +177,16 @@ const CRMEmail = () => {
 
   const handleReplyAll = () => {
     if (!thread || !messages.length) return;
-    const lastInbound = [...messages].reverse().find(m => m.direction === 'inbound');
     const allAddresses = new Set<string>();
     messages.forEach(m => {
       m.to_addresses?.forEach((a: string) => allAddresses.add(a));
       if (m.cc_addresses) m.cc_addresses.forEach((a: string) => allAddresses.add(a));
+      if (m.from_address) allAddresses.add(m.from_address);
     });
+    // Remove the contact email (goes in To) and the rep's own account email
     allAddresses.delete(thread.contact_email);
+    if (thread.account_email) allAddresses.delete(thread.account_email);
+    setReplyAllCc(Array.from(allAddresses));
     setShowReplyAll(true);
     setShowReply(true);
   };
@@ -572,12 +579,13 @@ const CRMEmail = () => {
                         compact
                         threadId={selectedThreadId}
                         defaultTo={thread.contact_email}
+                        defaultCc={showReplyAll ? replyAllCc : undefined}
                         defaultSubject={thread.subject}
                         contactId={thread.contact_id}
                         quotedHtml={buildQuotedReply(messages, thread.subject)?.quotedHtml}
                         quotedLabel={buildQuotedReply(messages, thread.subject)?.quotedLabel}
-                        onSent={() => { setShowReply(false); setShowReplyAll(false); }}
-                        onCancel={() => { setShowReply(false); setShowReplyAll(false); }}
+                        onSent={() => { setShowReply(false); setShowReplyAll(false); setReplyAllCc([]); }}
+                        onCancel={() => { setShowReply(false); setShowReplyAll(false); setReplyAllCc([]); }}
                       />
                     </div>
                   </div>

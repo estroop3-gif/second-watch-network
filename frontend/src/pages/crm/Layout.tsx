@@ -9,7 +9,7 @@ import {
   GraduationCap, CreditCard, MessageSquare, ShieldOff,
 } from 'lucide-react';
 import { usePermissions } from '@/hooks/usePermissions';
-import { useUnreadCount } from '@/hooks/crm/useEmail';
+import { useUnreadCount, useEmailSocket } from '@/hooks/crm/useEmail';
 import { useSidebarBadges } from '@/hooks/crm/useSidebarBadges';
 import { useMarkTabViewed, getTabKeyFromPath } from '@/hooks/crm/useTabViewed';
 import { api } from '@/lib/api';
@@ -24,6 +24,9 @@ const CRMLayout = () => {
   const isAdmin = hasAnyRole(['admin', 'superadmin', 'sales_admin']);
   const { data: unreadData } = useUnreadCount();
   const unreadCount = unreadData?.count || 0;
+
+  // Real-time WebSocket updates for sidebar badge
+  useEmailSocket();
   const { data: badges } = useSidebarBadges();
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();

@@ -1,5 +1,35 @@
+import { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { useSocket } from '@/hooks/useSocket';
+
+// ============================================================================
+// LocalStorage cache helpers — Gmail-like instant load (stale-while-revalidate)
+// ============================================================================
+
+const CACHE_PREFIX = 'crm-email-cache:';
+const CACHE_TTL = 10 * 60 * 1000; // 10 min max staleness
+
+function writeCache(key: string, data: any) {
+  try {
+    localStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ ts: Date.now(), data }));
+  } catch { /* quota exceeded — ignore */ }
+}
+
+function readCache<T>(key: string): T | undefined {
+  try {
+    const raw = localStorage.getItem(CACHE_PREFIX + key);
+    if (!raw) return undefined;
+    const { ts, data } = JSON.parse(raw);
+    if (Date.now() - ts > CACHE_TTL) {
+      localStorage.removeItem(CACHE_PREFIX + key);
+      return undefined;
+    }
+    return data as T;
+  } catch {
+    return undefined;
+  }
+}
 
 // ============================================================================
 // Email Account
@@ -10,6 +40,7 @@ export function useEmailAccount() {
     queryKey: ['crm-email-account'],
     queryFn: () => api.getCRMEmailAccount(),
     retry: false,
+    staleTime: 5 * 60 * 1000,
   });
 }
 
@@ -31,17 +62,31 @@ export function useEmailInbox(params?: {
   sort_by?: string; all_threads?: boolean;
   search?: string; limit?: number; offset?: number;
 }) {
+  const cacheKey = 'inbox:' + JSON.stringify(params ?? {});
   return useQuery({
     queryKey: ['crm-email-inbox', params],
-    queryFn: () => api.getCRMEmailInbox(params),
-    refetchInterval: 30000, // Poll every 30s for new mail
+    queryFn: async () => {
+      const data = await api.getCRMEmailInbox(params);
+      writeCache(cacheKey, data);
+      return data;
+    },
+    placeholderData: () => readCache(cacheKey),
+    staleTime: 15_000,
+    refetchInterval: 15_000,
   });
 }
 
 export function useEmailThread(threadId: string) {
+  const cacheKey = 'thread:' + threadId;
   return useQuery({
     queryKey: ['crm-email-thread', threadId],
-    queryFn: () => api.getCRMEmailThread(threadId),
+    queryFn: async () => {
+      const data = await api.getCRMEmailThread(threadId);
+      writeCache(cacheKey, data);
+      return data;
+    },
+    placeholderData: () => readCache(cacheKey),
+    staleTime: 10_000,
     enabled: !!threadId,
   });
 }
@@ -57,9 +102,43 @@ export function useContactThreads(contactId: string) {
 export function useUnreadCount() {
   return useQuery({
     queryKey: ['crm-email-unread-count'],
-    queryFn: () => api.getCRMEmailUnreadCount(),
-    refetchInterval: 30000,
+    queryFn: async () => {
+      const data = await api.getCRMEmailUnreadCount();
+      writeCache('unread-count', data);
+      return data;
+    },
+    placeholderData: () => readCache('unread-count'),
+    staleTime: 15_000,
+    refetchInterval: 15_000,
   });
+}
+
+// ============================================================================
+// Real-Time Email Socket
+// ============================================================================
+
+/**
+ * Subscribes to `crm:email:new` WebSocket events and invalidates
+ * inbox / unread-count / active-thread queries for instant updates.
+ */
+export function useEmailSocket(activeThreadId?: string) {
+  const { on, off } = useSocket();
+  const qc = useQueryClient();
+
+  useEffect(() => {
+    const handler = (data: any) => {
+      qc.invalidateQueries({ queryKey: ['crm-email-inbox'] });
+      qc.invalidateQueries({ queryKey: ['crm-email-unread-count'] });
+      if (activeThreadId && data.thread_id === activeThreadId) {
+        qc.invalidateQueries({ queryKey: ['crm-email-thread', activeThreadId] });
+      }
+    };
+
+    (on as any)('crm:email:new', handler);
+    return () => {
+      (off as any)('crm:email:new', handler);
+    };
+  }, [on, off, qc, activeThreadId]);
 }
 
 // ============================================================================
@@ -84,9 +163,9 @@ export function useSendEmail() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: {
-      contact_id?: string; to_email: string; subject: string;
+      contact_id?: string; to_emails: string[]; subject: string;
       body_html: string; body_text?: string; cc?: string[];
-      thread_id?: string; scheduled_at?: string;
+      bcc?: string[]; thread_id?: string; scheduled_at?: string;
       attachment_ids?: string[]; template_id?: string;
     }) => api.sendCRMEmail(data),
     onSuccess: (_, variables) => {
@@ -315,7 +394,13 @@ export function useDeleteThreadNote() {
 export function useEmailLabels() {
   return useQuery({
     queryKey: ['crm-email-labels'],
-    queryFn: () => api.getCRMEmailLabels(),
+    queryFn: async () => {
+      const data = await api.getCRMEmailLabels();
+      writeCache('labels', data);
+      return data;
+    },
+    placeholderData: () => readCache('labels'),
+    staleTime: 60_000,
   });
 }
 
@@ -444,6 +529,7 @@ export function useScheduledEmails() {
   return useQuery({
     queryKey: ['crm-email-scheduled'],
     queryFn: () => api.getCRMEmailScheduled(),
+    staleTime: 30_000,
   });
 }
 

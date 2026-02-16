@@ -5,7 +5,7 @@ Contacts, activities, interaction counts, and follow-ups.
 import json
 from psycopg2.extras import Json as PgJson
 from fastapi import APIRouter, HTTPException, Depends, Query, Response, UploadFile, File
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, validator
 from typing import Optional, List, Dict, Any
 from datetime import date, datetime
 
@@ -40,6 +40,7 @@ class ContactCreate(BaseModel):
     tags: Optional[List[str]] = []
     custom_fields: Optional[Dict[str, Any]] = {}
     notes: Optional[str] = None
+    visibility: Optional[str] = "team"
 
 
 class ContactUpdate(BaseModel):
@@ -66,6 +67,7 @@ class ContactUpdate(BaseModel):
     tags: Optional[List[str]] = None
     custom_fields: Optional[Dict[str, Any]] = None
     notes: Optional[str] = None
+    visibility: Optional[str] = None
 
 
 class ActivityCreate(BaseModel):
@@ -157,7 +159,7 @@ async def get_sidebar_badges(
     views = {r["tab_key"]: r["last_viewed_at"] for r in (view_rows or [])}
 
     # Build rep-scoping conditions
-    contact_scope = "" if is_admin else "AND c.assigned_rep_id = :rep_id"
+    contact_scope = "" if is_admin else "AND (c.assigned_rep_id = :rep_id OR c.visibility = 'team')"
     deal_scope = "" if is_admin else "AND d.assigned_rep_id = :rep_id"
     activity_scope = "" if is_admin else "AND a.rep_id = :rep_id"
     log_scope = "" if is_admin else "AND cl.rep_id = :rep_id"
@@ -392,14 +394,14 @@ async def list_contacts(
     offset: int = Query(0, ge=0),
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
 ):
-    """List contacts. Reps see only their own, admins see all."""
+    """List contacts. Reps see their own + team-visible contacts, admins see all."""
     is_admin = has_permission(profile, Permission.CRM_MANAGE)
 
     conditions = ["c.status != 'inactive'"]
     params = {}
 
     if not is_admin:
-        conditions.append("c.assigned_rep_id = :rep_id")
+        conditions.append("(c.assigned_rep_id = :rep_id OR c.visibility = 'team')")
         params["rep_id"] = profile["id"]
 
     if unassigned and is_admin:
@@ -487,7 +489,7 @@ async def get_contact(
     if not contact:
         raise HTTPException(404, "Contact not found")
 
-    if not is_admin and contact["assigned_rep_id"] != profile["id"]:
+    if not is_admin and contact["assigned_rep_id"] != profile["id"] and contact.get("visibility") != "team":
         raise HTTPException(403, "Not authorized to view this contact")
 
     # Get recent activities
@@ -1836,14 +1838,14 @@ async def get_rep_dnc_list(
     offset: int = Query(0, ge=0),
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
 ):
-    """Get the DNC list. Reps see only their assigned contacts, admins see all."""
+    """Get the DNC list. Reps see their own + team-visible contacts, admins see all."""
     is_admin = has_permission(profile, Permission.CRM_MANAGE)
 
     conditions = ["(c.status = 'do_not_contact' OR c.do_not_email = true OR c.do_not_call = true OR c.do_not_text = true)"]
     params: Dict[str, Any] = {}
 
     if not is_admin:
-        conditions.append("c.assigned_rep_id = :rep_id")
+        conditions.append("(c.assigned_rep_id = :rep_id OR c.visibility = 'team')")
         params["rep_id"] = profile["id"]
 
     where = " AND ".join(conditions)
@@ -2069,15 +2071,32 @@ async def list_email_templates(
 
 class SendEmailRequest(BaseModel):
     contact_id: Optional[str] = None
-    to_email: str
+    to_emails: Optional[List[str]] = None
+    to_email: Optional[str] = None  # DEPRECATED: backward compat, use to_emails
     subject: str
     body_html: str
     body_text: Optional[str] = None
     cc: Optional[List[str]] = None
+    bcc: Optional[List[str]] = None
     thread_id: Optional[str] = None  # Reply to existing thread
     scheduled_at: Optional[str] = None  # ISO datetime for scheduled sends
     attachment_ids: Optional[List[str]] = None  # IDs of uploaded attachments
     template_id: Optional[str] = None  # Track which template was used
+
+    @validator('to_emails', always=True, pre=True)
+    def resolve_to_emails(cls, v, values):
+        if v and len(v) > 0:
+            return v
+        to_email = values.get('to_email')
+        if to_email:
+            return [to_email]
+        return None
+
+    @validator('to_emails')
+    def require_to_emails(cls, v):
+        if not v or len(v) == 0:
+            raise ValueError('Either to_emails or to_email must be provided')
+        return v
 
 
 class UpdateSignatureRequest(BaseModel):
@@ -2208,11 +2227,6 @@ async def get_email_inbox(
 
     where = " AND ".join(conditions) if conditions else "1=1"
 
-    count_row = execute_single(
-        f"SELECT COUNT(*) as total FROM crm_email_threads t WHERE {where}",
-        params,
-    )
-
     # Sort options
     order_clause = "t.last_message_at DESC"
     if sort_by == "last_message_at_asc":
@@ -2220,11 +2234,13 @@ async def get_email_inbox(
     elif sort_by == "unread_first":
         order_clause = "CASE WHEN t.unread_count > 0 THEN 0 ELSE 1 END ASC, t.last_message_at DESC"
 
+    # Single query with COUNT(*) OVER() window function to avoid separate count round-trip
     rows = execute_query(
         f"""
         SELECT t.*, c.first_name as contact_first_name, c.last_name as contact_last_name,
                c.company as contact_company,
                ap.full_name as assigned_to_name,
+               COUNT(*) OVER() as _total_count,
                (SELECT COALESCE(json_agg(json_build_object('id', el.id, 'name', el.name, 'color', el.color)), '[]'::json)
                 FROM crm_email_thread_labels etl
                 JOIN crm_email_labels el ON el.id = etl.label_id
@@ -2238,7 +2254,11 @@ async def get_email_inbox(
         """,
         {**params, "limit": limit, "offset": offset},
     )
-    return {"threads": rows, "total": count_row["total"] if count_row else 0}
+    total = rows[0]["_total_count"] if rows else 0
+    # Strip the internal count field from response
+    for row in rows:
+        row.pop("_total_count", None)
+    return {"threads": rows, "total": total}
 
 
 @router.get("/email/threads/{thread_id}")
@@ -2277,14 +2297,18 @@ async def get_email_thread(
     messages = execute_query(
         """
         SELECT m.*,
-               (SELECT COUNT(*) FROM crm_email_opens o WHERE o.message_id = m.id) as open_count,
-               (SELECT MIN(o.opened_at) FROM crm_email_opens o WHERE o.message_id = m.id) as first_opened_at,
-               (SELECT MAX(o.opened_at) FROM crm_email_opens o WHERE o.message_id = m.id) as last_opened_at,
+               COALESCE(opens.cnt, 0) as open_count,
+               opens.first_opened_at,
+               opens.last_opened_at,
                (SELECT COALESCE(json_agg(json_build_object(
                    'id', a.id, 'filename', a.filename, 'content_type', a.content_type,
                    'size_bytes', a.size_bytes
                )), '[]'::json) FROM crm_email_attachments a WHERE a.message_id = m.id) as attachments
         FROM crm_email_messages m
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) as cnt, MIN(o.opened_at) as first_opened_at, MAX(o.opened_at) as last_opened_at
+            FROM crm_email_opens o WHERE o.message_id = m.id
+        ) opens ON true
         WHERE m.thread_id = :tid
         ORDER BY m.created_at ASC
         """,
@@ -2570,9 +2594,9 @@ def _route_email_internally(
         )
         if resp.get("Items"):
             apigw = boto3.client("apigatewaymanagementapi",
-                endpoint_url="https://j4f73g2zp0.execute-api.us-east-1.amazonaws.com/prod")
+                endpoint_url="https://df3xkisme7.execute-api.us-east-1.amazonaws.com/prod")
             notification = json_mod.dumps({
-                "action": "crm:email:new",
+                "event": "crm:email:new",
                 "thread_id": recipient_thread_id,
                 "from": sender_account["email_address"],
                 "subject": subject,
@@ -2689,7 +2713,7 @@ async def send_crm_email(
             {
                 "aid": account["id"],
                 "cid": data.contact_id,
-                "email": data.to_email,
+                "email": data.to_emails[0],
                 "subj": data.subject,
             },
         )
@@ -2708,17 +2732,18 @@ async def send_crm_email(
         message = execute_single(
             """
             INSERT INTO crm_email_messages
-                (thread_id, direction, from_address, to_addresses, cc_addresses,
+                (thread_id, direction, from_address, to_addresses, cc_addresses, bcc_addresses,
                  subject, body_html, body_text, status, scheduled_at, template_id)
-            VALUES (:tid, 'outbound', :from_addr, :to_addrs, :cc_addrs,
+            VALUES (:tid, 'outbound', :from_addr, :to_addrs, :cc_addrs, :bcc_addrs,
                     :subj, :html, :text, 'scheduled', :scheduled_at, :template_id)
             RETURNING *
             """,
             {
                 "tid": thread_id,
                 "from_addr": account["email_address"],
-                "to_addrs": [data.to_email],
+                "to_addrs": data.to_emails,
                 "cc_addrs": data.cc or [],
+                "bcc_addrs": data.bcc or [],
                 "subj": data.subject,
                 "html": body_html,
                 "text": data.body_text,
@@ -2743,17 +2768,18 @@ async def send_crm_email(
     message = execute_single(
         """
         INSERT INTO crm_email_messages
-            (thread_id, direction, from_address, to_addresses, cc_addresses,
+            (thread_id, direction, from_address, to_addresses, cc_addresses, bcc_addresses,
              subject, body_html, body_text, status, template_id)
-        VALUES (:tid, 'outbound', :from_addr, :to_addrs, :cc_addrs,
+        VALUES (:tid, 'outbound', :from_addr, :to_addrs, :cc_addrs, :bcc_addrs,
                 :subj, :html, :text, 'sending', :template_id)
         RETURNING *
         """,
         {
             "tid": thread_id,
             "from_addr": account["email_address"],
-            "to_addrs": [data.to_email],
+            "to_addrs": data.to_emails,
             "cc_addrs": data.cc or [],
+            "bcc_addrs": data.bcc or [],
             "subj": data.subject,
             "html": body_html,
             "text": data.body_text,
@@ -2764,13 +2790,43 @@ async def send_crm_email(
     # Skip tracking pixel for 1:1 sends to improve deliverability (Gmail Primary tab)
     # Tracking pixels are only used for campaign/bulk sends in email_scheduler.py
 
-    # Check if recipient is an internal org member — skip Resend if so
-    recipient_account = execute_single(
-        "SELECT * FROM crm_email_accounts WHERE email_address = :email AND is_active = true",
-        {"email": data.to_email},
-    )
-    if recipient_account:
-        # Internal delivery — mark as sent + tag source_type, route internally, skip Resend
+    # Split recipients into internal vs external
+    internal_recipients = []
+    external_recipients = []
+    for email in data.to_emails:
+        acct = execute_single(
+            "SELECT * FROM crm_email_accounts WHERE email_address = :email AND is_active = true",
+            {"email": email},
+        )
+        if acct:
+            internal_recipients.append((email, acct))
+        else:
+            external_recipients.append(email)
+
+    # Generate plain text fallback if not provided
+    plain_text = data.body_text
+    if not plain_text:
+        import re
+        plain_text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', body_html)
+        plain_text = re.sub(r'<br\s*/?>', '\n', plain_text)
+        plain_text = re.sub(r'</(div|h[1-6]|li|tr)>', '\n', plain_text)
+        plain_text = re.sub(r'<[^>]+>', '', plain_text)
+        plain_text = plain_text.strip()
+
+    # Route to internal recipients
+    for email, recipient_account in internal_recipients:
+        _route_email_internally(
+            sender_account=account,
+            recipient_account=recipient_account,
+            subject=data.subject,
+            body_html=body_html,
+            body_text=plain_text or "",
+            to_addresses=data.to_emails,
+            cc_addresses=data.cc or [],
+        )
+
+    if not external_recipients:
+        # All recipients are internal — mark sent + tag, skip Resend
         message = execute_single(
             "UPDATE crm_email_messages SET status = 'sent', source_type = 'internal' WHERE id = :mid RETURNING *",
             {"mid": message["id"]},
@@ -2787,26 +2843,6 @@ async def send_crm_email(
                 except Exception:
                     import logging
                     logging.getLogger(__name__).warning(f"Failed to link attachment {att_id} to internal message {message['id']}")
-
-        # Generate plain text fallback if not provided
-        plain_text = data.body_text
-        if not plain_text:
-            import re
-            plain_text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', body_html)
-            plain_text = re.sub(r'<br\s*/?>', '\n', plain_text)
-            plain_text = re.sub(r'</(div|h[1-6]|li|tr)>', '\n', plain_text)
-            plain_text = re.sub(r'<[^>]+>', '', plain_text)
-            plain_text = plain_text.strip()
-
-        _route_email_internally(
-            sender_account=account,
-            recipient_account=recipient_account,
-            subject=data.subject,
-            body_html=body_html,
-            body_text=plain_text or "",
-            to_addresses=[data.to_email],
-            cc_addresses=data.cc or [],
-        )
 
         # Update sender thread last_message_at
         execute_single(
@@ -2830,7 +2866,7 @@ async def send_crm_email(
                     "cid": data.contact_id,
                     "rid": profile["id"],
                     "subj": f"Email: {data.subject}",
-                    "desc": f"Sent email to {data.to_email} (internal)",
+                    "desc": f"Sent email to {', '.join(data.to_emails)} (internal)",
                 },
             )
 
@@ -2852,7 +2888,7 @@ async def send_crm_email(
                 if att and att.get("s3_key"):
                     bucket = att.get("s3_bucket", settings.AWS_S3_BACKLOT_FILES_BUCKET)
                     s3_obj = s3.get_object(Bucket=bucket, Key=att["s3_key"])
-                    file_bytes = list(s3_obj["Body"].read())
+                    file_bytes = s3_obj["Body"].read()
                     resend_attachments.append({
                         "filename": att["filename"],
                         "content": file_bytes,
@@ -2865,22 +2901,12 @@ async def send_crm_email(
     # Send via Resend
     resend_sdk.api_key = settings.RESEND_API_KEY
 
-    # Generate plain text fallback if not provided (multipart emails land in Primary more often)
-    plain_text = data.body_text
-    if not plain_text:
-        import re
-        plain_text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', body_html)
-        plain_text = re.sub(r'<br\s*/?>', '\n', plain_text)
-        plain_text = re.sub(r'</(div|h[1-6]|li|tr)>', '\n', plain_text)
-        plain_text = re.sub(r'<[^>]+>', '', plain_text)
-        plain_text = plain_text.strip()
-
     # Replace inline-image API URLs with long-lived presigned URLs for outbound delivery
     outbound_html = _resolve_inline_images_for_send(body_html)
 
     send_params = {
         "from": f"{account['display_name']} <{account['email_address']}>",
-        "to": [data.to_email],
+        "to": external_recipients,
         "subject": data.subject,
         "html": add_email_inline_styles(outbound_html),
         "text": plain_text,
@@ -2888,6 +2914,8 @@ async def send_crm_email(
     }
     if data.cc:
         send_params["cc"] = data.cc
+    if data.bcc:
+        send_params["bcc"] = data.bcc
     if resend_attachments:
         send_params["attachments"] = resend_attachments
 
@@ -2939,7 +2967,7 @@ async def send_crm_email(
                 "cid": data.contact_id,
                 "rid": profile["id"],
                 "subj": f"Email: {data.subject}",
-                "desc": f"Sent email to {data.to_email}",
+                "desc": f"Sent email to {', '.join(data.to_emails)}",
             },
         )
 
@@ -2970,6 +2998,7 @@ def _deliver_inbound_to_account(
     to_addresses: list,
     cc_addresses: list,
     thread_id_override: str | None = None,
+    attachments: list | None = None,
 ) -> dict | None:
     """
     Deliver an inbound email to a single CRM email account.
@@ -2982,41 +3011,28 @@ def _deliver_inbound_to_account(
     thread_id = thread_id_override
 
     if not thread_id:
-        # Auto-link contact by from_address
+        # No reply+ thread — this is a fresh inbound email, always create a new thread.
+        # Replies from recipients use the reply+{uuid}@ address which provides
+        # thread_id_override, so threading is handled there.
         linked_contact = execute_single(
             "SELECT id FROM crm_contacts WHERE LOWER(email) = LOWER(:email) LIMIT 1",
             {"email": from_address},
         )
         contact_id = linked_contact["id"] if linked_contact else None
 
-        # Try to find an existing thread for this sender + account
-        existing_thread = execute_single(
+        new_thread = execute_single(
             """
-            SELECT id FROM crm_email_threads
-            WHERE account_id = :aid
-              AND LOWER(contact_email) = LOWER(:email)
-            ORDER BY last_message_at DESC NULLS LAST
-            LIMIT 1
+            INSERT INTO crm_email_threads (account_id, contact_id, contact_email, subject)
+            VALUES (:aid, :cid, :email, :subj) RETURNING *
             """,
-            {"aid": account["id"], "email": from_address},
+            {
+                "aid": account["id"],
+                "cid": contact_id,
+                "email": from_address,
+                "subj": subject,
+            },
         )
-
-        if existing_thread:
-            thread_id = str(existing_thread["id"])
-        else:
-            new_thread = execute_single(
-                """
-                INSERT INTO crm_email_threads (account_id, contact_id, contact_email, subject)
-                VALUES (:aid, :cid, :email, :subj) RETURNING *
-                """,
-                {
-                    "aid": account["id"],
-                    "cid": contact_id,
-                    "email": from_address,
-                    "subj": subject,
-                },
-            )
-            thread_id = str(new_thread["id"])
+        thread_id = str(new_thread["id"])
 
     # Verify thread exists
     thread = execute_single(
@@ -3060,6 +3076,40 @@ def _deliver_inbound_to_account(
             "text": text_body,
         },
     )
+
+    # Store inbound attachments (download from Resend CDN → S3)
+    if attachments and message:
+        import uuid
+        import boto3
+        import httpx as _httpx
+        from app.core.config import settings as _settings
+        s3 = boto3.client("s3", region_name="us-east-1")
+        bucket = _settings.AWS_S3_BACKLOT_FILES_BUCKET
+        for att in attachments:
+            try:
+                att_resp = _httpx.get(att["download_url"], timeout=30)
+                if att_resp.status_code != 200:
+                    continue
+                file_bytes = att_resp.content
+
+                att_id = str(uuid.uuid4())
+                filename = att.get("filename", "attachment")
+                ext = filename.rsplit(".", 1)[-1] if "." in filename else "bin"
+                s3_key = f"email-attachments/{account['id']}/{att_id}.{ext}"
+                s3.put_object(
+                    Bucket=bucket, Key=s3_key, Body=file_bytes,
+                    ContentType=att.get("content_type", "application/octet-stream"),
+                )
+
+                execute_insert(
+                    """INSERT INTO crm_email_attachments (id, message_id, filename, content_type, size_bytes, s3_key, s3_bucket)
+                       VALUES (:id, :mid, :filename, :ct, :size, :key, :bucket) RETURNING id""",
+                    {"id": att_id, "mid": message["id"], "filename": filename,
+                     "ct": att.get("content_type"), "size": att.get("size", len(file_bytes)),
+                     "key": s3_key, "bucket": bucket},
+                )
+            except Exception as e:
+                _log.warning(f"Failed to store inbound attachment {att.get('filename')}: {e}")
 
     # Update thread: bump last_message_at, increment unread, clear snooze
     execute_single(
@@ -3112,9 +3162,9 @@ def _deliver_inbound_to_account(
         )
         if resp.get("Items"):
             apigw = boto3.client("apigatewaymanagementapi",
-                endpoint_url="https://j4f73g2zp0.execute-api.us-east-1.amazonaws.com/prod")
+                endpoint_url="https://df3xkisme7.execute-api.us-east-1.amazonaws.com/prod")
             notification = json_mod.dumps({
-                "action": "crm:email:new",
+                "event": "crm:email:new",
                 "thread_id": thread_id,
                 "from": from_address,
                 "subject": subject,
@@ -3270,6 +3320,21 @@ async def email_inbound_webhook_handler(request: Request):
         except Exception as e:
             _log.error(f"Failed to fetch inbound email content: {e}")
 
+    # --- Fetch inbound attachments from Resend API ---
+    attachments_list = []
+    if email_id and settings.RESEND_API_KEY:
+        try:
+            att_resp = httpx.get(
+                f"https://api.resend.com/emails/receiving/{email_id}/attachments",
+                headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+                timeout=10,
+            )
+            if att_resp.status_code == 200:
+                att_data = att_resp.json()
+                attachments_list = att_data.get("data", [])
+        except Exception as e:
+            _log.error(f"Failed to fetch inbound attachments: {e}")
+
     # Merge and deduplicate CC addresses from webhook payload + API response
     all_cc_raw = cc_addresses_raw + cc_from_api
     seen_cc = set()
@@ -3295,6 +3360,8 @@ async def email_inbound_webhook_handler(request: Request):
             matched_accounts.append(acct)
             seen_account_ids.add(acct["id"])
 
+    _log.info(f"Inbound email from {from_address}: found {len(matched_accounts)} CRM accounts out of {len(to_addresses + all_cc_raw)} addresses scanned")
+
     # --- Phase E: Deliver to reply+ thread first (if applicable) ---
     delivered_account_ids = set()
     message_ids = []
@@ -3319,6 +3386,7 @@ async def email_inbound_webhook_handler(request: Request):
                     to_addresses=to_addresses,
                     cc_addresses=all_cc,
                     thread_id_override=reply_thread_id,
+                    attachments=attachments_list,
                 )
                 if msg:
                     message_ids.append(msg["id"])
@@ -3338,6 +3406,7 @@ async def email_inbound_webhook_handler(request: Request):
             text_body=text_body,
             to_addresses=to_addresses,
             cc_addresses=all_cc,
+            attachments=attachments_list,
         )
         if msg:
             message_ids.append(msg["id"])
