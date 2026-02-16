@@ -110,7 +110,13 @@ const CRMEmail = () => {
   const threads = filterTab === 'scheduled' ? [] : (inboxData?.threads || []);
   const scheduledMessages = scheduledData?.messages || [];
   const thread = threadData?.thread;
-  const messages = threadData?.messages || [];
+  // Filter out loopback messages: when CRM sends a reply, Resend echoes it back as
+  // an inbound message from the same account email. Hide those duplicates.
+  const messages = (threadData?.messages || []).filter((m: any) => {
+    if (m.direction !== 'inbound') return true;
+    if (!thread?.account_email) return true;
+    return m.from_address?.toLowerCase() !== thread.account_email.toLowerCase();
+  });
   const unreadCount = unreadData?.count || 0;
   const labels = labelsData?.labels || [];
 
@@ -439,25 +445,41 @@ const CRMEmail = () => {
                     {thread.is_starred && <Star className="h-4 w-4 text-accent-yellow fill-accent-yellow flex-shrink-0" />}
                   </div>
 
-                  {/* Email metadata */}
+                  {/* Email metadata — always based on first inbound message (thread origin) */}
                   <div className="space-y-1 text-sm">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-muted-gray w-10 flex-shrink-0">From</span>
-                      <span className="text-bone-white truncate">
-                        {messages.length > 0 && messages[messages.length - 1].direction === 'inbound'
-                          ? messages[messages.length - 1].from_address
-                          : thread.account_email || 'You'}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-muted-gray w-10 flex-shrink-0">To</span>
-                      <span className="text-bone-white truncate">
-                        {thread.contact_first_name
-                          ? `${thread.contact_first_name} ${thread.contact_last_name || ''}`.trim()
-                          : thread.contact_email}
-                        <span className="text-muted-gray ml-1">&lt;{thread.contact_email}&gt;</span>
-                      </span>
-                    </div>
+                    {(() => {
+                      const firstInbound = messages.find((m: any) => m.direction === 'inbound');
+                      const originMsg = firstInbound || (messages.length > 0 ? messages[0] : null);
+                      const fromAddr = thread.contact_email
+                        || firstInbound?.from_address
+                        || thread.account_email || 'Unknown';
+                      const toAddrs = (originMsg?.to_addresses || []).filter((a: string) => !a.includes('reply+'));
+                      const ccAddrs = (originMsg?.cc_addresses || []).filter((a: string) => !a.includes('reply+'));
+                      return (
+                        <>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-muted-gray w-10 flex-shrink-0">From</span>
+                            <span className="text-bone-white truncate">{fromAddr}</span>
+                          </div>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-muted-gray w-10 flex-shrink-0">To</span>
+                            <span className="text-bone-white truncate">
+                              {toAddrs.length > 0
+                                ? toAddrs.join(', ')
+                                : thread.contact_first_name
+                                  ? `${thread.contact_first_name} ${thread.contact_last_name || ''}`.trim() + ` <${thread.contact_email}>`
+                                  : thread.contact_email}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-muted-gray w-10 flex-shrink-0">CC</span>
+                            <span className="text-bone-white/60 truncate">
+                              {ccAddrs.length > 0 ? ccAddrs.join(', ') : 'None'}
+                            </span>
+                          </div>
+                        </>
+                      );
+                    })()}
                     {thread.assigned_to_name && (
                       <div className="flex items-center gap-2">
                         <span className="text-muted-gray w-10 flex-shrink-0">Rep</span>

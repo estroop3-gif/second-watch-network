@@ -2118,6 +2118,25 @@ async def get_email_account(
     )
     if not account:
         raise HTTPException(404, "No email account configured. Contact admin.")
+
+    # Generate signed URL for avatar if stored as an S3 key
+    avatar_val = account.get("avatar_url") or ""
+    if avatar_val and not avatar_val.startswith("http"):
+        from app.core.storage import storage_client
+        signed = storage_client.from_("avatars").create_signed_url(avatar_val, 3600)
+        account = dict(account)
+        account["avatar_url"] = signed.get("signedUrl", "")
+    elif avatar_val and avatar_val.startswith("https://") and ".s3." in avatar_val:
+        # Legacy full URL — extract key and sign it
+        from app.core.storage import storage_client, AVATARS_BUCKET
+        import re
+        key_match = re.search(r'amazonaws\.com/(.+)$', avatar_val)
+        if key_match:
+            key = key_match.group(1)
+            signed = storage_client.from_("avatars").create_signed_url(key, 3600)
+            account = dict(account)
+            account["avatar_url"] = signed.get("signedUrl", "")
+
     return account
 
 
@@ -2300,6 +2319,7 @@ async def get_email_thread(
                COALESCE(opens.cnt, 0) as open_count,
                opens.first_opened_at,
                opens.last_opened_at,
+               COALESCE(sender_acct.avatar_url, sender_prof.avatar_url) as sender_avatar_key,
                (SELECT COALESCE(json_agg(json_build_object(
                    'id', a.id, 'filename', a.filename, 'content_type', a.content_type,
                    'size_bytes', a.size_bytes
@@ -2309,12 +2329,35 @@ async def get_email_thread(
             SELECT COUNT(*) as cnt, MIN(o.opened_at) as first_opened_at, MAX(o.opened_at) as last_opened_at
             FROM crm_email_opens o WHERE o.message_id = m.id
         ) opens ON true
+        LEFT JOIN crm_email_accounts sender_acct
+            ON LOWER(sender_acct.email_address) = LOWER(m.from_address) AND sender_acct.is_active = true
+        LEFT JOIN profiles sender_prof
+            ON sender_prof.id = sender_acct.profile_id
         WHERE m.thread_id = :tid
         ORDER BY m.created_at ASC
         """,
         {"tid": thread_id},
     )
-    return {"thread": thread, "messages": messages}
+
+    # Resolve sender avatars
+    import hashlib
+    from app.core.storage import storage_client
+    resolved_messages = []
+    for msg in messages:
+        msg = dict(msg)
+        avatar_key = msg.pop("sender_avatar_key", None) or ""
+        if avatar_key and not avatar_key.startswith("http"):
+            signed = storage_client.from_("avatars").create_signed_url(avatar_key, 3600)
+            msg["sender_avatar_url"] = signed.get("signedUrl", "")
+        elif avatar_key and avatar_key.startswith("http"):
+            msg["sender_avatar_url"] = avatar_key
+        else:
+            # External sender — Gravatar fallback
+            email_hash = hashlib.md5(msg["from_address"].strip().lower().encode()).hexdigest()
+            msg["sender_avatar_url"] = f"https://www.gravatar.com/avatar/{email_hash}?d=mp&s=64"
+        resolved_messages.append(msg)
+
+    return {"thread": thread, "messages": resolved_messages}
 
 
 @router.patch("/email/threads/{thread_id}/read")
@@ -2999,40 +3042,96 @@ def _deliver_inbound_to_account(
     cc_addresses: list,
     thread_id_override: str | None = None,
     attachments: list | None = None,
+    resend_received_id: str | None = None,
 ) -> dict | None:
     """
     Deliver an inbound email to a single CRM email account.
     Creates/finds a thread, stores the message, sends notifications.
     Returns the stored message dict, or None on failure.
+    Deduplicates using resend_received_id + account_id to prevent
+    duplicate messages when multiple per-recipient webhooks fire.
     """
     import logging
     _log = logging.getLogger(__name__)
 
+    # --- Loopback check: skip if from_address is the account's own email ---
+    # When a CRM user sends a reply, Resend echoes it back as an inbound message.
+    account_email = account.get("email_address", "")
+    if from_address and account_email and from_address.lower() == account_email.lower():
+        _log.info(f"Loopback: skipping inbound from own account {account_email}")
+        return None
+
+    # --- Dedup check: skip if this email was already delivered to this account ---
+    if resend_received_id:
+        existing = execute_single(
+            """SELECT m.id FROM crm_email_messages m
+               JOIN crm_email_threads t ON t.id = m.thread_id
+               WHERE m.resend_received_id = :rid AND t.account_id = :aid LIMIT 1""",
+            {"rid": resend_received_id, "aid": account["id"]},
+        )
+        if existing:
+            _log.info(f"Dedup: email {resend_received_id} already delivered to account {account['email_address']}, skipping")
+            return None
+
     thread_id = thread_id_override
 
     if not thread_id:
-        # No reply+ thread — this is a fresh inbound email, always create a new thread.
-        # Replies from recipients use the reply+{uuid}@ address which provides
-        # thread_id_override, so threading is handled there.
-        linked_contact = execute_single(
-            "SELECT id FROM crm_contacts WHERE LOWER(email) = LOWER(:email) LIMIT 1",
-            {"email": from_address},
-        )
-        contact_id = linked_contact["id"] if linked_contact else None
+        # No reply+ thread — try subject-based threading first (like Gmail).
+        # Strip "Re:", "RE:", "Fwd:", "FW:" prefixes and match against existing
+        # threads for this account from the same sender.
+        import re as _re
+        normalized_subject = _re.sub(
+            r'^(Re:\s*|RE:\s*|Fwd:\s*|FW:\s*|Fw:\s*)+', '', subject or ''
+        ).strip()
 
-        new_thread = execute_single(
-            """
-            INSERT INTO crm_email_threads (account_id, contact_id, contact_email, subject)
-            VALUES (:aid, :cid, :email, :subj) RETURNING *
-            """,
-            {
-                "aid": account["id"],
-                "cid": contact_id,
-                "email": from_address,
-                "subj": subject,
-            },
-        )
-        thread_id = str(new_thread["id"])
+        existing_thread = None
+        if normalized_subject:
+            # Find the most recent thread for this account with the same
+            # base subject — match by subject only (like Gmail), regardless
+            # of sender. This handles: replies from different people in a
+            # group conversation, CRM-to-CRM emails, and Reply All chains.
+            existing_thread = execute_single(
+                """
+                SELECT * FROM crm_email_threads
+                WHERE account_id = :aid
+                  AND (
+                    LOWER(subject) = LOWER(:subj)
+                    OR LOWER(subject) = LOWER(:norm_subj)
+                  )
+                ORDER BY last_message_at DESC NULLS LAST
+                LIMIT 1
+                """,
+                {
+                    "aid": account["id"],
+                    "subj": subject,
+                    "norm_subj": normalized_subject,
+                },
+            )
+
+        if existing_thread:
+            thread_id = str(existing_thread["id"])
+            _log.info(f"Subject-match: threading into existing thread {thread_id} for '{normalized_subject}'")
+        else:
+            # Truly new conversation — create a fresh thread
+            linked_contact = execute_single(
+                "SELECT id FROM crm_contacts WHERE LOWER(email) = LOWER(:email) LIMIT 1",
+                {"email": from_address},
+            )
+            contact_id = linked_contact["id"] if linked_contact else None
+
+            new_thread = execute_single(
+                """
+                INSERT INTO crm_email_threads (account_id, contact_id, contact_email, subject)
+                VALUES (:aid, :cid, :email, :subj) RETURNING *
+                """,
+                {
+                    "aid": account["id"],
+                    "cid": contact_id,
+                    "email": from_address,
+                    "subj": normalized_subject or subject,
+                },
+            )
+            thread_id = str(new_thread["id"])
 
     # Verify thread exists
     thread = execute_single(
@@ -3056,14 +3155,35 @@ def _deliver_inbound_to_account(
             )
             thread["contact_id"] = linked_contact["id"]
 
-    # Store inbound message (include cc_addresses)
+    # Time-based dedup: Resend splits multi-recipient emails into separate
+    # records with DIFFERENT resend_received_ids. So the same email arriving
+    # via reply+{uuid} and via the rep's direct address creates 2 records.
+    # Check if this thread already has a recent inbound message from the same
+    # sender within the last 2 minutes — if so, it's a per-recipient duplicate.
+    recent_dup = execute_single(
+        """SELECT m.id FROM crm_email_messages m
+           WHERE m.thread_id = :tid
+             AND LOWER(m.from_address) = LOWER(:from_addr)
+             AND m.direction = 'inbound'
+             AND m.created_at > NOW() - INTERVAL '2 minutes'
+           LIMIT 1""",
+        {"tid": thread_id, "from_addr": from_address},
+    )
+    if recent_dup:
+        _log.info(f"Dedup (time-based): message from {from_address} already in thread {thread_id} within last 2min, skipping")
+        return None
+
+    # Store inbound message (ON CONFLICT prevents race condition duplicates)
     message = execute_single(
         """
         INSERT INTO crm_email_messages
             (thread_id, direction, from_address, to_addresses, cc_addresses, subject,
-             body_html, body_text, status)
+             body_html, body_text, status, resend_received_id)
         VALUES (:tid, 'inbound', :from_addr, :to_addrs, :cc_addrs, :subj,
-                :html, :text, 'received')
+                :html, :text, 'received', :rrid)
+        ON CONFLICT (resend_received_id, thread_id)
+            WHERE resend_received_id IS NOT NULL
+        DO NOTHING
         RETURNING *
         """,
         {
@@ -3074,8 +3194,12 @@ def _deliver_inbound_to_account(
             "subj": subject,
             "html": html_body,
             "text": text_body,
+            "rrid": resend_received_id,
         },
     )
+    if not message and resend_received_id:
+        _log.info(f"Dedup (ON CONFLICT): email {resend_received_id} already exists in thread {thread_id}")
+        return None
 
     # Store inbound attachments (download from Resend CDN → S3)
     if attachments and message:
@@ -3148,48 +3272,52 @@ def _deliver_inbound_to_account(
             deal_id=thread.get("deal_id"),
         )
 
-    # WebSocket notification (best-effort)
-    try:
-        import boto3
-        import json as json_mod
-        dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
-        ws_table = dynamodb.Table("second-watch-websocket-connections")
+    # Skip all notifications for loopback messages (own CRM reply echoed back by Resend)
+    account_email = account.get("email_address", "")
+    is_loopback = from_address and account_email and from_address.lower() == account_email.lower()
 
-        resp = ws_table.query(
-            IndexName="GSI1",
-            KeyConditionExpression="GSI1PK = :pk",
-            ExpressionAttributeValues={":pk": f"PROFILE#{account['profile_id']}"},
-        )
-        if resp.get("Items"):
-            apigw = boto3.client("apigatewaymanagementapi",
-                endpoint_url="https://df3xkisme7.execute-api.us-east-1.amazonaws.com/prod")
-            notification = json_mod.dumps({
-                "event": "crm:email:new",
-                "thread_id": thread_id,
-                "from": from_address,
-                "subject": subject,
-                "preview": (text_body or "")[:100],
-            })
-            for item in resp["Items"]:
-                conn_id = item.get("SK", "").replace("CONN#", "")
-                if conn_id:
-                    try:
-                        apigw.post_to_connection(
-                            ConnectionId=conn_id,
-                            Data=notification.encode("utf-8"),
-                        )
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+    # WebSocket notification (best-effort)
+    if not is_loopback:
+        try:
+            import boto3
+            import json as json_mod
+            dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+            ws_table = dynamodb.Table("second-watch-websocket-connections")
+
+            resp = ws_table.query(
+                IndexName="GSI1",
+                KeyConditionExpression="GSI1PK = :pk",
+                ExpressionAttributeValues={":pk": f"PROFILE#{account['profile_id']}"},
+            )
+            if resp.get("Items"):
+                apigw = boto3.client("apigatewaymanagementapi",
+                    endpoint_url="https://df3xkisme7.execute-api.us-east-1.amazonaws.com/prod")
+                notification = json_mod.dumps({
+                    "event": "crm:email:new",
+                    "thread_id": thread_id,
+                    "from": from_address,
+                    "subject": subject,
+                    "preview": (text_body or "")[:100],
+                })
+                for item in resp["Items"]:
+                    conn_id = item.get("SK", "").replace("CONN#", "")
+                    if conn_id:
+                        try:
+                            apigw.post_to_connection(
+                                ConnectionId=conn_id,
+                                Data=notification.encode("utf-8"),
+                            )
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
     # Email notification (best-effort)
-    if message:
+    if message and not is_loopback:
         try:
             notif_mode = account.get("notification_mode", "off")
             notif_email = account.get("notification_email")
             if notif_mode != "off" and notif_email:
-                account_email = account.get("email_address", "")
                 if notif_email.lower() != account_email.lower():
                     if notif_mode == "instant":
                         import resend as resend_sdk
@@ -3279,6 +3407,19 @@ async def email_inbound_webhook_handler(request: Request):
     if event_type != "email.received":
         return {"status": "ignored", "type": event_type}
 
+    # Wrap entire processing in try/except — always return 200 to prevent
+    # Resend from retrying (retries cause duplicate deliveries).
+    try:
+        return await _process_inbound_email(body, _log, settings, httpx)
+    except Exception as e:
+        _log.error(f"CRITICAL: Inbound email webhook failed: {e}", exc_info=True)
+        return {"status": "error", "detail": str(e)}
+
+
+async def _process_inbound_email(body: dict, _log, settings, httpx):
+    """Inner handler for inbound email processing — separated for error isolation."""
+    import re
+
     # --- Phase A: Parse payload (with CC extraction) ---
     payload = body.get("data", {})
     to_addresses = payload.get("to", [])
@@ -3287,15 +3428,7 @@ async def email_inbound_webhook_handler(request: Request):
     subject = payload.get("subject", "")
     email_id = payload.get("email_id", "")
 
-    # --- Phase B: Scan for reply+ thread ID in TO + CC ---
-    reply_thread_id = None
-    for addr in to_addresses + cc_addresses_raw:
-        match = re.search(r"reply\+([a-f0-9-]+)@", addr)
-        if match:
-            reply_thread_id = match.group(1)
-            break
-
-    # --- Phase C: Fetch full email body BEFORE delivery loop ---
+    # --- Phase B: Fetch full email body + merge headers BEFORE reply+ scan ---
     html_body = ""
     text_body = ""
     cc_from_api = []
@@ -3311,6 +3444,25 @@ async def email_inbound_webhook_handler(request: Request):
                 html_body = email_data.get("html") or ""
                 text_body = email_data.get("text") or ""
                 cc_from_api = email_data.get("cc") or []
+                # Resend splits multi-recipient emails into per-recipient records,
+                # so the top-level "to" only has 1 address. But the raw email headers
+                # contain the full To: list. Parse it to deliver to ALL recipients.
+                email_headers = email_data.get("headers") or {}
+                header_to = email_headers.get("to", "")
+                if header_to:
+                    # Parse comma-separated "addr1, addr2, addr3" from header
+                    parsed_addrs = [a.strip() for a in header_to.split(",") if a.strip()]
+                    existing = {_clean_email_address(a) for a in to_addresses}
+                    for addr in parsed_addrs:
+                        clean = _clean_email_address(addr)
+                        if clean and clean not in existing:
+                            to_addresses.append(addr)
+                            existing.add(clean)
+                    _log.info(f"Merged TO from headers: {len(to_addresses)} addresses total")
+                header_cc = email_headers.get("cc", "")
+                if header_cc and not cc_from_api:
+                    parsed_cc = [a.strip() for a in header_cc.split(",") if a.strip()]
+                    cc_from_api = parsed_cc
                 if not from_address:
                     from_address = email_data.get("from", "")
                 if not subject:
@@ -3345,6 +3497,20 @@ async def email_inbound_webhook_handler(request: Request):
             seen_cc.add(normalized)
             all_cc.append(addr)
 
+    # --- Phase C: Scan for reply+ thread ID in merged TO + CC ---
+    # MUST run after header merge so we see the full recipient list.
+    # When someone replies to a CRM email, Gmail sends to both the rep's
+    # address AND reply+{uuid}@theswn.com. Resend splits per-recipient,
+    # so the webhook payload may only have 1 TO address, but the merged
+    # headers contain ALL recipients including the reply+ routing address.
+    reply_thread_id = None
+    for addr in to_addresses + all_cc:
+        match = re.search(r"reply\+([a-f0-9-]+)@", addr)
+        if match:
+            reply_thread_id = match.group(1)
+            _log.info(f"Found reply+ thread routing: {reply_thread_id}")
+            break
+
     # --- Phase D: Find ALL matching CRM accounts in TO + CC ---
     matched_accounts = []
     seen_account_ids = set()
@@ -3365,62 +3531,82 @@ async def email_inbound_webhook_handler(request: Request):
     # --- Phase E: Deliver to reply+ thread first (if applicable) ---
     delivered_account_ids = set()
     message_ids = []
+    errors = []
 
     if reply_thread_id:
-        reply_thread = execute_single(
-            "SELECT * FROM crm_email_threads WHERE id = :tid",
-            {"tid": reply_thread_id},
-        )
-        if reply_thread:
-            reply_account = execute_single(
-                "SELECT * FROM crm_email_accounts WHERE id = :aid",
-                {"aid": reply_thread["account_id"]},
+        try:
+            reply_thread = execute_single(
+                "SELECT * FROM crm_email_threads WHERE id = :tid",
+                {"tid": reply_thread_id},
             )
-            if reply_account:
-                msg = _deliver_inbound_to_account(
-                    account=reply_account,
-                    from_address=from_address,
-                    subject=subject,
-                    html_body=html_body,
-                    text_body=text_body,
-                    to_addresses=to_addresses,
-                    cc_addresses=all_cc,
-                    thread_id_override=reply_thread_id,
-                    attachments=attachments_list,
+            if reply_thread:
+                reply_account = execute_single(
+                    "SELECT * FROM crm_email_accounts WHERE id = :aid",
+                    {"aid": reply_thread["account_id"]},
                 )
-                if msg:
-                    message_ids.append(msg["id"])
-                delivered_account_ids.add(reply_account["id"])
-        else:
-            _log.warning(f"Reply+ thread {reply_thread_id} not found")
+                if reply_account:
+                    msg = _deliver_inbound_to_account(
+                        account=reply_account,
+                        from_address=from_address,
+                        subject=subject,
+                        html_body=html_body,
+                        text_body=text_body,
+                        to_addresses=to_addresses,
+                        cc_addresses=all_cc,
+                        thread_id_override=reply_thread_id,
+                        attachments=attachments_list,
+                        resend_received_id=email_id,
+                    )
+                    if msg:
+                        message_ids.append(msg["id"])
+                    delivered_account_ids.add(reply_account["id"])
+            else:
+                _log.warning(f"Reply+ thread {reply_thread_id} not found")
+        except Exception as e:
+            _log.error(f"Error delivering to reply+ thread {reply_thread_id}: {e}")
+            errors.append(f"reply+:{reply_thread_id}:{e}")
 
     # --- Phase F: Deliver to all other matched CRM accounts ---
     for acct in matched_accounts:
         if acct["id"] in delivered_account_ids:
             continue
-        msg = _deliver_inbound_to_account(
-            account=acct,
-            from_address=from_address,
-            subject=subject,
-            html_body=html_body,
-            text_body=text_body,
-            to_addresses=to_addresses,
-            cc_addresses=all_cc,
-            attachments=attachments_list,
-        )
-        if msg:
-            message_ids.append(msg["id"])
-        delivered_account_ids.add(acct["id"])
+        try:
+            msg = _deliver_inbound_to_account(
+                account=acct,
+                from_address=from_address,
+                subject=subject,
+                html_body=html_body,
+                text_body=text_body,
+                to_addresses=to_addresses,
+                cc_addresses=all_cc,
+                attachments=attachments_list,
+                resend_received_id=email_id,
+            )
+            if msg:
+                message_ids.append(msg["id"])
+            delivered_account_ids.add(acct["id"])
+        except Exception as e:
+            _log.error(f"Error delivering inbound to {acct['email_address']}: {e}")
+            errors.append(f"{acct['email_address']}:{e}")
 
     # --- Phase G: Return ---
+    _log.info(
+        f"Inbound email {email_id} from {from_address}: "
+        f"delivered={len(message_ids)}, accounts={len(delivered_account_ids)}, "
+        f"errors={len(errors)}, reply_thread={reply_thread_id}"
+    )
+
     if not message_ids and not reply_thread_id:
         return {"status": "no_thread_match", "from": from_address}
 
-    return {
+    result = {
         "status": "stored",
         "message_ids": message_ids,
         "delivered_to": len(delivered_account_ids),
     }
+    if errors:
+        result["errors"] = errors
+    return result
 
 
 # ============================================================================
@@ -4547,12 +4733,16 @@ async def upload_email_avatar(
         file_obj,
         {"content_type": file.content_type},
     )
-    avatar_url = storage_client.from_("avatars").get_public_url(unique_filename)
 
+    # Store the S3 key (not full URL) so we can generate fresh signed URLs
     execute_update(
         "UPDATE crm_email_accounts SET avatar_url = :url WHERE id = :aid",
-        {"url": avatar_url, "aid": account["id"]},
+        {"url": unique_filename, "aid": account["id"]},
     )
+
+    # Return a signed URL for immediate preview
+    signed = storage_client.from_("avatars").create_signed_url(unique_filename, 3600)
+    avatar_url = signed.get("signedUrl", "")
 
     return {"success": True, "avatar_url": avatar_url}
 

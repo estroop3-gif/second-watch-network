@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowUpRight, ArrowDownLeft, Forward, Reply, Eye, Download, Paperclip } from 'lucide-react';
+import { ArrowUpRight, ArrowDownLeft, Forward, Reply, Eye, Download, Paperclip, User } from 'lucide-react';
 import { formatDateTime } from '@/lib/dateUtils';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -29,6 +29,7 @@ interface Message {
   first_opened_at?: string;
   last_opened_at?: string;
   attachments?: Attachment[];
+  sender_avatar_url?: string;
 }
 
 interface EmailMessageProps {
@@ -97,9 +98,27 @@ function splitQuotedContent(html: string): { mainHtml: string; quotedHtml: strin
 const EmailMessage = ({ message, defaultExpanded = true, onForward, onReply }: EmailMessageProps) => {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [showQuoted, setShowQuoted] = useState(false);
+  const [showAllRecipients, setShowAllRecipients] = useState(false);
   const isOutbound = message.direction === 'outbound';
   const downloadAttachment = useDownloadEmailAttachment();
   const attachments = message.attachments || [];
+
+  // For outbound messages, merge To + CC into a single "all recipients" list
+  // so the message card shows everyone it was sent to (like Gmail)
+  const allRecipients = (() => {
+    const to = (message.to_addresses || []).filter(a => !a.includes('reply+'));
+    if (!isOutbound) return to;
+    const cc = (message.cc_addresses || []).filter(a => !a.includes('reply+'));
+    const seen = new Set(to.map(a => a.toLowerCase()));
+    const merged = [...to];
+    for (const addr of cc) {
+      if (!seen.has(addr.toLowerCase())) {
+        seen.add(addr.toLowerCase());
+        merged.push(addr);
+      }
+    }
+    return merged;
+  })();
 
   const { mainHtml, quotedHtml } = message.body_html
     ? splitQuotedContent(message.body_html)
@@ -141,32 +160,46 @@ const EmailMessage = ({ message, defaultExpanded = true, onForward, onReply }: E
   // Expanded view
   return (
     <div className={cn(
-      'rounded-lg border p-4',
+      'rounded-lg border p-4 overflow-hidden',
       isOutbound
         ? 'border-muted-gray/30 bg-muted-gray/10'
         : 'border-accent-yellow/20 bg-accent-yellow/5'
     )}>
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex flex-wrap items-center justify-between gap-y-1 mb-3">
         <div
-          className="flex items-center gap-2 text-sm min-w-0 cursor-pointer"
+          className="flex items-center gap-2 text-sm min-w-0 cursor-pointer overflow-hidden"
           onClick={() => setExpanded(false)}
           title="Click to collapse"
         >
+          {message.sender_avatar_url ? (
+            <img src={message.sender_avatar_url} alt="" className="h-7 w-7 rounded-full object-cover flex-shrink-0" />
+          ) : (
+            <div className="h-7 w-7 rounded-full bg-muted-gray/20 flex items-center justify-center flex-shrink-0">
+              <User className="h-3.5 w-3.5 text-muted-gray" />
+            </div>
+          )}
           {isOutbound ? (
             <ArrowUpRight className="h-4 w-4 text-muted-gray flex-shrink-0" />
           ) : (
             <ArrowDownLeft className="h-4 w-4 text-accent-yellow flex-shrink-0" />
           )}
           <CopyableEmail email={message.from_address} className="font-medium text-bone-white" />
-          <span className="text-muted-gray">&rarr;</span>
+          <span className="text-muted-gray flex-shrink-0">&rarr;</span>
           <span className="text-muted-gray truncate">
-            {message.to_addresses?.map((addr, i) => (
-              <span key={addr}>
-                {i > 0 && ', '}
-                <CopyableEmail email={addr} className="text-muted-gray" />
-              </span>
-            ))}
+            {allRecipients[0] || ''}
           </span>
+          {(() => {
+            const rest = allRecipients.length - 1;
+            if (rest <= 0) return null;
+            return (
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowAllRecipients(!showAllRecipients); }}
+                className="text-xs text-accent-yellow hover:underline flex-shrink-0"
+              >
+                {showAllRecipients ? `\u25B4` : `+${rest}`}
+              </button>
+            );
+          })()}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           {/* Open tracking badge */}
@@ -195,9 +228,27 @@ const EmailMessage = ({ message, defaultExpanded = true, onForward, onReply }: E
         </div>
       </div>
 
-      {message.cc_addresses?.length > 0 && (
+      {showAllRecipients && allRecipients.length > 1 && (
+        <div className="text-xs text-muted-gray mb-2 break-words overflow-hidden">
+          <span>To: </span>
+          {allRecipients.map((addr, i) => (
+            <span key={addr}>
+              {i > 0 && ', '}
+              <CopyableEmail email={addr} className="text-muted-gray" />
+            </span>
+          ))}
+          <button
+            onClick={() => setShowAllRecipients(false)}
+            className="text-accent-yellow hover:underline ml-2 inline"
+          >
+            hide
+          </button>
+        </div>
+      )}
+
+      {!isOutbound && message.cc_addresses?.length > 0 && (
         <p className="text-xs text-muted-gray mb-2">
-          CC: {message.cc_addresses.map((addr, i) => (
+          CC: {message.cc_addresses.filter(a => !a.includes('reply+')).map((addr, i) => (
             <span key={addr}>
               {i > 0 && ', '}
               <CopyableEmail email={addr} className="text-muted-gray" />
@@ -206,12 +257,12 @@ const EmailMessage = ({ message, defaultExpanded = true, onForward, onReply }: E
         </p>
       )}
 
-      <div>
+      <div className="overflow-x-hidden">
         {mainHtml ? (
           <>
             <div
               dangerouslySetInnerHTML={{ __html: mainHtml }}
-              className="prose prose-invert max-w-none text-bone-white/90 [&_a]:text-accent-yellow [&_img]:max-w-full [&_p]:mb-4 [&_p:last-child]:mb-0"
+              className="prose prose-invert max-w-none text-bone-white/90 [&_a]:text-accent-yellow [&_img]:max-w-full [&_p]:mb-4 [&_p:last-child]:mb-0 overflow-x-hidden break-words [&_*]:max-w-full"
             />
             {quotedHtml && !showQuoted && (
               <button
@@ -240,7 +291,7 @@ const EmailMessage = ({ message, defaultExpanded = true, onForward, onReply }: E
         ) : message.body_html ? (
           <div
             dangerouslySetInnerHTML={{ __html: message.body_html }}
-            className="prose prose-invert max-w-none text-bone-white/90 [&_a]:text-accent-yellow [&_img]:max-w-full [&_p]:mb-4 [&_p:last-child]:mb-0"
+            className="prose prose-invert max-w-none text-bone-white/90 [&_a]:text-accent-yellow [&_img]:max-w-full [&_p]:mb-4 [&_p:last-child]:mb-0 overflow-x-hidden break-words [&_*]:max-w-full"
           />
         ) : (
           <pre className="text-bone-white/90 text-sm whitespace-pre-wrap font-sans">

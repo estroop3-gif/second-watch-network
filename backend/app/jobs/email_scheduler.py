@@ -197,9 +197,9 @@ async def process_unsnoozed_threads():
                         )
                         if resp.get("Items"):
                             apigw = boto3.client("apigatewaymanagementapi",
-                                endpoint_url="https://j4f73g2zp0.execute-api.us-east-1.amazonaws.com/prod")
+                                endpoint_url="https://df3xkisme7.execute-api.us-east-1.amazonaws.com/prod")
                             notification = json.dumps({
-                                "action": "crm:email:unsnoozed",
+                                "event": "crm:email:unsnoozed",
                                 "thread_id": thread["id"],
                             })
                             for item in resp["Items"]:
@@ -897,6 +897,149 @@ async def process_internal_warmup():
         logger.error(f"process_internal_warmup error: {e}")
 
 
+async def poll_resend_inbound():
+    """
+    Fallback polling job: fetches recent inbound emails from Resend API and
+    backfills any that were missed by the webhook (e.g. dropped webhooks).
+    Uses resend_received_id for dedup — safe to run even when webhooks work fine.
+    Runs every 120 seconds.
+    """
+    try:
+        import httpx
+        from app.api.crm import _deliver_inbound_to_account, _clean_email_address
+
+        if not settings.RESEND_API_KEY:
+            return
+
+        # Fetch the 50 most recent inbound emails from Resend
+        resp = httpx.get(
+            "https://api.resend.com/emails/receiving?limit=50",
+            headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"poll_resend_inbound: Resend API returned {resp.status_code}")
+            return
+
+        emails = resp.json().get("data", [])
+        if not emails:
+            return
+
+        backfilled = 0
+        for email_entry in emails:
+            resend_id = email_entry.get("id")
+            if not resend_id:
+                continue
+
+            to_addresses = list(email_entry.get("to", []))
+            from_address = email_entry.get("from", "")
+            subject = email_entry.get("subject", "")
+
+            # Fetch full email detail once (content, headers, attachments)
+            html_body = ""
+            text_body = ""
+            cc_addresses = []
+            attachments_list = []
+            try:
+                detail_resp = httpx.get(
+                    f"https://api.resend.com/emails/receiving/{resend_id}",
+                    headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+                    timeout=10,
+                )
+                if detail_resp.status_code == 200:
+                    detail = detail_resp.json()
+                    html_body = detail.get("html") or ""
+                    text_body = detail.get("text") or ""
+                    cc_addresses = detail.get("cc") or []
+                    if not from_address:
+                        from_address = detail.get("from", "")
+                    if not subject:
+                        subject = detail.get("subject", "")
+                    # Merge full TO list from email headers (Resend splits per-recipient)
+                    email_headers = detail.get("headers") or {}
+                    header_to = email_headers.get("to", "")
+                    if header_to:
+                        parsed = [a.strip() for a in header_to.split(",") if a.strip()]
+                        existing_addrs = {_clean_email_address(a) for a in to_addresses}
+                        for addr in parsed:
+                            clean = _clean_email_address(addr)
+                            if clean and clean not in existing_addrs:
+                                to_addresses.append(addr)
+                                existing_addrs.add(clean)
+                    header_cc = email_headers.get("cc", "")
+                    if header_cc and not cc_addresses:
+                        cc_addresses = [a.strip() for a in header_cc.split(",") if a.strip()]
+            except Exception as e:
+                logger.warning(f"poll_resend_inbound: failed to fetch email detail {resend_id}: {e}")
+
+            try:
+                att_resp = httpx.get(
+                    f"https://api.resend.com/emails/receiving/{resend_id}/attachments",
+                    headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+                    timeout=10,
+                )
+                if att_resp.status_code == 200:
+                    attachments_list = att_resp.json().get("data", [])
+            except Exception as e:
+                logger.warning(f"poll_resend_inbound: failed to fetch attachments for {resend_id}: {e}")
+
+            # For each TO address, check if we have a matching CRM account
+            for addr in to_addresses:
+                clean = _clean_email_address(addr)
+                if not clean or "reply+" in clean:
+                    continue
+
+                acct = execute_single(
+                    "SELECT * FROM crm_email_accounts WHERE LOWER(email_address) = :email AND is_active = true LIMIT 1",
+                    {"email": clean},
+                )
+                if not acct:
+                    continue
+
+                # Dedup: check if already delivered
+                existing = execute_single(
+                    """SELECT m.id FROM crm_email_messages m
+                       JOIN crm_email_threads t ON t.id = m.thread_id
+                       WHERE m.resend_received_id = :rid AND t.account_id = :aid LIMIT 1""",
+                    {"rid": resend_id, "aid": acct["id"]},
+                )
+                if existing:
+                    continue
+
+                logger.info(f"poll_resend_inbound: backfilling missed email {resend_id} for {clean}")
+
+                # Check for reply+ thread routing
+                import re
+                reply_thread_id = None
+                all_addrs = to_addresses + cc_addresses
+                for a in all_addrs:
+                    match = re.search(r"reply\+([a-f0-9-]+)@", a)
+                    if match:
+                        reply_thread_id = match.group(1)
+                        break
+
+                msg = _deliver_inbound_to_account(
+                    account=acct,
+                    from_address=from_address,
+                    subject=subject,
+                    html_body=html_body,
+                    text_body=text_body,
+                    to_addresses=to_addresses,
+                    cc_addresses=cc_addresses,
+                    thread_id_override=reply_thread_id,
+                    attachments=attachments_list,
+                    resend_received_id=resend_id,
+                )
+                if msg:
+                    backfilled += 1
+
+        if backfilled:
+            logger.info(f"poll_resend_inbound: backfilled {backfilled} missed emails")
+
+    except Exception as e:
+        logger.error(f"poll_resend_inbound error: {e}")
+
+
 async def process_recurring_goals():
     """Auto-create next period goals for expired recurring goals. Runs daily."""
     try:
@@ -979,11 +1122,12 @@ def start_email_scheduler():
         scheduler.add_job(process_sequence_sends, "interval", seconds=300, id="sequence_sends")
         scheduler.add_job(process_campaign_sends, "interval", seconds=120, id="campaign_sends")
         scheduler.add_job(process_notification_digests, "interval", seconds=900, id="notification_digests")
+        scheduler.add_job(poll_resend_inbound, "interval", seconds=120, id="poll_resend_inbound")
         scheduler.add_job(process_recurring_goals, "interval", seconds=86400, id="recurring_goals")
         # Internal warmup disabled — no longer needed
         # scheduler.add_job(process_internal_warmup, "interval", seconds=7200, id="internal_warmup")
         scheduler.start()
-        logger.info("Email scheduler started with 6 jobs")
+        logger.info("Email scheduler started with 7 jobs")
         return scheduler
     except ImportError:
         logger.warning("APScheduler not installed — email scheduler disabled. Install with: pip install apscheduler")
