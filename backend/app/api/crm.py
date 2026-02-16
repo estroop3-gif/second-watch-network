@@ -6079,7 +6079,7 @@ async def list_scrape_sources(
 ):
     rows = execute_query(
         """
-        SELECT s.*, p.first_name || ' ' || p.last_name as created_by_name
+        SELECT s.*, p.full_name as created_by_name
         FROM crm_scrape_sources s
         LEFT JOIN profiles p ON p.id = s.created_by
         ORDER BY s.created_at DESC
@@ -6188,7 +6188,7 @@ async def list_scrape_jobs(
     rows = execute_query(
         f"""
         SELECT j.*, s.name as source_name,
-               p.first_name || ' ' || p.last_name as created_by_name,
+               p.full_name as created_by_name,
                (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id) as lead_count
         FROM crm_scrape_jobs j
         JOIN crm_scrape_sources s ON s.id = j.source_id
@@ -6281,7 +6281,7 @@ async def get_scrape_job(
     job = execute_single(
         """
         SELECT j.*, s.name as source_name,
-               p.first_name || ' ' || p.last_name as created_by_name,
+               p.full_name as created_by_name,
                (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id) as lead_count,
                (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id AND l.status = 'approved') as approved_count,
                (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id AND l.status = 'rejected') as rejected_count,
@@ -6729,7 +6729,7 @@ async def list_quotes(
 
     rows = execute_query(
         f"""
-        SELECT q.*, p.first_name || ' ' || p.last_name as created_by_name
+        SELECT q.*, p.full_name as created_by_name
         FROM pricing_quotes q
         JOIN profiles p ON p.id = q.created_by
         {where}
@@ -6749,7 +6749,7 @@ async def get_quote(
     """Get a single quote with full breakdown."""
     row = execute_single(
         """
-        SELECT q.*, p.first_name || ' ' || p.last_name as created_by_name
+        SELECT q.*, p.full_name as created_by_name
         FROM pricing_quotes q
         JOIN profiles p ON p.id = q.created_by
         WHERE q.id = :id
