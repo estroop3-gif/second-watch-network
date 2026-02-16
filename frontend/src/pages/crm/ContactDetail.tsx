@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Edit, Link2, Phone, Mail, Building2,
   MapPin, Tag, Trash2, PhoneOff, ClipboardList,
-  MessageSquare, UserPlus,
+  MessageSquare, UserPlus, Lock, Globe,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -135,6 +135,9 @@ const ContactDetail = () => {
     );
   };
 
+  const isOwner = currentProfile?.id === contact.assigned_rep_id;
+  const canEdit = isOwner || isAdmin;
+
   const isDNC = contact.do_not_call || contact.do_not_email || contact.do_not_text;
 
   const address = [contact.address_line1, contact.city, contact.state, contact.zip]
@@ -162,6 +165,11 @@ const ContactDetail = () => {
             <h1 className="text-3xl font-heading text-bone-white">
               {contact.first_name} {contact.last_name}
             </h1>
+            {contact.visibility === 'private' && (
+              <Badge variant="outline" className="bg-orange-500/10 text-orange-400 border-orange-500/30">
+                <Lock className="h-3 w-3 mr-1" /> Private
+              </Badge>
+            )}
             {isDNC && (
               <Badge variant="outline" className="bg-red-500/10 text-red-400 border-red-500/30">
                 DNC
@@ -180,15 +188,34 @@ const ContactDetail = () => {
             )}
           </div>
         </div>
-        <div className="flex gap-2 flex-wrap justify-end">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShowLogActivity(true)}
-            className="border-green-500/50 text-green-400 hover:bg-green-500/10"
-          >
-            <ClipboardList className="h-4 w-4 mr-1" /> Log Activity
-          </Button>
+        <div className="flex gap-2 flex-wrap justify-end items-center">
+          {canEdit && (
+            <div className="flex items-center gap-2 mr-2 px-2 py-1 rounded border border-muted-gray/30">
+              <Label className="text-xs text-muted-gray flex items-center gap-1 cursor-pointer">
+                {contact.visibility === 'private' ? <Lock className="h-3 w-3" /> : <Globe className="h-3 w-3" />}
+                {contact.visibility === 'private' ? 'Private' : 'Team'}
+              </Label>
+              <Switch
+                checked={contact.visibility === 'private'}
+                onCheckedChange={(checked) => {
+                  updateContact.mutate(
+                    { id: id!, data: { visibility: checked ? 'private' : 'team' } },
+                    { onSuccess: () => toast.success(checked ? 'Contact set to private' : 'Contact shared with team') }
+                  );
+                }}
+              />
+            </div>
+          )}
+          {canEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowLogActivity(true)}
+              className="border-green-500/50 text-green-400 hover:bg-green-500/10"
+            >
+              <ClipboardList className="h-4 w-4 mr-1" /> Log Activity
+            </Button>
+          )}
           {contact.email && (
             <Button
               variant="outline"
@@ -219,23 +246,27 @@ const ContactDetail = () => {
               {contact.assigned_rep_id ? 'Reassign' : 'Assign Rep'}
             </Button>
           )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={openDNCDialog}
-            className={isDNC ? 'border-red-500/50 text-red-400 hover:bg-red-500/10' : 'border-muted-gray/50 text-muted-gray hover:bg-red-500/10 hover:text-red-400'}
-          >
-            <PhoneOff className="h-4 w-4 mr-1" /> DNC
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => setShowLink(true)}>
-            <Link2 className="h-4 w-4 mr-1" /> Link Profile
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => setShowEdit(true)}>
-            <Edit className="h-4 w-4 mr-1" /> Edit
-          </Button>
-          <Button variant="ghost" size="sm" className="text-red-400 hover:text-red-300" onClick={handleDelete}>
-            <Trash2 className="h-4 w-4" />
-          </Button>
+          {canEdit && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={openDNCDialog}
+                className={isDNC ? 'border-red-500/50 text-red-400 hover:bg-red-500/10' : 'border-muted-gray/50 text-muted-gray hover:bg-red-500/10 hover:text-red-400'}
+              >
+                <PhoneOff className="h-4 w-4 mr-1" /> DNC
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setShowLink(true)}>
+                <Link2 className="h-4 w-4 mr-1" /> Link Profile
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setShowEdit(true)}>
+                <Edit className="h-4 w-4 mr-1" /> Edit
+              </Button>
+              <Button variant="ghost" size="sm" className="text-red-400 hover:text-red-300" onClick={handleDelete}>
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </>
+          )}
         </div>
       </div>
 

@@ -5,6 +5,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const contactSchema = z.object({
@@ -25,6 +26,7 @@ const contactSchema = z.object({
   source: z.enum(['inbound', 'outbound', 'referral', 'event', 'website', 'social', 'other']),
   source_detail: z.string().optional().or(z.literal('')),
   notes: z.string().optional().or(z.literal('')),
+  visibility: z.enum(['private', 'team']).default('team'),
 });
 
 type ContactFormValues = z.infer<typeof contactSchema>;
@@ -57,6 +59,7 @@ const ContactForm = ({ defaultValues, onSubmit, isSubmitting, submitLabel = 'Sav
       source: 'outbound',
       source_detail: '',
       notes: '',
+      visibility: 'team',
       ...defaultValues,
     },
   });
@@ -195,6 +198,26 @@ const ContactForm = ({ defaultValues, onSubmit, isSubmitting, submitLabel = 'Sav
             )} />
           </div>
         </div>
+
+        {/* Visibility */}
+        <FormField control={form.control} name="visibility" render={({ field }) => (
+          <FormItem>
+            <div className="flex items-center justify-between rounded-lg border border-muted-gray/30 p-3">
+              <div>
+                <FormLabel className="text-sm font-medium">Private (Admin Only)</FormLabel>
+                <p className="text-xs text-muted-gray mt-0.5">
+                  When enabled, only you and admins can see this contact
+                </p>
+              </div>
+              <FormControl>
+                <Switch
+                  checked={field.value === 'private'}
+                  onCheckedChange={(checked) => field.onChange(checked ? 'private' : 'team')}
+                />
+              </FormControl>
+            </div>
+          </FormItem>
+        )} />
 
         {/* Notes */}
         <FormField control={form.control} name="notes" render={({ field }) => (

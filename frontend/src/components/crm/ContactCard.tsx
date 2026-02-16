@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Phone, Mail, Building2, Clock, Send, PhoneOff, UserPlus } from 'lucide-react';
+import { Phone, Mail, Building2, Clock, Send, PhoneOff, UserPlus, Lock } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -68,6 +68,11 @@ const ContactCard = ({ contact, onEmail, showAdminControls, onAssign }: ContactC
                 <h3 className="font-medium text-bone-white truncate">
                   {contact.first_name} {contact.last_name}
                 </h3>
+                {contact.visibility === 'private' && (
+                  <Badge variant="outline" className="bg-orange-500/10 text-orange-400 border-orange-500/30 text-[10px] px-1.5 py-0 h-5 flex-shrink-0">
+                    <Lock className="h-2.5 w-2.5 mr-0.5" /> Private
+                  </Badge>
+                )}
                 {isDNC && (
                   <Badge variant="outline" className="bg-red-500/10 text-red-400 border-red-500/30 text-[10px] px-1.5 py-0 h-5 flex-shrink-0">
                     DNC

@@ -34,7 +34,7 @@ const QuickReplyDropdown = ({ threadId, toEmail, contactId, onManage }: QuickRep
     sendEmail.mutate(
       {
         thread_id: threadId,
-        to_email: toEmail,
+        to_emails: [toEmail],
         contact_id: contactId,
         subject: 'Re:',
         body_html: reply.body_html || `<p>${reply.body_text}</p>`,

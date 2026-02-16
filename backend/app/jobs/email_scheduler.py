@@ -54,18 +54,41 @@ async def process_scheduled_emails():
                     plain_text = re.sub(r'<[^>]+>', '', plain_text)
                     plain_text = plain_text.strip()
 
-                # Check if recipient is an internal org member — skip Resend if so
-                to_email = msg["to_addresses"][0] if msg.get("to_addresses") else None
-                recipient_account = None
-                if to_email:
-                    recipient_account = execute_single(
+                # Split recipients into internal vs external
+                from app.api.crm import _route_email_internally
+                internal_recipients = []
+                external_recipients = []
+                for to_addr in (msg.get("to_addresses") or []):
+                    acct = execute_single(
                         "SELECT * FROM crm_email_accounts WHERE email_address = :email AND is_active = true",
-                        {"email": to_email},
+                        {"email": to_addr},
+                    )
+                    if acct:
+                        internal_recipients.append((to_addr, acct))
+                    else:
+                        external_recipients.append(to_addr)
+
+                sender_account = {
+                    "id": msg["account_id"],
+                    "email_address": msg["email_address"],
+                    "display_name": msg["display_name"],
+                    "profile_id": msg["profile_id"],
+                }
+
+                # Route to internal recipients
+                for to_addr, recipient_account in internal_recipients:
+                    _route_email_internally(
+                        sender_account=sender_account,
+                        recipient_account=recipient_account,
+                        subject=msg["subject"],
+                        body_html=body_html,
+                        body_text=plain_text or "",
+                        to_addresses=msg.get("to_addresses") or [],
+                        cc_addresses=msg.get("cc_addresses") or [],
                     )
 
-                if recipient_account:
-                    # Internal delivery — skip Resend
-                    from app.api.crm import _route_email_internally
+                if not external_recipients:
+                    # All internal — skip Resend
                     execute_single(
                         "UPDATE crm_email_messages SET status = 'sent', scheduled_at = NULL WHERE id = :mid RETURNING id",
                         {"mid": msg["id"]},
@@ -74,28 +97,13 @@ async def process_scheduled_emails():
                         "UPDATE crm_email_threads SET last_message_at = NOW() WHERE id = :tid RETURNING id",
                         {"tid": msg["thread_id"]},
                     )
-                    sender_account = {
-                        "id": msg["account_id"],
-                        "email_address": msg["email_address"],
-                        "display_name": msg["display_name"],
-                        "profile_id": msg["profile_id"],
-                    }
-                    _route_email_internally(
-                        sender_account=sender_account,
-                        recipient_account=recipient_account,
-                        subject=msg["subject"],
-                        body_html=body_html,
-                        body_text=plain_text or "",
-                        to_addresses=msg["to_addresses"],
-                        cc_addresses=msg.get("cc_addresses") or [],
-                    )
-                    logger.info(f"Delivered scheduled email {msg['id']} internally to {to_email}")
+                    logger.info(f"Delivered scheduled email {msg['id']} internally to {[a for a, _ in internal_recipients]}")
                     continue
 
                 from app.api.crm import add_email_inline_styles
                 send_params = {
                     "from": f"{msg['display_name']} <{msg['email_address']}>",
-                    "to": msg["to_addresses"],
+                    "to": external_recipients,
                     "subject": msg["subject"],
                     "html": add_email_inline_styles(body_html),
                     "text": plain_text,
@@ -103,6 +111,30 @@ async def process_scheduled_emails():
                 }
                 if msg.get("cc_addresses"):
                     send_params["cc"] = msg["cc_addresses"]
+                if msg.get("bcc_addresses"):
+                    send_params["bcc"] = msg["bcc_addresses"]
+
+                # Fetch and attach files for scheduled sends
+                sched_attachments = execute_query(
+                    "SELECT * FROM crm_email_attachments WHERE message_id = :mid",
+                    {"mid": msg["id"]},
+                )
+                if sched_attachments:
+                    import boto3
+                    s3 = boto3.client("s3", region_name="us-east-1")
+                    resend_atts = []
+                    for att in sched_attachments:
+                        try:
+                            bucket = att.get("s3_bucket") or settings.AWS_S3_BACKLOT_FILES_BUCKET
+                            s3_obj = s3.get_object(Bucket=bucket, Key=att["s3_key"])
+                            resend_atts.append({
+                                "filename": att["filename"],
+                                "content": s3_obj["Body"].read(),
+                            })
+                        except Exception as e:
+                            logger.warning(f"Failed to fetch attachment {att['id']} for scheduled email: {e}")
+                    if resend_atts:
+                        send_params["attachments"] = resend_atts
 
                 result = resend_sdk.Emails.send(send_params)
                 resend_id = result.get("id")

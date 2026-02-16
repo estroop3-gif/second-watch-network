@@ -13,13 +13,14 @@ import { useSendEmail, useEmailTemplates, useUploadEmailAttachment, useAICompose
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import RichTextEditor from './RichTextEditor';
-import EmailToAutocomplete from './EmailToAutocomplete';
+import EmailChipInput from './EmailChipInput';
 
 interface EmailComposerProps {
-  defaultTo?: string;
+  defaultTo?: string | string[];
   defaultSubject?: string;
   defaultBody?: string;
-  defaultCc?: string;
+  defaultCc?: string | string[];
+  defaultBcc?: string | string[];
   threadId?: string;
   contactId?: string;
   isDNC?: boolean;
@@ -37,6 +38,12 @@ interface EmailComposerProps {
   compact?: boolean;
 }
 
+function toEmailArray(val?: string | string[]): string[] {
+  if (!val) return [];
+  if (Array.isArray(val)) return val;
+  return val.split(',').map(e => e.trim()).filter(Boolean);
+}
+
 function interpolateVariables(text: string, vars: Record<string, string | undefined>): string {
   return text.replace(/\{\{(\w+)\}\}/g, (match, key) => vars[key] || match);
 }
@@ -48,11 +55,14 @@ function formatFileSize(bytes: number): string {
 }
 
 const EmailComposer = ({
-  defaultTo, defaultSubject, defaultBody, defaultCc, threadId, contactId,
+  defaultTo, defaultSubject, defaultBody, defaultCc, defaultBcc, threadId, contactId,
   isDNC, contactData, quotedHtml, quotedLabel, onSent, onCancel, compact,
 }: EmailComposerProps) => {
-  const [to, setTo] = useState(defaultTo || '');
-  const [cc, setCc] = useState(defaultCc || '');
+  const [toEmails, setToEmails] = useState<string[]>(() => toEmailArray(defaultTo));
+  const [ccEmails, setCcEmails] = useState<string[]>(() => toEmailArray(defaultCc));
+  const [bccEmails, setBccEmails] = useState<string[]>(() => toEmailArray(defaultBcc));
+  const [showCc, setShowCc] = useState(() => toEmailArray(defaultCc).length > 0);
+  const [showBcc, setShowBcc] = useState(() => toEmailArray(defaultBcc).length > 0);
   const [subject, setSubject] = useState(defaultSubject || '');
   const [bodyHtml, setBodyHtml] = useState(defaultBody || '');
   const [attachments, setAttachments] = useState<{ id: string; filename: string; size_bytes: number }[]>([]);
@@ -81,7 +91,7 @@ const EmailComposer = ({
       first_name: contactData?.first_name,
       last_name: contactData?.last_name,
       company: contactData?.company,
-      email: contactData?.email || to,
+      email: contactData?.email || toEmails[0] || '',
       deal_name: contactData?.deal_name,
       rep_name: profile?.full_name,
       rep_email: profile?.email,
@@ -116,12 +126,10 @@ const EmailComposer = ({
   }, []);
 
   const handleSend = (scheduled?: boolean) => {
-    if (!to || !subject || !bodyHtml || bodyHtml === '<p></p>') {
+    if (toEmails.length === 0 || !subject || !bodyHtml || bodyHtml === '<p></p>') {
       toast({ title: 'Missing fields', description: 'To, subject, and body are required.', variant: 'destructive' });
       return;
     }
-
-    const ccList = cc ? cc.split(',').map(e => e.trim()).filter(Boolean) : undefined;
 
     // Append quoted text to body if present
     let finalBodyHtml = bodyHtml;
@@ -141,11 +149,12 @@ const EmailComposer = ({
 
     sendEmail.mutate({
       contact_id: resolvedContactId || contactId,
-      to_email: to,
+      to_emails: toEmails,
       subject,
       body_html: finalBodyHtml,
       body_text: bodyText,
-      cc: ccList,
+      cc: ccEmails.length > 0 ? ccEmails : undefined,
+      bcc: bccEmails.length > 0 ? bccEmails : undefined,
       thread_id: threadId,
       attachment_ids: attachments.length > 0 ? attachments.map(a => a.id) : undefined,
       scheduled_at: scheduled && scheduleDate ? new Date(scheduleDate).toISOString() : undefined,
@@ -158,7 +167,12 @@ const EmailComposer = ({
         setScheduleDate('');
         setShowSchedule(false);
         setResolvedContactId(null);
-        if (!threadId) { setTo(''); setCc(''); setSubject(''); }
+        if (!threadId) {
+          setToEmails([]);
+          setCcEmails([]);
+          setBccEmails([]);
+          setSubject('');
+        }
         onSent?.(data.thread_id);
       },
       onError: (err: any) => {
@@ -171,7 +185,7 @@ const EmailComposer = ({
     aiCompose.mutate({
       tone: aiTone,
       topic: aiTopic || subject || undefined,
-      recipient_name: contactData?.first_name || to.split('@')[0] || undefined,
+      recipient_name: contactData?.first_name || toEmails[0]?.split('@')[0] || undefined,
       context: contactData ? `Company: ${contactData.company || 'N/A'}, Deal: ${contactData.deal_name || 'N/A'}` : undefined,
     }, {
       onSuccess: (data) => {
@@ -201,19 +215,57 @@ const EmailComposer = ({
     >
       {!threadId && (
         <>
+          {/* To row with Cc/Bcc toggle */}
           <div>
-            <Label className="text-bone-white/70 text-xs">To</Label>
-            <EmailToAutocomplete
-              value={to}
-              onChange={setTo}
-              onSelect={(s) => { if (s.contact_id) setResolvedContactId(s.contact_id); }}
+            <div className="flex items-center justify-between mb-0.5">
+              <Label className="text-bone-white/70 text-xs">To</Label>
+              <div className="flex gap-1">
+                {!showCc && (
+                  <button type="button" onClick={() => setShowCc(true)}
+                    className="text-xs text-muted-gray hover:text-bone-white transition-colors">
+                    Cc
+                  </button>
+                )}
+                {!showBcc && (
+                  <button type="button" onClick={() => setShowBcc(true)}
+                    className="text-xs text-muted-gray hover:text-bone-white transition-colors">
+                    Bcc
+                  </button>
+                )}
+              </div>
+            </div>
+            <EmailChipInput
+              emails={toEmails}
+              onChange={setToEmails}
+              onSelectSuggestion={(s) => { if (s.contact_id) setResolvedContactId(s.contact_id); }}
+              autoFocus={!compact}
             />
           </div>
-          <div>
-            <Label className="text-bone-white/70 text-xs">CC (comma separated)</Label>
-            <Input value={cc} onChange={e => setCc(e.target.value)} placeholder="cc@example.com"
-              className="bg-charcoal-black border-muted-gray/50 text-bone-white" />
-          </div>
+
+          {/* CC row */}
+          {showCc && (
+            <div>
+              <Label className="text-bone-white/70 text-xs">Cc</Label>
+              <EmailChipInput
+                emails={ccEmails}
+                onChange={setCcEmails}
+                placeholder="cc@example.com"
+              />
+            </div>
+          )}
+
+          {/* BCC row */}
+          {showBcc && (
+            <div>
+              <Label className="text-bone-white/70 text-xs">Bcc</Label>
+              <EmailChipInput
+                emails={bccEmails}
+                onChange={setBccEmails}
+                placeholder="bcc@example.com"
+              />
+            </div>
+          )}
+
           <div>
             <Label className="text-bone-white/70 text-xs">Subject</Label>
             <Input value={subject} onChange={e => setSubject(e.target.value)} placeholder="Email subject"
@@ -295,7 +347,7 @@ const EmailComposer = ({
       <div className="flex items-center justify-between">
         <div className="flex gap-2">
           <Button onClick={() => handleSend(false)}
-            disabled={sendEmail.isPending || !to || !subject || !bodyHtml || bodyHtml === '<p></p>'}
+            disabled={sendEmail.isPending || toEmails.length === 0 || !subject || !bodyHtml || bodyHtml === '<p></p>'}
             className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
           >
             {sendEmail.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Send className="h-4 w-4 mr-2" />}

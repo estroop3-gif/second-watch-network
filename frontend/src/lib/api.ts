@@ -5153,9 +5153,9 @@ class APIClient {
   }
 
   async sendCRMEmail(data: {
-    contact_id?: string; to_email: string; subject: string;
+    contact_id?: string; to_emails: string[]; subject: string;
     body_html: string; body_text?: string; cc?: string[];
-    thread_id?: string; scheduled_at?: string;
+    bcc?: string[]; thread_id?: string; scheduled_at?: string;
     attachment_ids?: string[]; template_id?: string;
   }) {
     return this.post<{ message: any; thread_id: string; scheduled?: boolean; internal?: boolean }>('/api/v1/crm/email/send', data)

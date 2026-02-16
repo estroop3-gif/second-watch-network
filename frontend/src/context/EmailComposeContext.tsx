@@ -6,7 +6,9 @@ import EmailComposer from '@/components/crm/EmailComposer';
 import { useEmailAccount } from '@/hooks/crm/useEmail';
 
 export interface ComposeOptions {
-  defaultTo?: string;
+  defaultTo?: string | string[];
+  defaultCc?: string | string[];
+  defaultBcc?: string | string[];
   defaultSubject?: string;
   defaultBody?: string;
   contactId?: string;
@@ -125,6 +127,8 @@ export const EmailComposeProvider = ({ children }: { children: React.ReactNode }
                 </p>
                 <EmailComposer
                   defaultTo={composeOptions.defaultTo}
+                  defaultCc={composeOptions.defaultCc}
+                  defaultBcc={composeOptions.defaultBcc}
                   defaultSubject={composeOptions.defaultSubject}
                   defaultBody={composeOptions.defaultBody}
                   threadId={composeOptions.threadId}

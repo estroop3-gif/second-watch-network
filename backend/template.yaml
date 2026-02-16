@@ -231,6 +231,7 @@ Resources:
       Description: Second Watch Network FastAPI Backend
       Timeout: 60
       MemorySize: 3008
+      AutoPublishAlias: live
       Architectures:
         - arm64
       Layers:
