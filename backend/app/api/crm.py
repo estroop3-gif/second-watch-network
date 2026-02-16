@@ -6204,7 +6204,7 @@ async def create_scrape_source(
     row = execute_single(
         """
         INSERT INTO crm_scrape_sources (name, base_url, source_type, selectors, max_pages, rate_limit_ms, enabled, notes, created_by)
-        VALUES (:name, :base_url, :source_type, :selectors::jsonb, :max_pages, :rate_limit_ms, :enabled, :notes, :created_by)
+        VALUES (:name, :base_url, :source_type, CAST(:selectors AS jsonb), :max_pages, :rate_limit_ms, :enabled, :notes, :created_by)
         RETURNING *
         """,
         {
@@ -6238,7 +6238,7 @@ async def update_scrape_source(
             params[field] = val
 
     if data.selectors is not None:
-        updates.append("selectors = :selectors::jsonb")
+        updates.append("selectors = CAST(:selectors AS jsonb)")
         params["selectors"] = json.dumps(data.selectors)
 
     if not updates:
@@ -6333,7 +6333,7 @@ async def create_scrape_job(
     job = execute_single(
         """
         INSERT INTO crm_scrape_jobs (source_id, created_by, filters)
-        VALUES (:source_id, :created_by, :filters::jsonb)
+        VALUES (:source_id, :created_by, CAST(:filters AS jsonb))
         RETURNING *
         """,
         {
@@ -6727,7 +6727,7 @@ async def create_scrape_profile(
             :name, :description, :max_pages_per_site, :paths_to_visit, :data_to_extract,
             :follow_internal_links, :max_depth, :concurrency, :delay_ms, :respect_robots_txt,
             :user_agent, :min_match_score, :require_email, :require_phone, :require_website,
-            :excluded_domains, :scoring_rules::jsonb, :keywords, :created_by
+            :excluded_domains, CAST(:scoring_rules AS jsonb), :keywords, :created_by
         ) RETURNING *
         """,
         {
@@ -6783,7 +6783,7 @@ async def update_scrape_profile(
             params[field] = val
 
     if data.scoring_rules is not None:
-        updates.append("scoring_rules = :scoring_rules::jsonb")
+        updates.append("scoring_rules = CAST(:scoring_rules AS jsonb)")
         params["scoring_rules"] = json.dumps(data.scoring_rules)
 
     if not updates:
@@ -7055,7 +7055,7 @@ async def create_discovery_run(
     run = execute_single(
         """
         INSERT INTO crm_discovery_runs (profile_id, created_by, status, profile_snapshot)
-        VALUES (:profile_id, :created_by, 'queued', :snapshot::jsonb)
+        VALUES (:profile_id, :created_by, 'queued', CAST(:snapshot AS jsonb))
         RETURNING *
         """,
         {
@@ -7208,7 +7208,7 @@ async def start_scraping_from_discovery(
             total_sites, profile_snapshot
         ) VALUES (
             :run_id, :sp_id, :created_by, '{}'::jsonb,
-            :total_sites, :snapshot::jsonb
+            :total_sites, CAST(:snapshot AS jsonb)
         ) RETURNING *
         """,
         {
@@ -7654,9 +7654,9 @@ async def create_quote(
         ) VALUES (
             :created_by, :client_name, :region, :production_type,
             :start_date, :end_date, :term_type, :term_months, :trial_type,
-            :tier, :raw_input::jsonb, :line_items::jsonb, :monthly_breakdown::jsonb,
+            :tier, CAST(:raw_input AS jsonb), CAST(:line_items AS jsonb), CAST(:monthly_breakdown AS jsonb),
             :monthly_total, :total_contract_value, :effective_monthly_rate,
-            :is_production_package, :phase_breakdown::jsonb,
+            :is_production_package, CAST(:phase_breakdown AS jsonb),
             :linked_contact_id, :linked_org_id, :notes
         ) RETURNING *
         """,
@@ -7689,7 +7689,7 @@ async def create_quote(
     execute_single(
         """
         INSERT INTO pricing_quote_versions (quote_id, version_number, raw_input, line_items, monthly_breakdown, monthly_total, total_contract_value, changed_by)
-        VALUES (:qid, 1, :raw_input::jsonb, :line_items::jsonb, :monthly_breakdown::jsonb, :monthly_total, :total_contract_value, :changed_by)
+        VALUES (:qid, 1, CAST(:raw_input AS jsonb), CAST(:line_items AS jsonb), CAST(:monthly_breakdown AS jsonb), :monthly_total, :total_contract_value, :changed_by)
         RETURNING id
         """,
         {
@@ -7820,11 +7820,11 @@ async def update_quote(
             client_name = :client_name, region = :region, production_type = :production_type,
             start_date = :start_date, end_date = :end_date,
             term_type = :term_type, term_months = :term_months, trial_type = :trial_type,
-            tier = :tier, raw_input = :raw_input::jsonb,
-            line_items = :line_items::jsonb, monthly_breakdown = :monthly_breakdown::jsonb,
+            tier = :tier, raw_input = CAST(:raw_input AS jsonb),
+            line_items = CAST(:line_items AS jsonb), monthly_breakdown = CAST(:monthly_breakdown AS jsonb),
             monthly_total = :monthly_total, total_contract_value = :total_contract_value,
             effective_monthly_rate = :effective_monthly_rate,
-            is_production_package = :is_production_package, phase_breakdown = :phase_breakdown::jsonb,
+            is_production_package = :is_production_package, phase_breakdown = CAST(:phase_breakdown AS jsonb),
             linked_contact_id = :linked_contact_id, linked_org_id = :linked_org_id,
             notes = :notes, updated_at = NOW()
         WHERE id = :id RETURNING *
@@ -7862,7 +7862,7 @@ async def update_quote(
     execute_single(
         """
         INSERT INTO pricing_quote_versions (quote_id, version_number, raw_input, line_items, monthly_breakdown, monthly_total, total_contract_value, changed_by)
-        VALUES (:qid, :ver, :raw_input::jsonb, :line_items::jsonb, :monthly_breakdown::jsonb, :monthly_total, :total_contract_value, :changed_by)
+        VALUES (:qid, :ver, CAST(:raw_input AS jsonb), CAST(:line_items AS jsonb), CAST(:monthly_breakdown AS jsonb), :monthly_total, :total_contract_value, :changed_by)
         RETURNING id
         """,
         {
