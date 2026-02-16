@@ -6,7 +6,7 @@ import {
   Activity, Kanban, Target,
   ClipboardList, Star, Shield, AtSign,
   PanelLeftClose, PanelLeftOpen,
-  GraduationCap, CreditCard, MessageSquare, ShieldOff,
+  GraduationCap, CreditCard, MessageSquare, ShieldOff, DollarSign,
 } from 'lucide-react';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useUnreadCount, useEmailSocket } from '@/hooks/crm/useEmail';
@@ -73,6 +73,7 @@ const CRMLayout = () => {
     { name: 'Training', href: '/crm/training', icon: GraduationCap, badge: badges?.training || 0 },
     { name: 'Discussions', href: '/crm/discussions', icon: MessageSquare, badge: badges?.discussions || 0 },
     { name: 'Business Card', href: '/crm/business-card', icon: CreditCard, badge: badges?.business_card || 0 },
+    { name: 'Pricing', href: '/crm/pricing', icon: DollarSign, badge: 0 },
   ];
 
   const adminItems = [

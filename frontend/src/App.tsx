@@ -159,6 +159,7 @@ const CRMAdminEmail = React.lazy(() => import("./pages/crm/AdminEmail"));
 const CRMAdminBusinessCards = React.lazy(() => import("./pages/crm/AdminBusinessCards"));
 const CRMRepDetail = React.lazy(() => import("./pages/crm/admin/RepDetail"));
 const CRMAdminScraping = React.lazy(() => import("./pages/crm/AdminScraping"));
+const CRMPricingTab = React.lazy(() => import("./pages/crm/PricingTab"));
 const CRMTraining = React.lazy(() => import("./pages/crm/Training"));
 const CRMDiscussions = React.lazy(() => import("./pages/crm/Discussions"));
 const CRMBusinessCardForm = React.lazy(() => import("./components/crm/BusinessCardForm"));
@@ -507,6 +508,7 @@ const App = () => (
                         <Route path="training" element={<CRMTraining />} />
                         <Route path="discussions" element={<CRMDiscussions />} />
                         <Route path="business-card" element={<CRMBusinessCardForm />} />
+                        <Route path="pricing" element={<CRMPricingTab />} />
 
                         {/* Admin sub-layout with horizontal tabs */}
                         <Route path="admin" element={<CRMAdminLayout />}>

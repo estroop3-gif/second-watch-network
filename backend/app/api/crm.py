@@ -6537,3 +6537,381 @@ async def merge_scraped_lead(
         )
 
     return {"status": "merged", "contact_id": data.contact_id}
+
+
+# ============================================================================
+# Pricing — Backlot Subscription Quotes (CPQ)
+# ============================================================================
+
+from app.services.pricing_engine import (
+    TIERS, ADDON_PRICES, compute_full_quote, calculate_monthly_quote,
+)
+
+
+class QuoteCreateInput(BaseModel):
+    client_name: str
+    region: Optional[str] = None
+    production_type: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    term_type: str = "monthly"
+    term_months: int = 3
+    trial_type: str = "none"
+    tier: str = "starter"
+    raw_input: Dict[str, Any] = {}
+    is_production_package: bool = False
+    linked_contact_id: Optional[str] = None
+    linked_org_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class QuoteStatusUpdate(BaseModel):
+    status: str  # draft, sent, accepted, lost
+
+
+class QuoteComputeInput(BaseModel):
+    """Lightweight input for real-time price computation (no save)."""
+    tier: str = "starter"
+    term_type: str = "monthly"
+    term_months: int = 3
+    required_owner_seats: int = 0
+    required_collaborative_seats: int = 0
+    active_projects: int = 0
+    required_non_collaborative_per_project: int = 0
+    required_view_only_per_project: int = 0
+    required_active_storage_tb: float = 0
+    required_archive_storage_tb: float = 0
+    required_bandwidth_gb: float = 0
+    bug_reward: str = "none"
+    is_production_package: bool = False
+    phases: Optional[List[Dict[str, Any]]] = None
+
+
+@router.get("/pricing/tiers")
+async def get_pricing_tiers(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Return tier definitions and add-on prices for the wizard."""
+    return {"tiers": TIERS, "addon_prices": ADDON_PRICES}
+
+
+@router.post("/pricing/compute")
+async def compute_quote_price(
+    data: QuoteComputeInput,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Compute pricing without saving. Used for real-time wizard preview."""
+    raw = data.dict()
+    result = compute_full_quote(raw)
+    # Also include full monthly detail for breakdown display
+    monthly_detail = calculate_monthly_quote(
+        tier_name=data.tier,
+        required_owner_seats=data.required_owner_seats,
+        required_collaborative_seats=data.required_collaborative_seats,
+        active_projects=data.active_projects,
+        required_non_collaborative_per_project=data.required_non_collaborative_per_project,
+        required_view_only_per_project=data.required_view_only_per_project,
+        required_active_storage_tb=data.required_active_storage_tb,
+        required_archive_storage_tb=data.required_archive_storage_tb,
+        required_bandwidth_gb=data.required_bandwidth_gb,
+        bug_reward=data.bug_reward,
+        term_type=data.term_type,
+    )
+    return {**result, "monthly_detail": monthly_detail}
+
+
+@router.post("/pricing/quotes")
+async def create_quote(
+    data: QuoteCreateInput,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Create a new pricing quote from wizard inputs."""
+    # Enforce 3-month minimum for custom quotes
+    if data.term_type == "monthly" and data.term_months < 3:
+        raise HTTPException(400, "Minimum term is 3 months for custom quotes")
+
+    # Merge all wizard fields into raw_input
+    raw_input = {
+        **data.raw_input,
+        "tier": data.tier,
+        "term_type": data.term_type,
+        "term_months": data.term_months,
+        "is_production_package": data.is_production_package,
+    }
+
+    # Compute pricing
+    computed = compute_full_quote(raw_input)
+
+    row = execute_single(
+        """
+        INSERT INTO pricing_quotes (
+            created_by, client_name, region, production_type,
+            start_date, end_date, term_type, term_months, trial_type,
+            tier, raw_input, line_items, monthly_breakdown,
+            monthly_total, total_contract_value, effective_monthly_rate,
+            is_production_package, phase_breakdown,
+            linked_contact_id, linked_org_id, notes
+        ) VALUES (
+            :created_by, :client_name, :region, :production_type,
+            :start_date, :end_date, :term_type, :term_months, :trial_type,
+            :tier, :raw_input::jsonb, :line_items::jsonb, :monthly_breakdown::jsonb,
+            :monthly_total, :total_contract_value, :effective_monthly_rate,
+            :is_production_package, :phase_breakdown::jsonb,
+            :linked_contact_id, :linked_org_id, :notes
+        ) RETURNING *
+        """,
+        {
+            "created_by": profile["id"],
+            "client_name": data.client_name,
+            "region": data.region,
+            "production_type": data.production_type,
+            "start_date": data.start_date,
+            "end_date": data.end_date,
+            "term_type": data.term_type,
+            "term_months": data.term_months,
+            "trial_type": data.trial_type,
+            "tier": data.tier,
+            "raw_input": json.dumps(raw_input),
+            "line_items": json.dumps(computed["line_items"]),
+            "monthly_breakdown": json.dumps(computed["monthly_breakdown"]),
+            "monthly_total": computed["monthly_total"],
+            "total_contract_value": computed["total_contract_value"],
+            "effective_monthly_rate": computed["effective_monthly_rate"],
+            "is_production_package": data.is_production_package,
+            "phase_breakdown": json.dumps(computed.get("phase_breakdown", [])),
+            "linked_contact_id": data.linked_contact_id,
+            "linked_org_id": data.linked_org_id,
+            "notes": data.notes,
+        },
+    )
+
+    # Save initial version
+    execute_single(
+        """
+        INSERT INTO pricing_quote_versions (quote_id, version_number, raw_input, line_items, monthly_breakdown, monthly_total, total_contract_value, changed_by)
+        VALUES (:qid, 1, :raw_input::jsonb, :line_items::jsonb, :monthly_breakdown::jsonb, :monthly_total, :total_contract_value, :changed_by)
+        RETURNING id
+        """,
+        {
+            "qid": row["id"],
+            "raw_input": json.dumps(raw_input),
+            "line_items": json.dumps(computed["line_items"]),
+            "monthly_breakdown": json.dumps(computed["monthly_breakdown"]),
+            "monthly_total": computed["monthly_total"],
+            "total_contract_value": computed["total_contract_value"],
+            "changed_by": profile["id"],
+        },
+    )
+
+    return {"quote": row}
+
+
+@router.get("/pricing/quotes")
+async def list_quotes(
+    status: Optional[str] = Query(None),
+    linked_contact_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: int = Query(50),
+    offset: int = Query(0),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """List pricing quotes with filters."""
+    conditions = []
+    params = {"limit": limit, "offset": offset}
+
+    if status:
+        conditions.append("q.status = :status")
+        params["status"] = status
+    if linked_contact_id:
+        conditions.append("q.linked_contact_id = :linked_contact_id")
+        params["linked_contact_id"] = linked_contact_id
+    if search:
+        conditions.append("q.client_name ILIKE :search")
+        params["search"] = f"%{search}%"
+
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+    rows = execute_query(
+        f"""
+        SELECT q.*, p.first_name || ' ' || p.last_name as created_by_name
+        FROM pricing_quotes q
+        JOIN profiles p ON p.id = q.created_by
+        {where}
+        ORDER BY q.created_at DESC
+        LIMIT :limit OFFSET :offset
+        """,
+        params,
+    )
+    return {"quotes": rows}
+
+
+@router.get("/pricing/quotes/{quote_id}")
+async def get_quote(
+    quote_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get a single quote with full breakdown."""
+    row = execute_single(
+        """
+        SELECT q.*, p.first_name || ' ' || p.last_name as created_by_name
+        FROM pricing_quotes q
+        JOIN profiles p ON p.id = q.created_by
+        WHERE q.id = :id
+        """,
+        {"id": quote_id},
+    )
+    if not row:
+        raise HTTPException(404, "Quote not found")
+
+    versions = execute_query(
+        "SELECT * FROM pricing_quote_versions WHERE quote_id = :qid ORDER BY version_number DESC",
+        {"qid": quote_id},
+    )
+
+    return {"quote": row, "versions": versions}
+
+
+@router.patch("/pricing/quotes/{quote_id}")
+async def update_quote_status(
+    quote_id: str,
+    data: QuoteStatusUpdate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Update quote status (draft → sent → accepted / lost)."""
+    valid_statuses = {"draft", "sent", "accepted", "lost"}
+    if data.status not in valid_statuses:
+        raise HTTPException(400, f"Status must be one of: {valid_statuses}")
+
+    row = execute_single(
+        "UPDATE pricing_quotes SET status = :status, updated_at = NOW() WHERE id = :id RETURNING *",
+        {"status": data.status, "id": quote_id},
+    )
+    if not row:
+        raise HTTPException(404, "Quote not found")
+    return {"quote": row}
+
+
+@router.put("/pricing/quotes/{quote_id}")
+async def update_quote(
+    quote_id: str,
+    data: QuoteCreateInput,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Update and recompute a quote (creates new version)."""
+    existing = execute_single("SELECT id FROM pricing_quotes WHERE id = :id", {"id": quote_id})
+    if not existing:
+        raise HTTPException(404, "Quote not found")
+
+    if data.term_type == "monthly" and data.term_months < 3:
+        raise HTTPException(400, "Minimum term is 3 months for custom quotes")
+
+    raw_input = {
+        **data.raw_input,
+        "tier": data.tier,
+        "term_type": data.term_type,
+        "term_months": data.term_months,
+        "is_production_package": data.is_production_package,
+    }
+    computed = compute_full_quote(raw_input)
+
+    row = execute_single(
+        """
+        UPDATE pricing_quotes SET
+            client_name = :client_name, region = :region, production_type = :production_type,
+            start_date = :start_date, end_date = :end_date,
+            term_type = :term_type, term_months = :term_months, trial_type = :trial_type,
+            tier = :tier, raw_input = :raw_input::jsonb,
+            line_items = :line_items::jsonb, monthly_breakdown = :monthly_breakdown::jsonb,
+            monthly_total = :monthly_total, total_contract_value = :total_contract_value,
+            effective_monthly_rate = :effective_monthly_rate,
+            is_production_package = :is_production_package, phase_breakdown = :phase_breakdown::jsonb,
+            linked_contact_id = :linked_contact_id, linked_org_id = :linked_org_id,
+            notes = :notes, updated_at = NOW()
+        WHERE id = :id RETURNING *
+        """,
+        {
+            "id": quote_id,
+            "client_name": data.client_name,
+            "region": data.region,
+            "production_type": data.production_type,
+            "start_date": data.start_date,
+            "end_date": data.end_date,
+            "term_type": data.term_type,
+            "term_months": data.term_months,
+            "trial_type": data.trial_type,
+            "tier": data.tier,
+            "raw_input": json.dumps(raw_input),
+            "line_items": json.dumps(computed["line_items"]),
+            "monthly_breakdown": json.dumps(computed["monthly_breakdown"]),
+            "monthly_total": computed["monthly_total"],
+            "total_contract_value": computed["total_contract_value"],
+            "effective_monthly_rate": computed["effective_monthly_rate"],
+            "is_production_package": data.is_production_package,
+            "phase_breakdown": json.dumps(computed.get("phase_breakdown", [])),
+            "linked_contact_id": data.linked_contact_id,
+            "linked_org_id": data.linked_org_id,
+            "notes": data.notes,
+        },
+    )
+
+    # New version
+    max_ver = execute_single(
+        "SELECT COALESCE(MAX(version_number), 0) as max_ver FROM pricing_quote_versions WHERE quote_id = :qid",
+        {"qid": quote_id},
+    )
+    execute_single(
+        """
+        INSERT INTO pricing_quote_versions (quote_id, version_number, raw_input, line_items, monthly_breakdown, monthly_total, total_contract_value, changed_by)
+        VALUES (:qid, :ver, :raw_input::jsonb, :line_items::jsonb, :monthly_breakdown::jsonb, :monthly_total, :total_contract_value, :changed_by)
+        RETURNING id
+        """,
+        {
+            "qid": quote_id,
+            "ver": (max_ver["max_ver"] if max_ver else 0) + 1,
+            "raw_input": json.dumps(raw_input),
+            "line_items": json.dumps(computed["line_items"]),
+            "monthly_breakdown": json.dumps(computed["monthly_breakdown"]),
+            "monthly_total": computed["monthly_total"],
+            "total_contract_value": computed["total_contract_value"],
+            "changed_by": profile["id"],
+        },
+    )
+
+    return {"quote": row}
+
+
+@router.get("/pricing/quotes/{quote_id}/text")
+async def get_quote_text(
+    quote_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get a plain-text breakdown of a quote for email copy."""
+    row = execute_single("SELECT * FROM pricing_quotes WHERE id = :id", {"id": quote_id})
+    if not row:
+        raise HTTPException(404, "Quote not found")
+
+    line_items = row["line_items"] if isinstance(row["line_items"], list) else json.loads(row["line_items"])
+    tier_info = TIERS.get(row["tier"], {})
+
+    lines = [
+        f"BACKLOT QUOTE — {row['client_name']}",
+        f"{'=' * 50}",
+        f"Tier: {row['tier'].title()} | Term: {row['term_type'].title()} ({row['term_months']} months)",
+        "",
+        "LINE ITEMS:",
+    ]
+    for item in line_items:
+        lines.append(f"  {item['label']}: ${item['total']:,.2f}/mo")
+
+    lines.append("")
+    lines.append(f"Monthly Total: ${float(row['monthly_total']):,.2f}")
+    lines.append(f"Contract Value: ${float(row['total_contract_value']):,.2f}")
+    lines.append(f"Effective Monthly: ${float(row['effective_monthly_rate']):,.2f}")
+
+    if row["trial_type"] != "none":
+        lines.append(f"\nTrial: {row['trial_type'].replace('day', '-day')} trial included")
+
+    if row.get("notes"):
+        lines.append(f"\nNotes: {row['notes']}")
+
+    return {"text": "\n".join(lines)}

@@ -5743,6 +5743,46 @@ class APIClient {
   async mergeCRMScrapedLead(id: string, data: { contact_id: string }) {
     return this.post<{ status: string; contact_id: string }>(`/api/v1/crm/scraping/leads/${id}/merge`, data)
   }
+
+  // CRM Pricing / Quotes
+  async getPricingTiers() {
+    return this.get<{ tiers: any; addon_prices: any }>('/api/v1/crm/pricing/tiers')
+  }
+
+  async computeQuotePrice(data: any) {
+    return this.post<any>('/api/v1/crm/pricing/compute', data)
+  }
+
+  async createPricingQuote(data: any) {
+    return this.post<{ quote: any }>('/api/v1/crm/pricing/quotes', data)
+  }
+
+  async getPricingQuotes(params?: { status?: string; linked_contact_id?: string; search?: string; limit?: number; offset?: number }) {
+    const sp = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') sp.set(k, String(v))
+      })
+    }
+    const qs = sp.toString()
+    return this.get<{ quotes: any[] }>(`/api/v1/crm/pricing/quotes${qs ? `?${qs}` : ''}`)
+  }
+
+  async getPricingQuote(id: string) {
+    return this.get<{ quote: any; versions: any[] }>(`/api/v1/crm/pricing/quotes/${id}`)
+  }
+
+  async updatePricingQuoteStatus(id: string, status: string) {
+    return this.patch<{ quote: any }>(`/api/v1/crm/pricing/quotes/${id}`, { status })
+  }
+
+  async updatePricingQuote(id: string, data: any) {
+    return this.put<{ quote: any }>(`/api/v1/crm/pricing/quotes/${id}`, data)
+  }
+
+  async getPricingQuoteText(id: string) {
+    return this.get<{ text: string }>(`/api/v1/crm/pricing/quotes/${id}/text`)
+  }
 }
 
 // Export singleton instance
