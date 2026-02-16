@@ -26,6 +26,8 @@ import {
   useDiscoveryRun,
   useDiscoveryRunSites,
   useStartDiscoveryScraping,
+  useScrapingSettings,
+  useUpdateScrapingSettings,
 } from '@/hooks/crm/useDataScraping';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -65,6 +67,8 @@ import {
   Mail,
   Phone,
   Eye,
+  EyeOff,
+  Save,
   Merge,
   ChevronLeft,
   ChevronRight,
@@ -83,7 +87,7 @@ import {
   BarChart3,
 } from 'lucide-react';
 
-const TABS = ['Discovery', 'Scrape Profiles', 'Jobs', 'Staged Leads', 'Clean & Import', 'Sources'] as const;
+const TABS = ['Discovery', 'Scrape Profiles', 'Jobs', 'Staged Leads', 'Clean & Import', 'Sources', 'Settings'] as const;
 type Tab = typeof TABS[number];
 
 const STATUS_COLORS: Record<string, string> = {
@@ -2021,6 +2025,263 @@ function CleanImportTab() {
 }
 
 // ============================================================================
+// Settings Tab
+// ============================================================================
+
+const SETTING_GROUPS = [
+  {
+    title: 'Infrastructure',
+    category: 'infrastructure',
+    description: 'ECS cluster, task definitions, networking',
+    keys: ['ecs_cluster', 'scraper_task_definition', 'discovery_task_definition', 'vpc_subnets', 'security_groups', 'scraper_container_name', 'discovery_container_name'],
+  },
+  {
+    title: 'Resources',
+    category: 'resources',
+    description: 'CPU, memory, and capacity provider',
+    keys: ['default_cpu', 'default_memory', 'capacity_provider'],
+  },
+  {
+    title: 'API Keys',
+    category: 'api_keys',
+    description: 'Third-party API credentials',
+    keys: ['google_api_key', 'google_cse_id'],
+  },
+  {
+    title: 'Worker Defaults',
+    category: 'worker_defaults',
+    description: 'Timeouts, user agent, and scraping behavior',
+    keys: ['default_http_timeout_ms', 'default_user_agent', 'discovery_query_delay_ms', 'free_email_domains', 'default_log_level'],
+  },
+];
+
+const CPU_OPTIONS = ['256', '512', '1024', '2048', '4096'];
+const MEMORY_OPTIONS = ['512', '1024', '2048', '4096', '8192', '16384'];
+const LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'];
+
+function SettingsTab() {
+  const { data, isLoading } = useScrapingSettings();
+  const updateMutation = useUpdateScrapingSettings();
+  const { toast } = useToast();
+
+  const [form, setForm] = useState<Record<string, string>>({});
+  const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
+  const [initialized, setInitialized] = useState(false);
+
+  // Initialize form from loaded settings
+  const settings = data?.settings || [];
+  if (settings.length > 0 && !initialized) {
+    const initial: Record<string, string> = {};
+    for (const s of settings) {
+      initial[s.key] = s.value;
+    }
+    setForm(initial);
+    setInitialized(true);
+  }
+
+  const settingsMap = Object.fromEntries(settings.map((s: any) => [s.key, s]));
+
+  const handleChange = (key: string, value: string) => {
+    setForm((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const handleSave = () => {
+    // Only send changed keys
+    const changes: Record<string, string> = {};
+    for (const [key, value] of Object.entries(form)) {
+      const original = settingsMap[key];
+      if (!original || original.value !== value) {
+        changes[key] = value;
+      }
+    }
+
+    if (Object.keys(changes).length === 0) {
+      toast({ title: 'No changes', description: 'Nothing to update.' });
+      return;
+    }
+
+    updateMutation.mutate(changes, {
+      onSuccess: (res) => {
+        toast({ title: 'Settings saved', description: `Updated ${res.updated.length} setting(s).` });
+        setInitialized(false); // re-sync from server
+      },
+      onError: () => {
+        toast({ title: 'Error', description: 'Failed to save settings.', variant: 'destructive' });
+      },
+    });
+  };
+
+  const renderField = (key: string) => {
+    const meta = settingsMap[key];
+    const value = form[key] ?? '';
+    const label = (meta?.description || key).replace(/_/g, ' ');
+
+    // Special dropdowns
+    if (key === 'default_cpu') {
+      return (
+        <div key={key} className="space-y-1">
+          <Label className="text-xs text-muted-gray">{label}</Label>
+          <Select value={value} onValueChange={(v) => handleChange(key, v)}>
+            <SelectTrigger className="bg-charcoal-black border-muted-gray/30 text-bone-white h-9">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {CPU_OPTIONS.map((opt) => (
+                <SelectItem key={opt} value={opt}>{opt} CPU units</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      );
+    }
+
+    if (key === 'default_memory') {
+      return (
+        <div key={key} className="space-y-1">
+          <Label className="text-xs text-muted-gray">{label}</Label>
+          <Select value={value} onValueChange={(v) => handleChange(key, v)}>
+            <SelectTrigger className="bg-charcoal-black border-muted-gray/30 text-bone-white h-9">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {MEMORY_OPTIONS.map((opt) => (
+                <SelectItem key={opt} value={opt}>{opt} MB</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      );
+    }
+
+    if (key === 'capacity_provider') {
+      return (
+        <div key={key} className="space-y-1">
+          <Label className="text-xs text-muted-gray">{label}</Label>
+          <Select value={value} onValueChange={(v) => handleChange(key, v)}>
+            <SelectTrigger className="bg-charcoal-black border-muted-gray/30 text-bone-white h-9">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="FARGATE">FARGATE (On-demand)</SelectItem>
+              <SelectItem value="FARGATE_SPOT">FARGATE_SPOT (Cost-optimized)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      );
+    }
+
+    if (key === 'default_log_level') {
+      return (
+        <div key={key} className="space-y-1">
+          <Label className="text-xs text-muted-gray">{label}</Label>
+          <Select value={value} onValueChange={(v) => handleChange(key, v)}>
+            <SelectTrigger className="bg-charcoal-black border-muted-gray/30 text-bone-white h-9">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {LOG_LEVELS.map((lvl) => (
+                <SelectItem key={lvl} value={lvl}>{lvl}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      );
+    }
+
+    if (key === 'free_email_domains') {
+      return (
+        <div key={key} className="space-y-1 col-span-2">
+          <Label className="text-xs text-muted-gray">{label}</Label>
+          <Textarea
+            value={value}
+            onChange={(e) => handleChange(key, e.target.value)}
+            className="bg-charcoal-black border-muted-gray/30 text-bone-white text-sm h-20 font-mono"
+            placeholder="gmail.com,yahoo.com,..."
+          />
+        </div>
+      );
+    }
+
+    // Secret fields with show/hide
+    if (meta?.is_secret) {
+      const visible = showSecrets[key];
+      return (
+        <div key={key} className="space-y-1">
+          <Label className="text-xs text-muted-gray">{label}</Label>
+          <div className="relative">
+            <Input
+              type={visible ? 'text' : 'password'}
+              value={value}
+              onChange={(e) => handleChange(key, e.target.value)}
+              className="bg-charcoal-black border-muted-gray/30 text-bone-white h-9 pr-10 font-mono text-sm"
+            />
+            <button
+              type="button"
+              onClick={() => setShowSecrets((prev) => ({ ...prev, [key]: !prev[key] }))}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-gray hover:text-bone-white"
+            >
+              {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // Default text input
+    return (
+      <div key={key} className={key === 'default_user_agent' ? 'space-y-1 col-span-2' : 'space-y-1'}>
+        <Label className="text-xs text-muted-gray">{label}</Label>
+        <Input
+          value={value}
+          onChange={(e) => handleChange(key, e.target.value)}
+          className="bg-charcoal-black border-muted-gray/30 text-bone-white h-9 font-mono text-sm"
+        />
+      </div>
+    );
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-gray" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-bone-white font-heading">Docker / Container Settings</h3>
+          <p className="text-xs text-muted-gray mt-1">Configure ECS infrastructure, API keys, and worker defaults</p>
+        </div>
+        <Button
+          onClick={handleSave}
+          disabled={updateMutation.isPending}
+          className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+        >
+          {updateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Save className="h-4 w-4 mr-2" />}
+          Save Changes
+        </Button>
+      </div>
+
+      {SETTING_GROUPS.map((group) => (
+        <div key={group.category} className="bg-muted-gray/5 border border-muted-gray/20 rounded-lg p-4">
+          <div className="mb-3">
+            <h4 className="text-bone-white font-medium text-sm">{group.title}</h4>
+            <p className="text-xs text-muted-gray">{group.description}</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {group.keys.map((key) => renderField(key))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+
+// ============================================================================
 // Main Page
 // ============================================================================
 
@@ -2056,6 +2317,7 @@ const AdminScraping = () => {
       {activeTab === 'Staged Leads' && <StagedLeadsTab />}
       {activeTab === 'Clean & Import' && <CleanImportTab />}
       {activeTab === 'Sources' && <SourcesTab />}
+      {activeTab === 'Settings' && <SettingsTab />}
     </div>
   );
 };

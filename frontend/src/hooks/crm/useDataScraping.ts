@@ -2,6 +2,27 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 
 // ============================================================================
+// Scraping Settings
+// ============================================================================
+
+export function useScrapingSettings() {
+  return useQuery({
+    queryKey: ['crm-scraping-settings'],
+    queryFn: () => api.getScrapingSettings(),
+  });
+}
+
+export function useUpdateScrapingSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (settings: Record<string, string>) => api.updateScrapingSettings(settings),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-scraping-settings'] });
+    },
+  });
+}
+
+// ============================================================================
 // Scrape Sources
 // ============================================================================
 

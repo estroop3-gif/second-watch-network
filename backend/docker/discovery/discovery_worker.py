@@ -12,11 +12,21 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
+import logging
+
 import psycopg2
 import psycopg2.extras
 
 from scoring import calculate_discovery_score
 from sources import SOURCE_REGISTRY
+
+# Configurable query delay (ms) between discovery API calls
+DISCOVERY_QUERY_DELAY_S = int(os.environ.get("DISCOVERY_QUERY_DELAY_MS", "1000")) / 1000.0
+
+# Configure log level from env
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
+logger = logging.getLogger("discovery_worker")
 
 
 def get_db_connection():
@@ -156,8 +166,8 @@ def run_discovery(run_id: str):
                     except Exception as e:
                         print(f"Error searching {source_type} for '{keyword}' in '{location}': {e}")
 
-                    # Small delay between queries
-                    time.sleep(1)
+                    # Configurable delay between queries
+                    time.sleep(DISCOVERY_QUERY_DELAY_S)
 
             source_stats[source_type] = type_stats
 

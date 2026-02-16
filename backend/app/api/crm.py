@@ -6031,6 +6031,113 @@ def _send_rsvp_reply(event: dict, account_id: str, accepted: bool):
 
 
 # ============================================================================
+# Data Scraping — Helpers
+# ============================================================================
+
+# Hardcoded fallbacks (used if DB settings missing)
+_SCRAPING_DEFAULTS = {
+    "ecs_cluster": "swn-scraper-cluster",
+    "scraper_task_definition": "swn-scraper-task",
+    "discovery_task_definition": "swn-discovery-task",
+    "vpc_subnets": "subnet-097d1d86c1bc18b3b,subnet-013241dd6ffc1e819",
+    "security_groups": "sg-01b01424383262ebd",
+    "scraper_container_name": "scraper-worker",
+    "discovery_container_name": "discovery-worker",
+    "default_cpu": "256",
+    "default_memory": "512",
+    "capacity_provider": "FARGATE_SPOT",
+    "google_api_key": "",
+    "google_cse_id": "",
+    "default_http_timeout_ms": "30000",
+    "default_user_agent": "SWN-LeadFinder/1.0 (business directory research)",
+    "discovery_query_delay_ms": "1000",
+    "free_email_domains": "gmail.com,yahoo.com,hotmail.com,outlook.com,aol.com,icloud.com,mail.com,protonmail.com,zoho.com",
+    "default_log_level": "INFO",
+}
+
+
+def _get_scraping_settings() -> Dict[str, str]:
+    """Load all scraping settings from DB, falling back to hardcoded defaults."""
+    settings = dict(_SCRAPING_DEFAULTS)
+    try:
+        rows = execute_query("SELECT key, value FROM crm_scraping_settings")
+        for row in rows:
+            settings[row["key"]] = row["value"]
+    except Exception:
+        pass
+    return settings
+
+
+def _launch_ecs_task(
+    task_type: str,
+    env_overrides: list,
+    settings: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """Launch an ECS Fargate task using DB-configured settings.
+
+    task_type: 'scraper' or 'discovery'
+    env_overrides: list of {'name': ..., 'value': ...} for container env
+    Returns: ECS task ARN or None
+    """
+    import boto3
+
+    if settings is None:
+        settings = _get_scraping_settings()
+
+    task_def = settings.get(f"{task_type}_task_definition", f"swn-{task_type}-task")
+    container_name = settings.get(f"{task_type}_container_name", f"{task_type}-worker")
+    cluster = settings["ecs_cluster"]
+    subnets = [s.strip() for s in settings["vpc_subnets"].split(",") if s.strip()]
+    security_groups = [s.strip() for s in settings["security_groups"].split(",") if s.strip()]
+    capacity_provider = settings.get("capacity_provider", "FARGATE_SPOT")
+
+    # Inject worker defaults as env vars
+    worker_env = [
+        {"name": "HTTP_TIMEOUT_MS", "value": settings.get("default_http_timeout_ms", "30000")},
+        {"name": "USER_AGENT", "value": settings.get("default_user_agent", "")},
+        {"name": "LOG_LEVEL", "value": settings.get("default_log_level", "INFO")},
+        {"name": "FREE_EMAIL_DOMAINS", "value": settings.get("free_email_domains", "")},
+    ]
+    if task_type == "discovery":
+        worker_env.append({"name": "DISCOVERY_QUERY_DELAY_MS", "value": settings.get("discovery_query_delay_ms", "1000")})
+        if settings.get("google_api_key"):
+            worker_env.append({"name": "GOOGLE_API_KEY", "value": settings["google_api_key"]})
+        if settings.get("google_cse_id"):
+            worker_env.append({"name": "GOOGLE_CSE_ID", "value": settings["google_cse_id"]})
+
+    all_env = env_overrides + worker_env
+
+    ecs_client = boto3.client("ecs", region_name="us-east-1")
+    response = ecs_client.run_task(
+        cluster=cluster,
+        taskDefinition=task_def,
+        capacityProviderStrategy=[{"capacityProvider": capacity_provider, "weight": 1}],
+        networkConfiguration={
+            "awsvpcConfiguration": {
+                "subnets": subnets,
+                "securityGroups": security_groups,
+                "assignPublicIp": "ENABLED",
+            }
+        },
+        overrides={
+            "containerOverrides": [
+                {
+                    "name": container_name,
+                    "environment": all_env,
+                }
+            ],
+            "cpu": settings.get("default_cpu", "256"),
+            "memory": settings.get("default_memory", "512"),
+        },
+        count=1,
+    )
+
+    if response.get("tasks"):
+        return response["tasks"][0]["taskArn"]
+    return None
+
+
+# ============================================================================
 # Data Scraping — Sources, Jobs, Leads
 # ============================================================================
 
@@ -6239,32 +6346,11 @@ async def create_scrape_job(
     # Trigger ECS Fargate task
     ecs_task_arn = None
     try:
-        import boto3
-        ecs_client = boto3.client('ecs', region_name='us-east-1')
-        response = ecs_client.run_task(
-            cluster='swn-scraper-cluster',
-            taskDefinition='swn-scraper-task',
-            launchType='FARGATE',
-            capacityProviderStrategy=[{'capacityProvider': 'FARGATE_SPOT', 'weight': 1}],
-            networkConfiguration={
-                'awsvpcConfiguration': {
-                    'subnets': ['subnet-097d1d86c1bc18b3b', 'subnet-013241dd6ffc1e819'],
-                    'securityGroups': ['sg-01b01424383262ebd'],
-                    'assignPublicIp': 'ENABLED'
-                }
-            },
-            overrides={
-                'containerOverrides': [{
-                    'name': 'scraper-worker',
-                    'environment': [
-                        {'name': 'JOB_ID', 'value': str(job["id"])},
-                    ]
-                }]
-            },
-            count=1
+        ecs_task_arn = _launch_ecs_task(
+            "scraper",
+            [{"name": "JOB_ID", "value": str(job["id"])}],
         )
-        if response.get('tasks'):
-            ecs_task_arn = response['tasks'][0]['taskArn']
+        if ecs_task_arn:
             execute_single(
                 "UPDATE crm_scrape_jobs SET ecs_task_arn = :arn WHERE id = :id RETURNING id",
                 {"arn": ecs_task_arn, "id": job["id"]},
@@ -6981,32 +7067,11 @@ async def create_discovery_run(
 
     ecs_task_arn = None
     try:
-        import boto3
-        ecs_client = boto3.client('ecs', region_name='us-east-1')
-        response = ecs_client.run_task(
-            cluster='swn-scraper-cluster',
-            taskDefinition='swn-discovery-task',
-            launchType='FARGATE',
-            capacityProviderStrategy=[{'capacityProvider': 'FARGATE_SPOT', 'weight': 1}],
-            networkConfiguration={
-                'awsvpcConfiguration': {
-                    'subnets': ['subnet-097d1d86c1bc18b3b', 'subnet-013241dd6ffc1e819'],
-                    'securityGroups': ['sg-01b01424383262ebd'],
-                    'assignPublicIp': 'ENABLED'
-                }
-            },
-            overrides={
-                'containerOverrides': [{
-                    'name': 'discovery-worker',
-                    'environment': [
-                        {'name': 'DISCOVERY_RUN_ID', 'value': str(run["id"])},
-                    ]
-                }]
-            },
-            count=1
+        ecs_task_arn = _launch_ecs_task(
+            "discovery",
+            [{"name": "DISCOVERY_RUN_ID", "value": str(run["id"])}],
         )
-        if response.get('tasks'):
-            ecs_task_arn = response['tasks'][0]['taskArn']
+        if ecs_task_arn:
             execute_single(
                 "UPDATE crm_discovery_runs SET ecs_task_arn = :arn WHERE id = :id RETURNING id",
                 {"arn": ecs_task_arn, "id": run["id"]},
@@ -7175,32 +7240,11 @@ async def start_scraping_from_discovery(
     # Trigger ECS scraper
     ecs_task_arn = None
     try:
-        import boto3
-        ecs_client = boto3.client('ecs', region_name='us-east-1')
-        response = ecs_client.run_task(
-            cluster='swn-scraper-cluster',
-            taskDefinition='swn-scraper-task',
-            launchType='FARGATE',
-            capacityProviderStrategy=[{'capacityProvider': 'FARGATE_SPOT', 'weight': 1}],
-            networkConfiguration={
-                'awsvpcConfiguration': {
-                    'subnets': ['subnet-097d1d86c1bc18b3b', 'subnet-013241dd6ffc1e819'],
-                    'securityGroups': ['sg-01b01424383262ebd'],
-                    'assignPublicIp': 'ENABLED'
-                }
-            },
-            overrides={
-                'containerOverrides': [{
-                    'name': 'scraper-worker',
-                    'environment': [
-                        {'name': 'JOB_ID', 'value': str(job["id"])},
-                    ]
-                }]
-            },
-            count=1
+        ecs_task_arn = _launch_ecs_task(
+            "scraper",
+            [{"name": "JOB_ID", "value": str(job["id"])}],
         )
-        if response.get('tasks'):
-            ecs_task_arn = response['tasks'][0]['taskArn']
+        if ecs_task_arn:
             execute_single(
                 "UPDATE crm_scrape_jobs SET ecs_task_arn = :arn WHERE id = :id RETURNING id",
                 {"arn": ecs_task_arn, "id": job["id"]},
@@ -7443,6 +7487,61 @@ async def bulk_import_contacts(
         "errors": errors[:20],
         "total_rows": created + skipped + len(errors),
     }
+
+
+# ============================================================================
+# Scraping — Settings
+# ============================================================================
+
+@router.get("/scraping/settings")
+async def get_scraping_settings(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Return all scraping settings. Secret values are masked."""
+    rows = execute_query(
+        "SELECT key, value, category, is_secret, description, updated_at FROM crm_scraping_settings ORDER BY category, key"
+    )
+    settings = []
+    for row in rows:
+        val = row["value"]
+        if row["is_secret"] and val:
+            val = "*" * max(0, len(val) - 4) + val[-4:] if len(val) > 4 else "****"
+        settings.append({
+            "key": row["key"],
+            "value": val,
+            "category": row["category"],
+            "is_secret": row["is_secret"],
+            "description": row["description"],
+            "updated_at": row["updated_at"],
+        })
+    return {"settings": settings}
+
+
+@router.put("/scraping/settings")
+async def update_scraping_settings(
+    data: Dict[str, str],
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Bulk upsert scraping settings. Values starting with '*' (masked) are skipped."""
+    updated = []
+    for key, value in data.items():
+        if not key or not isinstance(value, str):
+            continue
+        # Skip masked secret values (returned by GET)
+        if value.startswith("*"):
+            continue
+        execute_single(
+            """
+            INSERT INTO crm_scraping_settings (key, value, updated_at, updated_by)
+            VALUES (:key, :value, NOW(), :uid)
+            ON CONFLICT (key) DO UPDATE
+            SET value = :value, updated_at = NOW(), updated_by = :uid
+            RETURNING key
+            """,
+            {"key": key, "value": value, "uid": profile["id"]},
+        )
+        updated.append(key)
+    return {"updated": updated}
 
 
 # ============================================================================

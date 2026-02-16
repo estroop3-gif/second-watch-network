@@ -18,13 +18,25 @@ import psycopg2.extras
 import requests
 from bs4 import BeautifulSoup
 
+import logging
+
 from scoring import calculate_match_score
 
-USER_AGENT = "SWN-LeadFinder/1.0 (business directory research)"
+USER_AGENT = os.environ.get("USER_AGENT", "SWN-LeadFinder/1.0 (business directory research)")
+HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT_MS", "30000")) / 1000.0  # convert ms → seconds
 
-# Free email domains to skip
-FREE_DOMAINS = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com",
-                "icloud.com", "mail.com", "protonmail.com", "zoho.com"}
+# Configure log level from env
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
+logger = logging.getLogger("scraper_worker")
+
+# Free email domains to skip (configurable via env)
+_free_domains_env = os.environ.get("FREE_EMAIL_DOMAINS", "")
+if _free_domains_env:
+    FREE_DOMAINS = {d.strip().lower() for d in _free_domains_env.split(",") if d.strip()}
+else:
+    FREE_DOMAINS = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com",
+                    "icloud.com", "mail.com", "protonmail.com", "zoho.com"}
 
 
 def get_db_connection():
@@ -103,7 +115,7 @@ def extract_field(item, selector: str) -> str:
 
 def scrape_page(url: str, selectors: dict, rate_limit_ms: int, session: requests.Session) -> tuple:
     """Scrape a single page. Returns (leads_list, next_page_url)."""
-    resp = session.get(url, timeout=30)
+    resp = session.get(url, timeout=HTTP_TIMEOUT)
     resp.raise_for_status()
 
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -331,7 +343,7 @@ def run_discovery_based_job(cur, job: dict, job_id: str):
             visited.add(url)
 
             try:
-                resp = session.get(url, timeout=15, allow_redirects=True)
+                resp = session.get(url, timeout=HTTP_TIMEOUT, allow_redirects=True)
                 if resp.status_code != 200:
                     continue
 

@@ -5855,6 +5855,15 @@ class APIClient {
     return this.post<{ job: any; sites_selected: number }>(`/api/v1/crm/scraping/discovery-runs/${runId}/start-scraping`, data)
   }
 
+  // CRM Scraping Settings
+  async getScrapingSettings() {
+    return this.get<{ settings: any[] }>('/api/v1/crm/scraping/settings')
+  }
+
+  async updateScrapingSettings(settings: Record<string, string>) {
+    return this.put<{ updated: string[] }>('/api/v1/crm/scraping/settings', settings)
+  }
+
   // CRM Pricing / Quotes
   async getPricingTiers() {
     return this.get<{ tiers: any; addon_prices: any }>('/api/v1/crm/pricing/tiers')
