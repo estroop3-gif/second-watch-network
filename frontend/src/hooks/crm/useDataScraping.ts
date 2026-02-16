@@ -43,6 +43,147 @@ export function useDeleteScrapeSource() {
 }
 
 // ============================================================================
+// Scrape Profiles (reusable scraping configs)
+// ============================================================================
+
+export function useScrapeProfiles() {
+  return useQuery({
+    queryKey: ['crm-scrape-profiles'],
+    queryFn: () => api.getCRMScrapeProfiles(),
+  });
+}
+
+export function useCreateScrapeProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: any) => api.createCRMScrapeProfile(data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-scrape-profiles'] });
+    },
+  });
+}
+
+export function useUpdateScrapeProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: any }) => api.updateCRMScrapeProfile(id, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-scrape-profiles'] });
+    },
+  });
+}
+
+export function useDeleteScrapeProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteCRMScrapeProfile(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-scrape-profiles'] });
+    },
+  });
+}
+
+// ============================================================================
+// Discovery Profiles
+// ============================================================================
+
+export function useDiscoveryProfiles() {
+  return useQuery({
+    queryKey: ['crm-discovery-profiles'],
+    queryFn: () => api.getCRMDiscoveryProfiles(),
+  });
+}
+
+export function useCreateDiscoveryProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: any) => api.createCRMDiscoveryProfile(data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-discovery-profiles'] });
+    },
+  });
+}
+
+export function useUpdateDiscoveryProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: any }) => api.updateCRMDiscoveryProfile(id, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-discovery-profiles'] });
+    },
+  });
+}
+
+export function useDeleteDiscoveryProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteCRMDiscoveryProfile(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-discovery-profiles'] });
+    },
+  });
+}
+
+// ============================================================================
+// Discovery Runs & Sites
+// ============================================================================
+
+export function useDiscoveryRuns(params?: { profile_id?: string; status?: string }) {
+  return useQuery({
+    queryKey: ['crm-discovery-runs', params],
+    queryFn: () => api.getCRMDiscoveryRuns(params),
+  });
+}
+
+export function useCreateDiscoveryRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (profileId: string) => api.createCRMDiscoveryRun(profileId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-discovery-runs'] });
+      qc.invalidateQueries({ queryKey: ['crm-discovery-profiles'] });
+    },
+  });
+}
+
+export function useDiscoveryRun(id: string | undefined) {
+  return useQuery({
+    queryKey: ['crm-discovery-run', id],
+    queryFn: () => api.getCRMDiscoveryRun(id!),
+    enabled: !!id,
+    refetchInterval: (query) => {
+      const run = query.state.data?.run;
+      if (run && (run.status === 'queued' || run.status === 'running')) return 5000;
+      return false;
+    },
+  });
+}
+
+export function useDiscoveryRunSites(runId: string | undefined, params?: {
+  min_score?: number; source_type?: string; is_selected?: boolean;
+  search?: string; limit?: number; offset?: number;
+}) {
+  return useQuery({
+    queryKey: ['crm-discovery-sites', runId, params],
+    queryFn: () => api.getCRMDiscoveryRunSites(runId!, params),
+    enabled: !!runId,
+  });
+}
+
+export function useStartDiscoveryScraping() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ runId, data }: { runId: string; data: { scrape_profile_id: string; site_ids?: string[]; min_score?: number } }) =>
+      api.startDiscoveryScraping(runId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-discovery-runs'] });
+      qc.invalidateQueries({ queryKey: ['crm-discovery-sites'] });
+      qc.invalidateQueries({ queryKey: ['crm-scrape-jobs'] });
+    },
+  });
+}
+
+// ============================================================================
 // Scrape Jobs
 // ============================================================================
 

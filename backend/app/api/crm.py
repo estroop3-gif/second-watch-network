@@ -6189,10 +6189,15 @@ async def list_scrape_jobs(
         f"""
         SELECT j.*, s.name as source_name,
                p.full_name as created_by_name,
-               (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id) as lead_count
+               (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id) as lead_count,
+               dp.name as discovery_profile_name,
+               sp.name as scrape_profile_name
         FROM crm_scrape_jobs j
-        JOIN crm_scrape_sources s ON s.id = j.source_id
-        JOIN profiles p ON p.id = j.created_by
+        LEFT JOIN crm_scrape_sources s ON s.id = j.source_id
+        LEFT JOIN profiles p ON p.id = j.created_by
+        LEFT JOIN crm_discovery_runs dr ON dr.id = j.discovery_run_id
+        LEFT JOIN crm_discovery_profiles dp ON dp.id = dr.profile_id
+        LEFT JOIN crm_scrape_profiles sp ON sp.id = j.scrape_profile_id
         {where}
         ORDER BY j.created_at DESC
         LIMIT :limit OFFSET :offset
@@ -6285,10 +6290,15 @@ async def get_scrape_job(
                (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id) as lead_count,
                (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id AND l.status = 'approved') as approved_count,
                (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id AND l.status = 'rejected') as rejected_count,
-               (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id AND l.status = 'pending') as pending_count
+               (SELECT COUNT(*) FROM crm_scraped_leads l WHERE l.job_id = j.id AND l.status = 'pending') as pending_count,
+               dp.name as discovery_profile_name,
+               sp.name as scrape_profile_name
         FROM crm_scrape_jobs j
-        JOIN crm_scrape_sources s ON s.id = j.source_id
-        JOIN profiles p ON p.id = j.created_by
+        LEFT JOIN crm_scrape_sources s ON s.id = j.source_id
+        LEFT JOIN profiles p ON p.id = j.created_by
+        LEFT JOIN crm_discovery_runs dr ON dr.id = j.discovery_run_id
+        LEFT JOIN crm_discovery_profiles dp ON dp.id = dr.profile_id
+        LEFT JOIN crm_scrape_profiles sp ON sp.id = j.scrape_profile_id
         WHERE j.id = :id
         """,
         {"id": job_id},
@@ -6350,10 +6360,12 @@ async def list_scraped_leads(
 
     rows = execute_query(
         f"""
-        SELECT l.*, s.name as source_name
+        SELECT l.*, COALESCE(s.name, dp.name, 'Discovery') as source_name
         FROM crm_scraped_leads l
         JOIN crm_scrape_jobs j ON j.id = l.job_id
-        JOIN crm_scrape_sources s ON s.id = j.source_id
+        LEFT JOIN crm_scrape_sources s ON s.id = j.source_id
+        LEFT JOIN crm_discovery_runs dr ON dr.id = j.discovery_run_id
+        LEFT JOIN crm_discovery_profiles dp ON dp.id = dr.profile_id
         {where}
         ORDER BY l.{sort_col} {sort_dir}
         LIMIT :limit OFFSET :offset
@@ -6387,10 +6399,12 @@ async def bulk_approve_leads(
     for lead_id in data.lead_ids:
         lead = execute_single(
             """
-            SELECT l.*, s.name as source_name
+            SELECT l.*, COALESCE(s.name, dp.name, 'Discovery') as source_name
             FROM crm_scraped_leads l
             JOIN crm_scrape_jobs j ON j.id = l.job_id
-            JOIN crm_scrape_sources s ON s.id = j.source_id
+            LEFT JOIN crm_scrape_sources s ON s.id = j.source_id
+            LEFT JOIN crm_discovery_runs dr ON dr.id = j.discovery_run_id
+            LEFT JOIN crm_discovery_profiles dp ON dp.id = dr.profile_id
             WHERE l.id = :id AND l.status = 'pending'
             """,
             {"id": lead_id},
@@ -6538,6 +6552,664 @@ async def merge_scraped_lead(
         )
 
     return {"status": "merged", "contact_id": data.contact_id}
+
+
+# ============================================================================
+# Scrape Profiles — Reusable scraping configs
+# ============================================================================
+
+
+class ScrapeProfileCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    max_pages_per_site: int = 5
+    paths_to_visit: List[str] = ["/about", "/contact", "/team"]
+    data_to_extract: List[str] = ["emails", "phones", "social_links"]
+    follow_internal_links: bool = False
+    max_depth: int = 2
+    concurrency: int = 1
+    delay_ms: int = 2000
+    respect_robots_txt: bool = True
+    user_agent: Optional[str] = None
+    min_match_score: int = 0
+    require_email: bool = False
+    require_phone: bool = False
+    require_website: bool = False
+    excluded_domains: List[str] = []
+    scoring_rules: Dict[str, Any] = {}
+    keywords: List[str] = []
+
+
+class ScrapeProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    max_pages_per_site: Optional[int] = None
+    paths_to_visit: Optional[List[str]] = None
+    data_to_extract: Optional[List[str]] = None
+    follow_internal_links: Optional[bool] = None
+    max_depth: Optional[int] = None
+    concurrency: Optional[int] = None
+    delay_ms: Optional[int] = None
+    respect_robots_txt: Optional[bool] = None
+    user_agent: Optional[str] = None
+    min_match_score: Optional[int] = None
+    require_email: Optional[bool] = None
+    require_phone: Optional[bool] = None
+    require_website: Optional[bool] = None
+    excluded_domains: Optional[List[str]] = None
+    scoring_rules: Optional[Dict[str, Any]] = None
+    keywords: Optional[List[str]] = None
+
+
+@router.get("/scraping/profiles")
+async def list_scrape_profiles(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    rows = execute_query(
+        """
+        SELECT sp.*,
+               p.full_name as created_by_name,
+               (SELECT COUNT(*) FROM crm_scrape_jobs j WHERE j.scrape_profile_id = sp.id) as total_jobs,
+               (SELECT COUNT(*) FROM crm_scraped_leads l
+                JOIN crm_scrape_jobs j ON j.id = l.job_id
+                WHERE j.scrape_profile_id = sp.id) as total_leads,
+               (SELECT COALESCE(AVG(l.match_score), 0) FROM crm_scraped_leads l
+                JOIN crm_scrape_jobs j ON j.id = l.job_id
+                WHERE j.scrape_profile_id = sp.id) as avg_match_score
+        FROM crm_scrape_profiles sp
+        LEFT JOIN profiles p ON p.id = sp.created_by
+        ORDER BY sp.created_at DESC
+        """,
+        {},
+    )
+    return {"profiles": rows}
+
+
+@router.post("/scraping/profiles")
+async def create_scrape_profile(
+    data: ScrapeProfileCreate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    row = execute_single(
+        """
+        INSERT INTO crm_scrape_profiles (
+            name, description, max_pages_per_site, paths_to_visit, data_to_extract,
+            follow_internal_links, max_depth, concurrency, delay_ms, respect_robots_txt,
+            user_agent, min_match_score, require_email, require_phone, require_website,
+            excluded_domains, scoring_rules, keywords, created_by
+        ) VALUES (
+            :name, :description, :max_pages_per_site, :paths_to_visit, :data_to_extract,
+            :follow_internal_links, :max_depth, :concurrency, :delay_ms, :respect_robots_txt,
+            :user_agent, :min_match_score, :require_email, :require_phone, :require_website,
+            :excluded_domains, :scoring_rules::jsonb, :keywords, :created_by
+        ) RETURNING *
+        """,
+        {
+            "name": data.name,
+            "description": data.description,
+            "max_pages_per_site": data.max_pages_per_site,
+            "paths_to_visit": data.paths_to_visit,
+            "data_to_extract": data.data_to_extract,
+            "follow_internal_links": data.follow_internal_links,
+            "max_depth": data.max_depth,
+            "concurrency": data.concurrency,
+            "delay_ms": data.delay_ms,
+            "respect_robots_txt": data.respect_robots_txt,
+            "user_agent": data.user_agent,
+            "min_match_score": data.min_match_score,
+            "require_email": data.require_email,
+            "require_phone": data.require_phone,
+            "require_website": data.require_website,
+            "excluded_domains": data.excluded_domains,
+            "scoring_rules": json.dumps(data.scoring_rules),
+            "keywords": data.keywords,
+            "created_by": profile["id"],
+        },
+    )
+    return {"profile": row}
+
+
+@router.patch("/scraping/profiles/{profile_id}")
+async def update_scrape_profile(
+    profile_id: str,
+    data: ScrapeProfileUpdate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    updates = []
+    params: Dict[str, Any] = {"id": profile_id}
+
+    simple_fields = [
+        "name", "description", "max_pages_per_site", "follow_internal_links",
+        "max_depth", "concurrency", "delay_ms", "respect_robots_txt", "user_agent",
+        "min_match_score", "require_email", "require_phone", "require_website",
+    ]
+    for field in simple_fields:
+        val = getattr(data, field, None)
+        if val is not None:
+            updates.append(f"{field} = :{field}")
+            params[field] = val
+
+    array_fields = ["paths_to_visit", "data_to_extract", "excluded_domains", "keywords"]
+    for field in array_fields:
+        val = getattr(data, field, None)
+        if val is not None:
+            updates.append(f"{field} = :{field}")
+            params[field] = val
+
+    if data.scoring_rules is not None:
+        updates.append("scoring_rules = :scoring_rules::jsonb")
+        params["scoring_rules"] = json.dumps(data.scoring_rules)
+
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+
+    updates.append("updated_at = NOW()")
+    set_clause = ", ".join(updates)
+
+    row = execute_single(
+        f"UPDATE crm_scrape_profiles SET {set_clause} WHERE id = :id RETURNING *",
+        params,
+    )
+    if not row:
+        raise HTTPException(404, "Scrape profile not found")
+    return {"profile": row}
+
+
+@router.delete("/scraping/profiles/{profile_id}")
+async def delete_scrape_profile(
+    profile_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    row = execute_single(
+        "DELETE FROM crm_scrape_profiles WHERE id = :id RETURNING id",
+        {"id": profile_id},
+    )
+    if not row:
+        raise HTTPException(404, "Scrape profile not found")
+    return {"status": "deleted"}
+
+
+# ============================================================================
+# Discovery Profiles — Automated website finding configs
+# ============================================================================
+
+
+class DiscoveryProfileCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    search_keywords: List[str]
+    locations: List[str] = []
+    source_types: List[str] = ["google_search"]
+    search_radius_miles: int = 50
+    must_have_website: bool = True
+    required_keywords: List[str] = []
+    excluded_keywords: List[str] = []
+    excluded_domains: List[str] = []
+    max_results_per_query: int = 100
+    auto_start_scraping: bool = False
+    default_scrape_profile_id: Optional[str] = None
+    min_discovery_score: int = 0
+    enabled: bool = True
+
+
+class DiscoveryProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    search_keywords: Optional[List[str]] = None
+    locations: Optional[List[str]] = None
+    source_types: Optional[List[str]] = None
+    search_radius_miles: Optional[int] = None
+    must_have_website: Optional[bool] = None
+    required_keywords: Optional[List[str]] = None
+    excluded_keywords: Optional[List[str]] = None
+    excluded_domains: Optional[List[str]] = None
+    max_results_per_query: Optional[int] = None
+    auto_start_scraping: Optional[bool] = None
+    default_scrape_profile_id: Optional[str] = None
+    min_discovery_score: Optional[int] = None
+    enabled: Optional[bool] = None
+
+
+@router.get("/scraping/discovery-profiles")
+async def list_discovery_profiles(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    rows = execute_query(
+        """
+        SELECT dp.*,
+               p.full_name as created_by_name,
+               sp.name as default_scrape_profile_name,
+               (SELECT COUNT(*) FROM crm_discovery_runs r WHERE r.profile_id = dp.id) as run_count,
+               (SELECT COALESCE(SUM(r.sites_found_count), 0)
+                FROM crm_discovery_runs r WHERE r.profile_id = dp.id) as total_sites_found
+        FROM crm_discovery_profiles dp
+        LEFT JOIN profiles p ON p.id = dp.created_by
+        LEFT JOIN crm_scrape_profiles sp ON sp.id = dp.default_scrape_profile_id
+        ORDER BY dp.created_at DESC
+        """,
+        {},
+    )
+    return {"profiles": rows}
+
+
+@router.post("/scraping/discovery-profiles")
+async def create_discovery_profile(
+    data: DiscoveryProfileCreate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    if data.default_scrape_profile_id:
+        sp = execute_single(
+            "SELECT id FROM crm_scrape_profiles WHERE id = :id",
+            {"id": data.default_scrape_profile_id},
+        )
+        if not sp:
+            raise HTTPException(400, "Default scrape profile not found")
+
+    row = execute_single(
+        """
+        INSERT INTO crm_discovery_profiles (
+            name, description, search_keywords, locations, source_types,
+            search_radius_miles, must_have_website, required_keywords, excluded_keywords,
+            excluded_domains, max_results_per_query, auto_start_scraping,
+            default_scrape_profile_id, min_discovery_score, enabled, created_by
+        ) VALUES (
+            :name, :description, :search_keywords, :locations, :source_types,
+            :search_radius_miles, :must_have_website, :required_keywords, :excluded_keywords,
+            :excluded_domains, :max_results_per_query, :auto_start_scraping,
+            :default_scrape_profile_id, :min_discovery_score, :enabled, :created_by
+        ) RETURNING *
+        """,
+        {
+            "name": data.name,
+            "description": data.description,
+            "search_keywords": data.search_keywords,
+            "locations": data.locations,
+            "source_types": data.source_types,
+            "search_radius_miles": data.search_radius_miles,
+            "must_have_website": data.must_have_website,
+            "required_keywords": data.required_keywords,
+            "excluded_keywords": data.excluded_keywords,
+            "excluded_domains": data.excluded_domains,
+            "max_results_per_query": data.max_results_per_query,
+            "auto_start_scraping": data.auto_start_scraping,
+            "default_scrape_profile_id": data.default_scrape_profile_id,
+            "min_discovery_score": data.min_discovery_score,
+            "enabled": data.enabled,
+            "created_by": profile["id"],
+        },
+    )
+    return {"profile": row}
+
+
+@router.patch("/scraping/discovery-profiles/{dp_id}")
+async def update_discovery_profile(
+    dp_id: str,
+    data: DiscoveryProfileUpdate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    updates = []
+    params: Dict[str, Any] = {"id": dp_id}
+
+    simple_fields = [
+        "name", "description", "search_radius_miles", "must_have_website",
+        "max_results_per_query", "auto_start_scraping", "default_scrape_profile_id",
+        "min_discovery_score", "enabled",
+    ]
+    for field in simple_fields:
+        val = getattr(data, field, None)
+        if val is not None:
+            updates.append(f"{field} = :{field}")
+            params[field] = val
+
+    array_fields = [
+        "search_keywords", "locations", "source_types", "required_keywords",
+        "excluded_keywords", "excluded_domains",
+    ]
+    for field in array_fields:
+        val = getattr(data, field, None)
+        if val is not None:
+            updates.append(f"{field} = :{field}")
+            params[field] = val
+
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+
+    updates.append("updated_at = NOW()")
+    set_clause = ", ".join(updates)
+
+    row = execute_single(
+        f"UPDATE crm_discovery_profiles SET {set_clause} WHERE id = :id RETURNING *",
+        params,
+    )
+    if not row:
+        raise HTTPException(404, "Discovery profile not found")
+    return {"profile": row}
+
+
+@router.delete("/scraping/discovery-profiles/{dp_id}")
+async def delete_discovery_profile(
+    dp_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    row = execute_single(
+        "DELETE FROM crm_discovery_profiles WHERE id = :id RETURNING id",
+        {"id": dp_id},
+    )
+    if not row:
+        raise HTTPException(404, "Discovery profile not found")
+    return {"status": "deleted"}
+
+
+# ============================================================================
+# Discovery Runs & Sites
+# ============================================================================
+
+
+class StartScrapingRequest(BaseModel):
+    scrape_profile_id: str
+    site_ids: Optional[List[str]] = None
+    min_score: Optional[int] = None
+
+
+@router.get("/scraping/discovery-runs")
+async def list_discovery_runs(
+    profile_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    limit: int = Query(50),
+    offset: int = Query(0),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    conditions = []
+    params: Dict[str, Any] = {"limit": limit, "offset": offset}
+
+    if profile_id:
+        conditions.append("r.profile_id = :profile_id")
+        params["profile_id"] = profile_id
+    if status:
+        conditions.append("r.status = :status")
+        params["status"] = status
+
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+    rows = execute_query(
+        f"""
+        SELECT r.*, dp.name as profile_name,
+               p.full_name as created_by_name
+        FROM crm_discovery_runs r
+        LEFT JOIN crm_discovery_profiles dp ON dp.id = r.profile_id
+        LEFT JOIN profiles p ON p.id = r.created_by
+        {where}
+        ORDER BY r.created_at DESC
+        LIMIT :limit OFFSET :offset
+        """,
+        params,
+    )
+    return {"runs": rows}
+
+
+@router.post("/scraping/discovery-runs")
+async def create_discovery_run(
+    profile_id: str = Query(...),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    dp = execute_single(
+        "SELECT * FROM crm_discovery_profiles WHERE id = :id",
+        {"id": profile_id},
+    )
+    if not dp:
+        raise HTTPException(404, "Discovery profile not found")
+    if not dp.get("enabled"):
+        raise HTTPException(400, "Discovery profile is disabled")
+
+    snapshot = {k: v for k, v in dp.items() if k not in ("created_at", "updated_at", "created_by")}
+    for k, v in snapshot.items():
+        if isinstance(v, (list,)):
+            snapshot[k] = v
+
+    run = execute_single(
+        """
+        INSERT INTO crm_discovery_runs (profile_id, created_by, status, profile_snapshot)
+        VALUES (:profile_id, :created_by, 'queued', :snapshot::jsonb)
+        RETURNING *
+        """,
+        {
+            "profile_id": profile_id,
+            "created_by": profile["id"],
+            "snapshot": json.dumps(snapshot, default=str),
+        },
+    )
+
+    ecs_task_arn = None
+    try:
+        import boto3
+        ecs_client = boto3.client('ecs', region_name='us-east-1')
+        response = ecs_client.run_task(
+            cluster='swn-scraper-cluster',
+            taskDefinition='swn-discovery-task',
+            launchType='FARGATE',
+            capacityProviderStrategy=[{'capacityProvider': 'FARGATE_SPOT', 'weight': 1}],
+            networkConfiguration={
+                'awsvpcConfiguration': {
+                    'subnets': ['subnet-097d1d86c1bc18b3b', 'subnet-013241dd6ffc1e819'],
+                    'securityGroups': ['sg-01b01424383262ebd'],
+                    'assignPublicIp': 'ENABLED'
+                }
+            },
+            overrides={
+                'containerOverrides': [{
+                    'name': 'discovery-worker',
+                    'environment': [
+                        {'name': 'DISCOVERY_RUN_ID', 'value': str(run["id"])},
+                    ]
+                }]
+            },
+            count=1
+        )
+        if response.get('tasks'):
+            ecs_task_arn = response['tasks'][0]['taskArn']
+            execute_single(
+                "UPDATE crm_discovery_runs SET ecs_task_arn = :arn WHERE id = :id RETURNING id",
+                {"arn": ecs_task_arn, "id": run["id"]},
+            )
+            print(f"Started ECS discovery task: {ecs_task_arn}")
+    except Exception as ecs_error:
+        print(f"Failed to start ECS discovery task (run still queued): {ecs_error}")
+
+    run["ecs_task_arn"] = ecs_task_arn
+    return {"run": run}
+
+
+@router.get("/scraping/discovery-runs/{run_id}")
+async def get_discovery_run(
+    run_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    run = execute_single(
+        """
+        SELECT r.*, dp.name as profile_name,
+               p.full_name as created_by_name
+        FROM crm_discovery_runs r
+        LEFT JOIN crm_discovery_profiles dp ON dp.id = r.profile_id
+        LEFT JOIN profiles p ON p.id = r.created_by
+        WHERE r.id = :id
+        """,
+        {"id": run_id},
+    )
+    if not run:
+        raise HTTPException(404, "Discovery run not found")
+    return {"run": run}
+
+
+@router.get("/scraping/discovery-runs/{run_id}/sites")
+async def list_discovery_run_sites(
+    run_id: str,
+    min_score: Optional[int] = Query(None),
+    source_type: Optional[str] = Query(None),
+    is_selected: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: int = Query(100),
+    offset: int = Query(0),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    conditions = ["s.run_id = :run_id"]
+    params: Dict[str, Any] = {"run_id": run_id, "limit": limit, "offset": offset}
+
+    if min_score is not None:
+        conditions.append("s.match_score >= :min_score")
+        params["min_score"] = min_score
+    if source_type:
+        conditions.append("s.source_type = :source_type")
+        params["source_type"] = source_type
+    if is_selected is not None:
+        conditions.append("s.is_selected_for_scraping = :is_selected")
+        params["is_selected"] = is_selected
+    if search:
+        conditions.append("(s.domain ILIKE :search OR s.company_name ILIKE :search)")
+        params["search"] = f"%{search}%"
+
+    where = "WHERE " + " AND ".join(conditions)
+
+    rows = execute_query(
+        f"""
+        SELECT s.*
+        FROM crm_discovery_sites s
+        {where}
+        ORDER BY s.match_score DESC
+        LIMIT :limit OFFSET :offset
+        """,
+        params,
+    )
+
+    count_row = execute_single(
+        f"""
+        SELECT COUNT(*) as total FROM crm_discovery_sites s {where}
+        """,
+        {k: v for k, v in params.items() if k not in ("limit", "offset")},
+    )
+
+    return {"sites": rows, "total": count_row["total"] if count_row else 0}
+
+
+@router.post("/scraping/discovery-runs/{run_id}/start-scraping")
+async def start_scraping_from_discovery(
+    run_id: str,
+    data: StartScrapingRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    run = execute_single(
+        "SELECT * FROM crm_discovery_runs WHERE id = :id",
+        {"id": run_id},
+    )
+    if not run:
+        raise HTTPException(404, "Discovery run not found")
+
+    sp = execute_single(
+        "SELECT * FROM crm_scrape_profiles WHERE id = :id",
+        {"id": data.scrape_profile_id},
+    )
+    if not sp:
+        raise HTTPException(404, "Scrape profile not found")
+
+    sp_snapshot = {k: v for k, v in sp.items() if k not in ("created_at", "updated_at", "created_by")}
+
+    # Determine which sites to select
+    site_conditions = ["run_id = :run_id"]
+    site_params: Dict[str, Any] = {"run_id": run_id}
+
+    if data.site_ids:
+        placeholders = ", ".join(f":sid_{i}" for i in range(len(data.site_ids)))
+        site_conditions.append(f"id IN ({placeholders})")
+        for i, sid in enumerate(data.site_ids):
+            site_params[f"sid_{i}"] = sid
+    if data.min_score is not None:
+        site_conditions.append("match_score >= :min_score")
+        site_params["min_score"] = data.min_score
+
+    site_where = " AND ".join(site_conditions)
+    site_count_row = execute_single(
+        f"SELECT COUNT(*) as cnt FROM crm_discovery_sites WHERE {site_where}",
+        site_params,
+    )
+    total_sites = site_count_row["cnt"] if site_count_row else 0
+
+    if total_sites == 0:
+        raise HTTPException(400, "No sites match the criteria")
+
+    # Create scrape job
+    job = execute_single(
+        """
+        INSERT INTO crm_scrape_jobs (
+            discovery_run_id, scrape_profile_id, created_by, filters,
+            total_sites, profile_snapshot
+        ) VALUES (
+            :run_id, :sp_id, :created_by, '{}'::jsonb,
+            :total_sites, :snapshot::jsonb
+        ) RETURNING *
+        """,
+        {
+            "run_id": run_id,
+            "sp_id": data.scrape_profile_id,
+            "created_by": profile["id"],
+            "total_sites": total_sites,
+            "snapshot": json.dumps(sp_snapshot, default=str),
+        },
+    )
+
+    # Mark sites as selected and link to job
+    execute_query(
+        f"""
+        UPDATE crm_discovery_sites
+        SET is_selected_for_scraping = true, scrape_job_id = :job_id
+        WHERE {site_where}
+        RETURNING id
+        """,
+        {**site_params, "job_id": job["id"]},
+    )
+
+    # Update run stats
+    execute_single(
+        "UPDATE crm_discovery_runs SET sites_selected_count = sites_selected_count + :cnt WHERE id = :id RETURNING id",
+        {"cnt": total_sites, "id": run_id},
+    )
+
+    # Trigger ECS scraper
+    ecs_task_arn = None
+    try:
+        import boto3
+        ecs_client = boto3.client('ecs', region_name='us-east-1')
+        response = ecs_client.run_task(
+            cluster='swn-scraper-cluster',
+            taskDefinition='swn-scraper-task',
+            launchType='FARGATE',
+            capacityProviderStrategy=[{'capacityProvider': 'FARGATE_SPOT', 'weight': 1}],
+            networkConfiguration={
+                'awsvpcConfiguration': {
+                    'subnets': ['subnet-097d1d86c1bc18b3b', 'subnet-013241dd6ffc1e819'],
+                    'securityGroups': ['sg-01b01424383262ebd'],
+                    'assignPublicIp': 'ENABLED'
+                }
+            },
+            overrides={
+                'containerOverrides': [{
+                    'name': 'scraper-worker',
+                    'environment': [
+                        {'name': 'JOB_ID', 'value': str(job["id"])},
+                    ]
+                }]
+            },
+            count=1
+        )
+        if response.get('tasks'):
+            ecs_task_arn = response['tasks'][0]['taskArn']
+            execute_single(
+                "UPDATE crm_scrape_jobs SET ecs_task_arn = :arn WHERE id = :id RETURNING id",
+                {"arn": ecs_task_arn, "id": job["id"]},
+            )
+    except Exception as ecs_error:
+        print(f"Failed to start ECS scraper (job still queued): {ecs_error}")
+
+    job["ecs_task_arn"] = ecs_task_arn
+    return {"job": job, "sites_selected": total_sites}
 
 
 # ============================================================================

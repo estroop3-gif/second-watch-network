@@ -13,6 +13,19 @@ import {
   useMergeScrapedLead,
   useExportLeads,
   useBulkImportContacts,
+  useScrapeProfiles,
+  useCreateScrapeProfile,
+  useUpdateScrapeProfile,
+  useDeleteScrapeProfile,
+  useDiscoveryProfiles,
+  useCreateDiscoveryProfile,
+  useUpdateDiscoveryProfile,
+  useDeleteDiscoveryProfile,
+  useDiscoveryRuns,
+  useCreateDiscoveryRun,
+  useDiscoveryRun,
+  useDiscoveryRunSites,
+  useStartDiscoveryScraping,
 } from '@/hooks/crm/useDataScraping';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -62,9 +75,15 @@ import {
   Sparkles,
   CheckCircle2,
   AlertCircle,
+  Compass,
+  Settings2,
+  ArrowRight,
+  MapPin,
+  Zap,
+  BarChart3,
 } from 'lucide-react';
 
-const TABS = ['Sources', 'Jobs', 'Staged Leads', 'Clean & Import'] as const;
+const TABS = ['Discovery', 'Scrape Profiles', 'Jobs', 'Staged Leads', 'Clean & Import', 'Sources'] as const;
 type Tab = typeof TABS[number];
 
 const STATUS_COLORS: Record<string, string> = {
@@ -89,6 +108,823 @@ function ScoreBar({ score }: { score: number }) {
     </div>
   );
 }
+
+
+// ============================================================================
+// Discovery Tab — 3-level drill-down
+// ============================================================================
+
+function DiscoveryTab() {
+  const { toast } = useToast();
+  const { data: profilesData, isLoading: loadingProfiles } = useDiscoveryProfiles();
+  const { data: scrapeProfilesData } = useScrapeProfiles();
+  const createProfile = useCreateDiscoveryProfile();
+  const updateProfile = useUpdateDiscoveryProfile();
+  const deleteProfile = useDeleteDiscoveryProfile();
+  const createRun = useCreateDiscoveryRun();
+  const startScraping = useStartDiscoveryScraping();
+
+  // Navigation state
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+
+  // Dialog state
+  const [showProfileDialog, setShowProfileDialog] = useState(false);
+  const [editingProfile, setEditingProfile] = useState<any>(null);
+  const [showScrapingDialog, setShowScrapingDialog] = useState(false);
+  const [scrapingProfileId, setScrapingProfileId] = useState('');
+  const [scrapingMinScore, setScrapingMinScore] = useState('');
+  const [siteSearch, setSiteSearch] = useState('');
+  const [siteMinScore, setSiteMinScore] = useState('');
+  const [selectedSiteIds, setSelectedSiteIds] = useState<Set<string>>(new Set());
+
+  const [form, setForm] = useState({
+    name: '', description: '', search_keywords: '',
+    locations: '', source_types: 'google_search',
+    search_radius_miles: 50, must_have_website: true,
+    required_keywords: '', excluded_keywords: '', excluded_domains: '',
+    max_results_per_query: 100, auto_start_scraping: false,
+    default_scrape_profile_id: '', min_discovery_score: 0, enabled: true,
+  });
+
+  const profiles = profilesData?.profiles || [];
+  const scrapeProfiles = scrapeProfilesData?.profiles || [];
+
+  // Runs for selected profile
+  const { data: runsData, isLoading: loadingRuns } = useDiscoveryRuns(
+    selectedProfileId ? { profile_id: selectedProfileId } : undefined
+  );
+  const runs = runsData?.runs || [];
+
+  // Run detail with polling
+  const { data: runDetailData } = useDiscoveryRun(selectedRunId || undefined);
+  const selectedRun = runDetailData?.run;
+
+  // Sites for selected run
+  const { data: sitesData, isLoading: loadingSites } = useDiscoveryRunSites(
+    selectedRunId || undefined,
+    {
+      min_score: siteMinScore ? parseInt(siteMinScore) : undefined,
+      search: siteSearch || undefined,
+    }
+  );
+  const sites = sitesData?.sites || [];
+  const sitesTotal = sitesData?.total || 0;
+
+  const resetForm = () => setForm({
+    name: '', description: '', search_keywords: '',
+    locations: '', source_types: 'google_search',
+    search_radius_miles: 50, must_have_website: true,
+    required_keywords: '', excluded_keywords: '', excluded_domains: '',
+    max_results_per_query: 100, auto_start_scraping: false,
+    default_scrape_profile_id: '', min_discovery_score: 0, enabled: true,
+  });
+
+  const openNewProfile = () => {
+    setEditingProfile(null);
+    resetForm();
+    setShowProfileDialog(true);
+  };
+
+  const openEditProfile = (p: any) => {
+    setEditingProfile(p);
+    setForm({
+      name: p.name, description: p.description || '',
+      search_keywords: (p.search_keywords || []).join(', '),
+      locations: (p.locations || []).join(', '),
+      source_types: (p.source_types || ['google_search']).join(', '),
+      search_radius_miles: p.search_radius_miles || 50,
+      must_have_website: p.must_have_website !== false,
+      required_keywords: (p.required_keywords || []).join(', '),
+      excluded_keywords: (p.excluded_keywords || []).join(', '),
+      excluded_domains: (p.excluded_domains || []).join(', '),
+      max_results_per_query: p.max_results_per_query || 100,
+      auto_start_scraping: p.auto_start_scraping || false,
+      default_scrape_profile_id: p.default_scrape_profile_id || '',
+      min_discovery_score: p.min_discovery_score || 0,
+      enabled: p.enabled !== false,
+    });
+    setShowProfileDialog(true);
+  };
+
+  const splitCSV = (s: string) => s.split(',').map(v => v.trim()).filter(Boolean);
+
+  const handleSaveProfile = async () => {
+    try {
+      const payload = {
+        ...form,
+        search_keywords: splitCSV(form.search_keywords),
+        locations: splitCSV(form.locations),
+        source_types: splitCSV(form.source_types),
+        required_keywords: splitCSV(form.required_keywords),
+        excluded_keywords: splitCSV(form.excluded_keywords),
+        excluded_domains: splitCSV(form.excluded_domains),
+        default_scrape_profile_id: form.default_scrape_profile_id || null,
+      };
+      if (editingProfile) {
+        await updateProfile.mutateAsync({ id: editingProfile.id, data: payload });
+        toast({ title: 'Discovery profile updated' });
+      } else {
+        await createProfile.mutateAsync(payload);
+        toast({ title: 'Discovery profile created' });
+      }
+      setShowProfileDialog(false);
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleDeleteProfile = async (id: string) => {
+    try {
+      await deleteProfile.mutateAsync(id);
+      toast({ title: 'Profile deleted' });
+      if (selectedProfileId === id) setSelectedProfileId(null);
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleRunDiscovery = async (profileId: string) => {
+    try {
+      await createRun.mutateAsync(profileId);
+      toast({ title: 'Discovery run queued' });
+      setSelectedProfileId(profileId);
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleStartScraping = async () => {
+    if (!selectedRunId || !scrapingProfileId) return;
+    try {
+      const result = await startScraping.mutateAsync({
+        runId: selectedRunId,
+        data: {
+          scrape_profile_id: scrapingProfileId,
+          site_ids: selectedSiteIds.size > 0 ? Array.from(selectedSiteIds) : undefined,
+          min_score: scrapingMinScore ? parseInt(scrapingMinScore) : undefined,
+        },
+      });
+      toast({ title: `Scraping started: ${result.sites_selected} sites selected` });
+      setShowScrapingDialog(false);
+      setSelectedSiteIds(new Set());
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  // Breadcrumb
+  const selectedProfile = profiles.find((p: any) => p.id === selectedProfileId);
+  const breadcrumbs = [
+    { label: 'Discovery', onClick: () => { setSelectedProfileId(null); setSelectedRunId(null); } },
+    ...(selectedProfile ? [{ label: selectedProfile.name, onClick: () => setSelectedRunId(null) }] : []),
+    ...(selectedRun ? [{ label: `Run ${new Date(selectedRun.created_at).toLocaleDateString()}`, onClick: () => {} }] : []),
+  ];
+
+  // Level 3: Sites list
+  if (selectedRunId) {
+    return (
+      <div>
+        <div className="flex items-center gap-1 mb-4 text-sm">
+          {breadcrumbs.map((bc, i) => (
+            <span key={i} className="flex items-center gap-1">
+              {i > 0 && <ChevronRight className="h-3 w-3 text-muted-gray" />}
+              <button onClick={bc.onClick} className={i === breadcrumbs.length - 1 ? 'text-bone-white font-medium' : 'text-muted-gray hover:text-bone-white'}>
+                {bc.label}
+              </button>
+            </span>
+          ))}
+        </div>
+
+        {selectedRun && (
+          <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4 mb-4">
+            <div className="flex items-center justify-between mb-2">
+              <Badge className={STATUS_COLORS[selectedRun.status] || ''}>{selectedRun.status}</Badge>
+              <span className="text-xs text-muted-gray">{new Date(selectedRun.created_at).toLocaleString()}</span>
+            </div>
+            <div className="grid grid-cols-3 gap-3 text-sm">
+              <div><span className="text-muted-gray">Sites found:</span> <span className="text-bone-white">{selectedRun.sites_found_count}</span></div>
+              <div><span className="text-muted-gray">Selected:</span> <span className="text-bone-white">{selectedRun.sites_selected_count}</span></div>
+              <div><span className="text-muted-gray">Created by:</span> <span className="text-bone-white">{selectedRun.created_by_name}</span></div>
+            </div>
+            {selectedRun.error_message && <p className="text-xs text-red-400 mt-2">{selectedRun.error_message}</p>}
+          </div>
+        )}
+
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-gray" />
+              <Input className="pl-8 w-[200px]" placeholder="Search sites..." value={siteSearch} onChange={(e) => setSiteSearch(e.target.value)} />
+            </div>
+            <Input className="w-[100px]" placeholder="Min score" type="number" value={siteMinScore} onChange={(e) => setSiteMinScore(e.target.value)} />
+            <span className="text-xs text-muted-gray">{sitesTotal} sites</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {selectedSiteIds.size > 0 && (
+              <span className="text-xs text-accent-yellow">{selectedSiteIds.size} selected</span>
+            )}
+            <Button size="sm" onClick={() => {
+              setScrapingProfileId('');
+              setScrapingMinScore('');
+              setShowScrapingDialog(true);
+            }} disabled={selectedRun?.status !== 'completed'}>
+              <Zap className="h-4 w-4 mr-1" /> Start Scraping
+            </Button>
+          </div>
+        </div>
+
+        {loadingSites ? (
+          <div className="flex items-center gap-2 text-muted-gray py-8"><Loader2 className="h-4 w-4 animate-spin" /> Loading sites...</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-muted-gray/20 text-left text-xs text-muted-gray">
+                  <th className="p-2 w-8">
+                    <Checkbox
+                      checked={sites.length > 0 && selectedSiteIds.size === sites.length}
+                      onCheckedChange={() => {
+                        if (selectedSiteIds.size === sites.length) setSelectedSiteIds(new Set());
+                        else setSelectedSiteIds(new Set(sites.map((s: any) => s.id)));
+                      }}
+                    />
+                  </th>
+                  <th className="p-2">Domain</th>
+                  <th className="p-2">Company</th>
+                  <th className="p-2">Source</th>
+                  <th className="p-2">Location</th>
+                  <th className="p-2">Score</th>
+                  <th className="p-2">Selected</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sites.map((site: any) => (
+                  <tr key={site.id} className="border-b border-muted-gray/10 hover:bg-muted-gray/5">
+                    <td className="p-2">
+                      <Checkbox
+                        checked={selectedSiteIds.has(site.id)}
+                        onCheckedChange={() => {
+                          setSelectedSiteIds(prev => {
+                            const next = new Set(prev);
+                            if (next.has(site.id)) next.delete(site.id); else next.add(site.id);
+                            return next;
+                          });
+                        }}
+                      />
+                    </td>
+                    <td className="p-2">
+                      <a href={site.homepage_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline text-xs flex items-center gap-1">
+                        <Globe className="h-3 w-3 flex-shrink-0" />
+                        {site.domain}
+                      </a>
+                    </td>
+                    <td className="p-2 text-bone-white text-xs max-w-[200px] truncate">{site.company_name || '-'}</td>
+                    <td className="p-2"><Badge variant="outline" className="text-xs">{site.source_type}</Badge></td>
+                    <td className="p-2 text-xs text-muted-gray max-w-[150px] truncate">{site.location || '-'}</td>
+                    <td className="p-2"><ScoreBar score={site.match_score} /></td>
+                    <td className="p-2">
+                      {site.is_selected_for_scraping && <CheckCircle2 className="h-4 w-4 text-green-400" />}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {sites.length === 0 && (
+              <div className="text-center py-12 text-muted-gray">
+                <Globe className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p>No sites found{selectedRun?.status === 'running' ? ' yet — run in progress...' : '.'}</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Start Scraping Dialog */}
+        <Dialog open={showScrapingDialog} onOpenChange={setShowScrapingDialog}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Start Scraping</DialogTitle>
+              <DialogDescription>
+                {selectedSiteIds.size > 0
+                  ? `Scrape ${selectedSiteIds.size} selected sites`
+                  : 'Scrape all qualifying sites from this run'}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label>Scrape Profile</Label>
+                <Select value={scrapingProfileId} onValueChange={setScrapingProfileId}>
+                  <SelectTrigger><SelectValue placeholder="Select profile..." /></SelectTrigger>
+                  <SelectContent>
+                    {scrapeProfiles.map((sp: any) => <SelectItem key={sp.id} value={sp.id}>{sp.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              {selectedSiteIds.size === 0 && (
+                <div>
+                  <Label>Min Score Filter</Label>
+                  <Input type="number" value={scrapingMinScore} onChange={(e) => setScrapingMinScore(e.target.value)} placeholder="Include all scores" />
+                </div>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShowScrapingDialog(false)}>Cancel</Button>
+              <Button onClick={handleStartScraping} disabled={!scrapingProfileId || startScraping.isPending}>
+                {startScraping.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                Start Scraping
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    );
+  }
+
+  // Level 2: Runs list
+  if (selectedProfileId) {
+    return (
+      <div>
+        <div className="flex items-center gap-1 mb-4 text-sm">
+          {breadcrumbs.map((bc, i) => (
+            <span key={i} className="flex items-center gap-1">
+              {i > 0 && <ChevronRight className="h-3 w-3 text-muted-gray" />}
+              <button onClick={bc.onClick} className={i === breadcrumbs.length - 1 ? 'text-bone-white font-medium' : 'text-muted-gray hover:text-bone-white'}>
+                {bc.label}
+              </button>
+            </span>
+          ))}
+        </div>
+
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-sm text-muted-gray">{runs.length} run{runs.length !== 1 ? 's' : ''}</p>
+          <Button size="sm" onClick={() => handleRunDiscovery(selectedProfileId)} disabled={createRun.isPending}>
+            {createRun.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+            <Play className="h-4 w-4 mr-1" /> Run Discovery
+          </Button>
+        </div>
+
+        {loadingRuns ? (
+          <div className="flex items-center gap-2 text-muted-gray py-8"><Loader2 className="h-4 w-4 animate-spin" /> Loading runs...</div>
+        ) : (
+          <div className="space-y-2">
+            {runs.map((run: any) => {
+              const stats = typeof run.source_stats === 'string' ? JSON.parse(run.source_stats) : (run.source_stats || {});
+              return (
+                <div key={run.id} className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4 cursor-pointer hover:border-muted-gray/40 transition-colors" onClick={() => setSelectedRunId(run.id)}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <Badge className={STATUS_COLORS[run.status] || ''}>{run.status}</Badge>
+                      <span className="text-sm text-bone-white">{run.sites_found_count} sites found</span>
+                      {run.sites_selected_count > 0 && (
+                        <span className="text-xs text-green-400">{run.sites_selected_count} selected</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-muted-gray">
+                      <span>{new Date(run.created_at).toLocaleString()}</span>
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </div>
+                  </div>
+                  {run.status === 'running' && (
+                    <div className="mt-2 flex items-center gap-2 text-xs text-blue-400">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Running discovery...
+                    </div>
+                  )}
+                  {run.error_message && <p className="text-xs text-red-400 mt-2 truncate">{run.error_message}</p>}
+                </div>
+              );
+            })}
+            {runs.length === 0 && (
+              <div className="text-center py-12 text-muted-gray">
+                <Compass className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p>No runs yet. Click "Run Discovery" to start.</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Level 1: Profiles list
+  if (loadingProfiles) return <div className="flex items-center gap-2 text-muted-gray py-8"><Loader2 className="h-4 w-4 animate-spin" /> Loading discovery profiles...</div>;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-sm text-muted-gray">{profiles.length} discovery profile{profiles.length !== 1 ? 's' : ''}</p>
+        <Button onClick={openNewProfile} size="sm"><Plus className="h-4 w-4 mr-1" /> New Profile</Button>
+      </div>
+
+      <div className="space-y-3">
+        {profiles.map((p: any) => (
+          <div key={p.id} className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+            <div className="flex items-start justify-between">
+              <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setSelectedProfileId(p.id)}>
+                <div className="flex items-center gap-2 mb-1">
+                  <Compass className="h-4 w-4 text-accent-yellow flex-shrink-0" />
+                  <h3 className="text-sm font-medium text-bone-white truncate">{p.name}</h3>
+                  {!p.enabled && <Badge variant="outline" className="text-xs bg-red-500/10 text-red-400">Disabled</Badge>}
+                  {p.auto_start_scraping && <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400">Auto-start</Badge>}
+                </div>
+                {p.description && <p className="text-xs text-muted-gray mb-1">{p.description}</p>}
+                <div className="flex items-center gap-3 text-xs text-muted-gray">
+                  <span>Keywords: {(p.search_keywords || []).slice(0, 3).join(', ')}{(p.search_keywords || []).length > 3 ? '...' : ''}</span>
+                  {(p.locations || []).length > 0 && (
+                    <span className="flex items-center gap-1"><MapPin className="h-3 w-3" />{(p.locations || []).slice(0, 2).join(', ')}</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3 mt-1 text-xs text-muted-gray">
+                  <span>{p.run_count || 0} runs</span>
+                  <span>{p.total_sites_found || 0} sites found</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 ml-2">
+                <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleRunDiscovery(p.id); }} disabled={createRun.isPending || !p.enabled}>
+                  <Play className="h-3.5 w-3.5" />
+                </Button>
+                <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); openEditProfile(p); }}>
+                  <Pencil className="h-3.5 w-3.5" />
+                </Button>
+                <Button variant="ghost" size="sm" className="text-red-400 hover:text-red-300" onClick={(e) => { e.stopPropagation(); handleDeleteProfile(p.id); }}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        ))}
+        {profiles.length === 0 && (
+          <div className="text-center py-12 text-muted-gray">
+            <Compass className="h-8 w-8 mx-auto mb-2 opacity-50" />
+            <p>No discovery profiles yet.</p>
+            <p className="text-sm mt-1">Create a profile to find business websites automatically.</p>
+          </div>
+        )}
+      </div>
+
+      {/* Profile Create/Edit Dialog */}
+      <Dialog open={showProfileDialog} onOpenChange={setShowProfileDialog}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{editingProfile ? 'Edit Discovery Profile' : 'New Discovery Profile'}</DialogTitle>
+            <DialogDescription>Configure automated website discovery.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 max-h-[60vh] overflow-y-auto">
+            <div>
+              <Label>Name</Label>
+              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. US Film Production Companies" />
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Optional description..." />
+            </div>
+            <div>
+              <Label>Search Keywords (comma-separated)</Label>
+              <Textarea value={form.search_keywords} onChange={(e) => setForm({ ...form, search_keywords: e.target.value })} placeholder="film production company, post production house, video production" rows={2} />
+            </div>
+            <div>
+              <Label>Locations (comma-separated)</Label>
+              <Input value={form.locations} onChange={(e) => setForm({ ...form, locations: e.target.value })} placeholder="Los Angeles, New York, Atlanta" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Source Types</Label>
+                <Input value={form.source_types} onChange={(e) => setForm({ ...form, source_types: e.target.value })} placeholder="google_search, google_maps" />
+              </div>
+              <div>
+                <Label>Max Results / Query</Label>
+                <Input type="number" value={form.max_results_per_query} onChange={(e) => setForm({ ...form, max_results_per_query: parseInt(e.target.value) || 100 })} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Search Radius (miles)</Label>
+                <Input type="number" value={form.search_radius_miles} onChange={(e) => setForm({ ...form, search_radius_miles: parseInt(e.target.value) || 50 })} />
+              </div>
+              <div>
+                <Label>Min Discovery Score</Label>
+                <Input type="number" value={form.min_discovery_score} onChange={(e) => setForm({ ...form, min_discovery_score: parseInt(e.target.value) || 0 })} />
+              </div>
+            </div>
+            <div>
+              <Label>Required Keywords (comma-separated)</Label>
+              <Input value={form.required_keywords} onChange={(e) => setForm({ ...form, required_keywords: e.target.value })} placeholder="Must match at least one" />
+            </div>
+            <div>
+              <Label>Excluded Keywords (comma-separated)</Label>
+              <Input value={form.excluded_keywords} onChange={(e) => setForm({ ...form, excluded_keywords: e.target.value })} placeholder="Auto-reject if found" />
+            </div>
+            <div>
+              <Label>Excluded Domains (comma-separated)</Label>
+              <Input value={form.excluded_domains} onChange={(e) => setForm({ ...form, excluded_domains: e.target.value })} placeholder="facebook.com, yelp.com" />
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch checked={form.must_have_website} onCheckedChange={(v) => setForm({ ...form, must_have_website: v })} />
+              <Label>Must have website</Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch checked={form.auto_start_scraping} onCheckedChange={(v) => setForm({ ...form, auto_start_scraping: v })} />
+              <Label>Auto-start scraping on completion</Label>
+            </div>
+            {form.auto_start_scraping && (
+              <div>
+                <Label>Default Scrape Profile</Label>
+                <Select value={form.default_scrape_profile_id} onValueChange={(v) => setForm({ ...form, default_scrape_profile_id: v })}>
+                  <SelectTrigger><SelectValue placeholder="Select scrape profile..." /></SelectTrigger>
+                  <SelectContent>
+                    {scrapeProfiles.map((sp: any) => <SelectItem key={sp.id} value={sp.id}>{sp.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <Switch checked={form.enabled} onCheckedChange={(v) => setForm({ ...form, enabled: v })} />
+              <Label>Enabled</Label>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowProfileDialog(false)}>Cancel</Button>
+            <Button onClick={handleSaveProfile} disabled={!form.name || !form.search_keywords || createProfile.isPending || updateProfile.isPending}>
+              {(createProfile.isPending || updateProfile.isPending) && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+              {editingProfile ? 'Update' : 'Create'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+
+// ============================================================================
+// Scrape Profiles Tab
+// ============================================================================
+
+function ScrapeProfilesTab() {
+  const { toast } = useToast();
+  const { data, isLoading } = useScrapeProfiles();
+  const createProfile = useCreateScrapeProfile();
+  const updateProfile = useUpdateScrapeProfile();
+  const deleteProfile = useDeleteScrapeProfile();
+
+  const [showDialog, setShowDialog] = useState(false);
+  const [editingProfile, setEditingProfile] = useState<any>(null);
+  const [form, setForm] = useState({
+    name: '', description: '',
+    max_pages_per_site: 5, paths_to_visit: '/about, /contact, /team',
+    data_to_extract: 'emails, phones, social_links',
+    follow_internal_links: false, max_depth: 2,
+    concurrency: 1, delay_ms: 2000, respect_robots_txt: true,
+    user_agent: '', min_match_score: 0,
+    require_email: false, require_phone: false, require_website: false,
+    excluded_domains: '', scoring_rules: '{}', keywords: '',
+  });
+
+  const profiles = data?.profiles || [];
+
+  const resetForm = () => setForm({
+    name: '', description: '',
+    max_pages_per_site: 5, paths_to_visit: '/about, /contact, /team',
+    data_to_extract: 'emails, phones, social_links',
+    follow_internal_links: false, max_depth: 2,
+    concurrency: 1, delay_ms: 2000, respect_robots_txt: true,
+    user_agent: '', min_match_score: 0,
+    require_email: false, require_phone: false, require_website: false,
+    excluded_domains: '', scoring_rules: '{}', keywords: '',
+  });
+
+  const openNew = () => {
+    setEditingProfile(null);
+    resetForm();
+    setShowDialog(true);
+  };
+
+  const openEdit = (p: any) => {
+    setEditingProfile(p);
+    setForm({
+      name: p.name, description: p.description || '',
+      max_pages_per_site: p.max_pages_per_site || 5,
+      paths_to_visit: (p.paths_to_visit || []).join(', '),
+      data_to_extract: (p.data_to_extract || []).join(', '),
+      follow_internal_links: p.follow_internal_links || false,
+      max_depth: p.max_depth || 2,
+      concurrency: p.concurrency || 1,
+      delay_ms: p.delay_ms || 2000,
+      respect_robots_txt: p.respect_robots_txt !== false,
+      user_agent: p.user_agent || '',
+      min_match_score: p.min_match_score || 0,
+      require_email: p.require_email || false,
+      require_phone: p.require_phone || false,
+      require_website: p.require_website || false,
+      excluded_domains: (p.excluded_domains || []).join(', '),
+      scoring_rules: typeof p.scoring_rules === 'string' ? p.scoring_rules : JSON.stringify(p.scoring_rules || {}, null, 2),
+      keywords: (p.keywords || []).join(', '),
+    });
+    setShowDialog(true);
+  };
+
+  const openDuplicate = (p: any) => {
+    openEdit({ ...p, name: `${p.name} (copy)`, id: undefined });
+    setEditingProfile(null); // treat as new
+  };
+
+  const splitCSV = (s: string) => s.split(',').map(v => v.trim()).filter(Boolean);
+
+  const handleSave = async () => {
+    try {
+      let scoringRules;
+      try {
+        scoringRules = JSON.parse(form.scoring_rules);
+      } catch {
+        toast({ title: 'Invalid JSON in scoring rules', variant: 'destructive' });
+        return;
+      }
+
+      const payload = {
+        ...form,
+        paths_to_visit: splitCSV(form.paths_to_visit),
+        data_to_extract: splitCSV(form.data_to_extract),
+        excluded_domains: splitCSV(form.excluded_domains),
+        keywords: splitCSV(form.keywords),
+        scoring_rules: scoringRules,
+        user_agent: form.user_agent || null,
+      };
+
+      if (editingProfile) {
+        await updateProfile.mutateAsync({ id: editingProfile.id, data: payload });
+        toast({ title: 'Scrape profile updated' });
+      } else {
+        await createProfile.mutateAsync(payload);
+        toast({ title: 'Scrape profile created' });
+      }
+      setShowDialog(false);
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteProfile.mutateAsync(id);
+      toast({ title: 'Profile deleted' });
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  if (isLoading) return <div className="flex items-center gap-2 text-muted-gray py-8"><Loader2 className="h-4 w-4 animate-spin" /> Loading scrape profiles...</div>;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-sm text-muted-gray">{profiles.length} scrape profile{profiles.length !== 1 ? 's' : ''}</p>
+        <Button onClick={openNew} size="sm"><Plus className="h-4 w-4 mr-1" /> New Profile</Button>
+      </div>
+
+      <div className="space-y-3">
+        {profiles.map((p: any) => (
+          <div key={p.id} className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+            <div className="flex items-start justify-between">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <Settings2 className="h-4 w-4 text-blue-400 flex-shrink-0" />
+                  <h3 className="text-sm font-medium text-bone-white truncate">{p.name}</h3>
+                </div>
+                {p.description && <p className="text-xs text-muted-gray mb-1">{p.description}</p>}
+                <div className="flex items-center gap-3 text-xs text-muted-gray">
+                  <span>{p.max_pages_per_site} pages/site</span>
+                  <span>{p.delay_ms}ms delay</span>
+                  {p.require_email && <span className="text-amber-400">Require email</span>}
+                  {p.require_phone && <span className="text-amber-400">Require phone</span>}
+                  {p.min_match_score > 0 && <span>Min score: {p.min_match_score}</span>}
+                </div>
+                <div className="flex items-center gap-3 mt-1 text-xs text-muted-gray">
+                  <span className="flex items-center gap-1"><BarChart3 className="h-3 w-3" />{p.total_jobs || 0} jobs</span>
+                  <span>{p.total_leads || 0} leads</span>
+                  {Number(p.avg_match_score) > 0 && <span>Avg score: {Math.round(Number(p.avg_match_score))}</span>}
+                </div>
+              </div>
+              <div className="flex items-center gap-1 ml-2">
+                <Button variant="ghost" size="sm" onClick={() => openDuplicate(p)} title="Duplicate">
+                  <Copy className="h-3.5 w-3.5" />
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => openEdit(p)}>
+                  <Pencil className="h-3.5 w-3.5" />
+                </Button>
+                <Button variant="ghost" size="sm" className="text-red-400 hover:text-red-300" onClick={() => handleDelete(p.id)}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        ))}
+        {profiles.length === 0 && (
+          <div className="text-center py-12 text-muted-gray">
+            <Settings2 className="h-8 w-8 mx-auto mb-2 opacity-50" />
+            <p>No scrape profiles yet.</p>
+            <p className="text-sm mt-1">Create reusable scraping configs for discovery-sourced jobs.</p>
+          </div>
+        )}
+      </div>
+
+      {/* Profile Dialog */}
+      <Dialog open={showDialog} onOpenChange={setShowDialog}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{editingProfile ? 'Edit Scrape Profile' : 'New Scrape Profile'}</DialogTitle>
+            <DialogDescription>Configure how sites are scraped and scored.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 max-h-[60vh] overflow-y-auto">
+            <div>
+              <Label>Name</Label>
+              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Standard B2B Scrape" />
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Optional..." />
+            </div>
+
+            <div className="text-xs text-muted-gray font-medium uppercase tracking-wider pt-2">Scraping Behavior</div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Max Pages / Site</Label>
+                <Input type="number" value={form.max_pages_per_site} onChange={(e) => setForm({ ...form, max_pages_per_site: parseInt(e.target.value) || 5 })} />
+              </div>
+              <div>
+                <Label>Delay (ms)</Label>
+                <Input type="number" value={form.delay_ms} onChange={(e) => setForm({ ...form, delay_ms: parseInt(e.target.value) || 2000 })} />
+              </div>
+            </div>
+            <div>
+              <Label>Paths to Visit (comma-separated)</Label>
+              <Input value={form.paths_to_visit} onChange={(e) => setForm({ ...form, paths_to_visit: e.target.value })} placeholder="/about, /contact, /team" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Max Depth</Label>
+                <Input type="number" value={form.max_depth} onChange={(e) => setForm({ ...form, max_depth: parseInt(e.target.value) || 2 })} />
+              </div>
+              <div>
+                <Label>Concurrency</Label>
+                <Input type="number" value={form.concurrency} onChange={(e) => setForm({ ...form, concurrency: parseInt(e.target.value) || 1 })} />
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Switch checked={form.follow_internal_links} onCheckedChange={(v) => setForm({ ...form, follow_internal_links: v })} />
+                <Label className="text-xs">Follow links</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Switch checked={form.respect_robots_txt} onCheckedChange={(v) => setForm({ ...form, respect_robots_txt: v })} />
+                <Label className="text-xs">Respect robots.txt</Label>
+              </div>
+            </div>
+            <div>
+              <Label>Custom User Agent</Label>
+              <Input value={form.user_agent} onChange={(e) => setForm({ ...form, user_agent: e.target.value })} placeholder="Leave empty for default" />
+            </div>
+
+            <div className="text-xs text-muted-gray font-medium uppercase tracking-wider pt-2">Quality Filters</div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <Label>Min Score</Label>
+                <Input type="number" value={form.min_match_score} onChange={(e) => setForm({ ...form, min_match_score: parseInt(e.target.value) || 0 })} />
+              </div>
+              <div className="flex items-center gap-2 pt-6">
+                <Switch checked={form.require_email} onCheckedChange={(v) => setForm({ ...form, require_email: v })} />
+                <Label className="text-xs">Require email</Label>
+              </div>
+              <div className="flex items-center gap-2 pt-6">
+                <Switch checked={form.require_phone} onCheckedChange={(v) => setForm({ ...form, require_phone: v })} />
+                <Label className="text-xs">Require phone</Label>
+              </div>
+            </div>
+            <div>
+              <Label>Excluded Domains</Label>
+              <Input value={form.excluded_domains} onChange={(e) => setForm({ ...form, excluded_domains: e.target.value })} placeholder="facebook.com, yelp.com" />
+            </div>
+            <div>
+              <Label>Keywords (comma-separated)</Label>
+              <Input value={form.keywords} onChange={(e) => setForm({ ...form, keywords: e.target.value })} placeholder="film production, post house" />
+            </div>
+            <div>
+              <Label>Scoring Rules (JSON)</Label>
+              <Textarea className="font-mono text-xs" rows={4} value={form.scoring_rules} onChange={(e) => setForm({ ...form, scoring_rules: e.target.value })} placeholder='{"keywords": {"high": [...], "medium": [...]}, "weights": {"keywords": 35}}' />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDialog(false)}>Cancel</Button>
+            <Button onClick={handleSave} disabled={!form.name || createProfile.isPending || updateProfile.isPending}>
+              {(createProfile.isPending || updateProfile.isPending) && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+              {editingProfile ? 'Update' : 'Create'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 
 // ============================================================================
 // Sources Tab
@@ -358,15 +1194,31 @@ function JobsTab() {
       <div className="space-y-2">
         {jobs.map((job: any) => {
           const stats = typeof job.stats === 'string' ? JSON.parse(job.stats) : (job.stats || {});
+          const isDiscovery = !!job.discovery_profile_name;
           return (
             <div key={job.id} className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4 cursor-pointer hover:border-muted-gray/40 transition-colors" onClick={() => setSelectedJobId(job.id)}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3 min-w-0">
                   <Badge className={STATUS_COLORS[job.status] || ''}>{job.status}</Badge>
-                  <span className="text-sm text-bone-white truncate">{job.source_name}</span>
+                  <span className="text-sm text-bone-white truncate">
+                    {isDiscovery ? (
+                      <span className="flex items-center gap-1">
+                        <Compass className="h-3.5 w-3.5 text-accent-yellow" />
+                        {job.discovery_profile_name}
+                      </span>
+                    ) : (
+                      job.source_name || 'Unknown Source'
+                    )}
+                  </span>
+                  {job.scrape_profile_name && (
+                    <Badge variant="outline" className="text-xs">{job.scrape_profile_name}</Badge>
+                  )}
                   {job.lead_count > 0 && <span className="text-xs text-muted-gray">{job.lead_count} leads</span>}
                 </div>
                 <div className="flex items-center gap-3 text-xs text-muted-gray">
+                  {isDiscovery && job.total_sites > 0 && (
+                    <span>{job.sites_scraped || 0}/{job.total_sites} sites</span>
+                  )}
                   {stats.pages_scraped > 0 && <span>{stats.pages_scraped} pages</span>}
                   <span>{new Date(job.created_at).toLocaleString()}</span>
                   <Eye className="h-3.5 w-3.5" />
@@ -375,7 +1227,10 @@ function JobsTab() {
               {job.status === 'running' && (
                 <div className="mt-2 flex items-center gap-2 text-xs text-blue-400">
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  Scraping... {stats.pages_scraped || 0} pages, {stats.leads_found || 0} leads found
+                  {isDiscovery
+                    ? `Scraping... ${job.sites_scraped || 0}/${job.total_sites} sites`
+                    : `Scraping... ${stats.pages_scraped || 0} pages, ${stats.leads_found || 0} leads found`
+                  }
                 </div>
               )}
               {job.error_message && <p className="text-xs text-red-400 mt-2 truncate">{job.error_message}</p>}
@@ -431,17 +1286,24 @@ function JobsTab() {
           </DialogHeader>
           {selectedJob && (() => {
             const stats = typeof selectedJob.stats === 'string' ? JSON.parse(selectedJob.stats) : (selectedJob.stats || {});
+            const isDiscovery = !!selectedJob.discovery_profile_name;
             return (
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-2 text-sm">
                   <div>
                     <span className="text-muted-gray">Source:</span>
-                    <p className="text-bone-white">{selectedJob.source_name}</p>
+                    <p className="text-bone-white">{isDiscovery ? selectedJob.discovery_profile_name : selectedJob.source_name}</p>
                   </div>
                   <div>
                     <span className="text-muted-gray">Status:</span>
                     <div><Badge className={STATUS_COLORS[selectedJob.status] || ''}>{selectedJob.status}</Badge></div>
                   </div>
+                  {selectedJob.scrape_profile_name && (
+                    <div>
+                      <span className="text-muted-gray">Scrape Profile:</span>
+                      <p className="text-bone-white">{selectedJob.scrape_profile_name}</p>
+                    </div>
+                  )}
                   <div>
                     <span className="text-muted-gray">Created by:</span>
                     <p className="text-bone-white">{selectedJob.created_by_name}</p>
@@ -454,6 +1316,12 @@ function JobsTab() {
                 <div className="border-t border-muted-gray/20 pt-3">
                   <h4 className="text-sm font-medium text-bone-white mb-2">Stats</h4>
                   <div className="grid grid-cols-2 gap-2 text-sm">
+                    {isDiscovery && (
+                      <div className="bg-muted-gray/10 rounded p-2">
+                        <p className="text-muted-gray text-xs">Sites Scraped</p>
+                        <p className="text-bone-white text-lg font-medium">{selectedJob.sites_scraped || 0}/{selectedJob.total_sites || 0}</p>
+                      </div>
+                    )}
                     <div className="bg-muted-gray/10 rounded p-2">
                       <p className="text-muted-gray text-xs">Pages Scraped</p>
                       <p className="text-bone-white text-lg font-medium">{stats.pages_scraped || 0}</p>
@@ -462,10 +1330,12 @@ function JobsTab() {
                       <p className="text-muted-gray text-xs">Leads Found</p>
                       <p className="text-bone-white text-lg font-medium">{stats.leads_found || 0}</p>
                     </div>
-                    <div className="bg-muted-gray/10 rounded p-2">
-                      <p className="text-muted-gray text-xs">Duplicates Skipped</p>
-                      <p className="text-bone-white text-lg font-medium">{stats.duplicates_skipped || 0}</p>
-                    </div>
+                    {!isDiscovery && (
+                      <div className="bg-muted-gray/10 rounded p-2">
+                        <p className="text-muted-gray text-xs">Duplicates Skipped</p>
+                        <p className="text-bone-white text-lg font-medium">{stats.duplicates_skipped || 0}</p>
+                      </div>
+                    )}
                     <div className="bg-muted-gray/10 rounded p-2">
                       <p className="text-muted-gray text-xs">Leads Total</p>
                       <p className="text-bone-white text-lg font-medium">{selectedJob.lead_count || 0}</p>
@@ -599,7 +1469,7 @@ function StagedLeadsTab() {
           <SelectTrigger className="w-[180px]"><SelectValue placeholder="All jobs" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All jobs</SelectItem>
-            {jobs.map((j: any) => <SelectItem key={j.id} value={j.id}>{j.source_name} ({new Date(j.created_at).toLocaleDateString()})</SelectItem>)}
+            {jobs.map((j: any) => <SelectItem key={j.id} value={j.id}>{(j.source_name || j.discovery_profile_name || 'Job')} ({new Date(j.created_at).toLocaleDateString()})</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(0); }}>
@@ -929,7 +1799,7 @@ function CleanImportTab() {
                     <SelectItem value="all">All jobs</SelectItem>
                     {jobs.map((j: any) => (
                       <SelectItem key={j.id} value={j.id}>
-                        {j.source_name} ({new Date(j.created_at).toLocaleDateString()})
+                        {(j.source_name || j.discovery_profile_name || 'Job')} ({new Date(j.created_at).toLocaleDateString()})
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1155,7 +2025,7 @@ function CleanImportTab() {
 // ============================================================================
 
 const AdminScraping = () => {
-  const [activeTab, setActiveTab] = useState<Tab>('Sources');
+  const [activeTab, setActiveTab] = useState<Tab>('Discovery');
 
   return (
     <div>
@@ -1180,10 +2050,12 @@ const AdminScraping = () => {
         ))}
       </div>
 
-      {activeTab === 'Sources' && <SourcesTab />}
+      {activeTab === 'Discovery' && <DiscoveryTab />}
+      {activeTab === 'Scrape Profiles' && <ScrapeProfilesTab />}
       {activeTab === 'Jobs' && <JobsTab />}
       {activeTab === 'Staged Leads' && <StagedLeadsTab />}
       {activeTab === 'Clean & Import' && <CleanImportTab />}
+      {activeTab === 'Sources' && <SourcesTab />}
     </div>
   );
 };

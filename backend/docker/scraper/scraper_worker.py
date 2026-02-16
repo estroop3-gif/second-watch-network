@@ -175,6 +175,244 @@ def scrape_page(url: str, selectors: dict, rate_limit_ms: int, session: requests
     return leads, next_url
 
 
+def extract_generic_data(soup, url: str, company_name: str = "") -> dict:
+    """Extract emails, phones, meta info from a page using regex patterns."""
+    text = soup.get_text(" ", strip=True)
+    html = str(soup)
+
+    # Extract emails
+    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    emails = list(set(re.findall(email_pattern, text)))
+    emails = [clean_email(e) for e in emails if not is_free_email(e)]
+
+    # Extract phones (US format focus)
+    phone_pattern = r'[\+]?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}'
+    phones = list(set(re.findall(phone_pattern, text)))
+
+    # Extract meta description
+    meta_desc = ""
+    meta_tag = soup.find("meta", attrs={"name": "description"})
+    if meta_tag:
+        meta_desc = meta_tag.get("content", "")
+
+    # Extract title
+    title = ""
+    title_tag = soup.find("title")
+    if title_tag:
+        title = title_tag.get_text(strip=True)
+
+    # Extract address-like text
+    address = ""
+    address_patterns = [
+        r'\d+\s+[\w\s]+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Court|Ct)[\s,]+[\w\s]+,?\s*[A-Z]{2}\s*\d{5}',
+    ]
+    for pat in address_patterns:
+        m = re.search(pat, text)
+        if m:
+            address = m.group(0).strip()
+            break
+
+    return {
+        "emails": emails[:5],
+        "phones": phones[:3],
+        "description": meta_desc or title,
+        "address": address,
+        "title": title,
+        "company_name": company_name or title.split(" - ")[0].split(" | ")[0].strip() if title else "",
+    }
+
+
+def merge_site_leads(page_data_list: list, site: dict) -> dict:
+    """Merge data extracted from multiple pages of one site into a single lead."""
+    all_emails = []
+    all_phones = []
+    descriptions = []
+    address = ""
+    company = site.get("company_name", "")
+
+    for pd in page_data_list:
+        all_emails.extend(pd.get("emails", []))
+        all_phones.extend(pd.get("phones", []))
+        if pd.get("description"):
+            descriptions.append(pd["description"])
+        if pd.get("address") and not address:
+            address = pd["address"]
+        if pd.get("company_name") and not company:
+            company = pd["company_name"]
+
+    # Deduplicate
+    emails = list(dict.fromkeys(all_emails))
+    phones = list(dict.fromkeys(all_phones))
+
+    return {
+        "company_name": company or site.get("domain", ""),
+        "website": site.get("homepage_url", ""),
+        "email": emails[0] if emails else None,
+        "phone": phones[0] if phones else None,
+        "address": address,
+        "description": descriptions[0] if descriptions else None,
+        "raw_data": {
+            "domain": site.get("domain", ""),
+            "all_emails": emails[:10],
+            "all_phones": phones[:5],
+            "pages_scraped": len(page_data_list),
+            "source_type": site.get("source_type", ""),
+        },
+    }
+
+
+def run_discovery_based_job(cur, job: dict, job_id: str):
+    """Run a discovery-sourced scrape job — scrapes sites from crm_discovery_sites."""
+    profile_snapshot = job.get("profile_snapshot", {})
+    if isinstance(profile_snapshot, str):
+        profile_snapshot = json.loads(profile_snapshot)
+
+    max_pages_per_site = profile_snapshot.get("max_pages_per_site", 5)
+    paths_to_visit = profile_snapshot.get("paths_to_visit", ["/about", "/contact", "/team"])
+    delay_ms = profile_snapshot.get("delay_ms", 2000)
+    respect_robots = profile_snapshot.get("respect_robots_txt", True)
+    user_agent = profile_snapshot.get("user_agent", USER_AGENT)
+    min_match_score = profile_snapshot.get("min_match_score", 0)
+    require_email = profile_snapshot.get("require_email", False)
+    require_phone = profile_snapshot.get("require_phone", False)
+    scoring_rules = profile_snapshot.get("scoring_rules", {})
+    excluded_domains = set(d.lower() for d in profile_snapshot.get("excluded_domains", []))
+
+    # Fetch selected sites for this job
+    cur.execute("""
+        SELECT * FROM crm_discovery_sites
+        WHERE scrape_job_id = %s
+        ORDER BY match_score DESC
+    """, (job_id,))
+    sites = cur.fetchall()
+
+    if not sites:
+        print(f"No sites found for job {job_id}")
+        return
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": user_agent})
+
+    stats = {"sites_total": len(sites), "sites_scraped": 0, "leads_found": 0,
+             "leads_filtered": 0, "errors": 0, "pages_scraped": 0}
+
+    for site in sites:
+        domain = site.get("domain", "")
+        homepage = site.get("homepage_url", "")
+
+        if domain.lower() in excluded_domains:
+            continue
+
+        if not homepage:
+            homepage = f"https://{domain}"
+
+        # Check robots.txt
+        if respect_robots and not check_robots_txt(homepage):
+            print(f"Blocked by robots.txt: {domain}")
+            stats["errors"] += 1
+            continue
+
+        page_data_list = []
+        urls_to_visit = [homepage]
+
+        # Add configured paths
+        for path in paths_to_visit[:max_pages_per_site - 1]:
+            if path.startswith("/"):
+                urls_to_visit.append(f"https://{domain}{path}")
+            else:
+                urls_to_visit.append(f"https://{domain}/{path}")
+
+        urls_to_visit = urls_to_visit[:max_pages_per_site]
+        visited = set()
+
+        for url in urls_to_visit:
+            if url in visited:
+                continue
+            visited.add(url)
+
+            try:
+                resp = session.get(url, timeout=15, allow_redirects=True)
+                if resp.status_code != 200:
+                    continue
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+                page_data = extract_generic_data(soup, url, site.get("company_name", ""))
+                page_data_list.append(page_data)
+                stats["pages_scraped"] += 1
+
+            except Exception as e:
+                print(f"Error scraping {url}: {e}")
+                stats["errors"] += 1
+
+            # Rate limit
+            time.sleep(delay_ms / 1000.0)
+
+        if not page_data_list:
+            stats["errors"] += 1
+            continue
+
+        # Merge multi-page data into single lead
+        lead = merge_site_leads(page_data_list, dict(site))
+
+        # Calculate score
+        page_text = " ".join(pd.get("description", "") for pd in page_data_list)
+        score, breakdown = calculate_match_score(lead, page_text, scoring_rules or None)
+        lead["match_score"] = score
+        lead["score_breakdown"] = breakdown
+
+        # Apply quality filters
+        if score < min_match_score:
+            stats["leads_filtered"] += 1
+            continue
+        if require_email and not lead.get("email"):
+            stats["leads_filtered"] += 1
+            continue
+        if require_phone and not lead.get("phone"):
+            stats["leads_filtered"] += 1
+            continue
+
+        # Insert lead
+        try:
+            cur.execute("""
+                INSERT INTO crm_scraped_leads (
+                    job_id, company_name, website, email, phone,
+                    address, description,
+                    match_score, score_breakdown, raw_data
+                ) VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s,
+                    %s, %s::jsonb, %s::jsonb
+                )
+                ON CONFLICT (job_id, website) WHERE website IS NOT NULL
+                DO NOTHING
+            """, (
+                job_id,
+                lead.get("company_name"),
+                lead.get("website"),
+                lead.get("email"),
+                lead.get("phone"),
+                lead.get("address"),
+                lead.get("description"),
+                lead.get("match_score", 0),
+                json.dumps(lead.get("score_breakdown", {})),
+                json.dumps(lead.get("raw_data", {})),
+            ))
+            if cur.rowcount > 0:
+                stats["leads_found"] += 1
+        except Exception as e:
+            print(f"Error inserting lead for {domain}: {e}")
+            stats["errors"] += 1
+
+        stats["sites_scraped"] += 1
+
+        # Update progress
+        cur.execute("""
+            UPDATE crm_scrape_jobs SET stats = %s::jsonb, sites_scraped = %s WHERE id = %s
+        """, (json.dumps(stats), stats["sites_scraped"], job_id))
+
+    return stats
+
+
 def run_job(job_id: str):
     """Main job execution loop."""
     conn = get_db_connection()
@@ -182,11 +420,11 @@ def run_job(job_id: str):
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     try:
-        # Fetch job and source
+        # Fetch job — LEFT JOIN since source_id is now nullable
         cur.execute("""
             SELECT j.*, s.base_url, s.selectors, s.max_pages, s.rate_limit_ms, s.name as source_name
             FROM crm_scrape_jobs j
-            JOIN crm_scrape_sources s ON s.id = j.source_id
+            LEFT JOIN crm_scrape_sources s ON s.id = j.source_id
             WHERE j.id = %s
         """, (job_id,))
         job = cur.fetchone()
@@ -201,6 +439,19 @@ def run_job(job_id: str):
             WHERE id = %s
         """, (job_id,))
 
+        # Mode 2: Discovery-based job
+        if job.get("discovery_run_id") and not job.get("source_id"):
+            print(f"Running discovery-based job {job_id}")
+            stats = run_discovery_based_job(cur, job, job_id)
+            cur.execute("""
+                UPDATE crm_scrape_jobs
+                SET status = 'completed', finished_at = NOW(), stats = %s::jsonb
+                WHERE id = %s
+            """, (json.dumps(stats or {}), job_id))
+            print(f"Discovery job {job_id} completed: {stats}")
+            return
+
+        # Mode 1: Legacy source-based job
         selectors = job["selectors"] if isinstance(job["selectors"], dict) else json.loads(job["selectors"])
         filters = job["filters"] if isinstance(job["filters"], dict) else json.loads(job["filters"] or "{}")
         max_pages = filters.get("max_pages", job["max_pages"]) or 10

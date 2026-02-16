@@ -5783,6 +5783,78 @@ class APIClient {
     return response.json() as Promise<{ created: number; skipped: number; errors: string[]; total_rows: number }>
   }
 
+  // CRM Scrape Profiles
+  async getCRMScrapeProfiles() {
+    return this.get<{ profiles: any[] }>('/api/v1/crm/scraping/profiles')
+  }
+
+  async createCRMScrapeProfile(data: any) {
+    return this.post<{ profile: any }>('/api/v1/crm/scraping/profiles', data)
+  }
+
+  async updateCRMScrapeProfile(id: string, data: any) {
+    return this.patch<{ profile: any }>(`/api/v1/crm/scraping/profiles/${id}`, data)
+  }
+
+  async deleteCRMScrapeProfile(id: string) {
+    return this.delete<any>(`/api/v1/crm/scraping/profiles/${id}`)
+  }
+
+  // CRM Discovery Profiles
+  async getCRMDiscoveryProfiles() {
+    return this.get<{ profiles: any[] }>('/api/v1/crm/scraping/discovery-profiles')
+  }
+
+  async createCRMDiscoveryProfile(data: any) {
+    return this.post<{ profile: any }>('/api/v1/crm/scraping/discovery-profiles', data)
+  }
+
+  async updateCRMDiscoveryProfile(id: string, data: any) {
+    return this.patch<{ profile: any }>(`/api/v1/crm/scraping/discovery-profiles/${id}`, data)
+  }
+
+  async deleteCRMDiscoveryProfile(id: string) {
+    return this.delete<any>(`/api/v1/crm/scraping/discovery-profiles/${id}`)
+  }
+
+  // CRM Discovery Runs & Sites
+  async getCRMDiscoveryRuns(params?: { profile_id?: string; status?: string; limit?: number; offset?: number }) {
+    const sp = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') sp.set(k, String(v))
+      })
+    }
+    const qs = sp.toString()
+    return this.get<{ runs: any[] }>(`/api/v1/crm/scraping/discovery-runs${qs ? `?${qs}` : ''}`)
+  }
+
+  async createCRMDiscoveryRun(profileId: string) {
+    return this.post<{ run: any }>(`/api/v1/crm/scraping/discovery-runs?profile_id=${profileId}`, {})
+  }
+
+  async getCRMDiscoveryRun(id: string) {
+    return this.get<{ run: any }>(`/api/v1/crm/scraping/discovery-runs/${id}`)
+  }
+
+  async getCRMDiscoveryRunSites(runId: string, params?: {
+    min_score?: number; source_type?: string; is_selected?: boolean;
+    search?: string; limit?: number; offset?: number
+  }) {
+    const sp = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') sp.set(k, String(v))
+      })
+    }
+    const qs = sp.toString()
+    return this.get<{ sites: any[]; total: number }>(`/api/v1/crm/scraping/discovery-runs/${runId}/sites${qs ? `?${qs}` : ''}`)
+  }
+
+  async startDiscoveryScraping(runId: string, data: { scrape_profile_id: string; site_ids?: string[]; min_score?: number }) {
+    return this.post<{ job: any; sites_selected: number }>(`/api/v1/crm/scraping/discovery-runs/${runId}/start-scraping`, data)
+  }
+
   // CRM Pricing / Quotes
   async getPricingTiers() {
     return this.get<{ tiers: any; addon_prices: any }>('/api/v1/crm/pricing/tiers')
