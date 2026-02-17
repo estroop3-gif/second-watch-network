@@ -32,7 +32,7 @@ def calculate_match_score(lead: dict, page_text: str = "", scoring_rules: dict =
 
     # Keywords in description/page text (0-35 points)
     max_kw = weights.get("keywords", 35)
-    text = (lead.get("description", "") + " " + page_text).lower()
+    text = ((lead.get("description") or "") + " " + (page_text or "")).lower()
     kw_high = custom_keywords.get("high", KEYWORDS["high"])
     kw_med = custom_keywords.get("medium", KEYWORDS["medium"])
     kw_low = custom_keywords.get("low", KEYWORDS["low"])

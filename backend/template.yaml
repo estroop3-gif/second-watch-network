@@ -333,6 +333,19 @@ Resources:
                 - geo:SearchPlaceIndexForPosition
                 - geo:CalculateRoute
               Resource: "*"
+            - Effect: Allow
+              Action:
+                - ecs:RunTask
+                - ecs:DescribeTasks
+                - ecs:StopTask
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - iam:PassRole
+              Resource: "*"
+              Condition:
+                StringLike:
+                  iam:PassedToService: ecs-tasks.amazonaws.com
 
   # ============================================================================
   # WebSocket API for Real-Time Communications

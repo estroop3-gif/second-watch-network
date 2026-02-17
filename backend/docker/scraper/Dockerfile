@@ -10,7 +10,9 @@ RUN pip install --no-cache-dir \
 
 RUN playwright install chromium
 
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 COPY scraper_worker.py scoring.py .
 
-CMD ["python", "scraper_worker.py"]
+CMD ["python", "-u", "scraper_worker.py"]

@@ -1,4 +1,4 @@
-"""Google Custom Search API adapter for website discovery."""
+"""Serper.dev Google Search adapter for website discovery."""
 
 import os
 import requests
@@ -9,17 +9,16 @@ from sources.base import DiscoverySource
 
 
 class GoogleSearchSource(DiscoverySource):
-    """Discovers business websites via Google Custom Search Engine API."""
+    """Discovers business websites via Serper.dev (Google Search results)."""
 
     def __init__(self):
-        self.api_key = os.environ.get("GOOGLE_API_KEY", "")
-        self.cse_id = os.environ.get("GOOGLE_CSE_ID", "")
+        self.api_key = os.environ.get("SERPER_API_KEY", "")
         self.session = requests.Session()
 
     def search(self, query: str, location: str = "", max_results: int = 100,
                radius_miles: int = 50) -> List[Dict]:
-        if not self.api_key or not self.cse_id:
-            print("Google Search API credentials not configured, skipping")
+        if not self.api_key:
+            print("Serper API key not configured, skipping")
             return []
 
         search_query = query
@@ -29,55 +28,54 @@ class GoogleSearchSource(DiscoverySource):
         results = []
         seen_domains = set()
 
-        # Google CSE returns max 10 per request, paginate up to max_results
-        for start in range(1, min(max_results, 100) + 1, 10):
-            try:
-                resp = self.session.get(
-                    "https://www.googleapis.com/customsearch/v1",
-                    params={
-                        "key": self.api_key,
-                        "cx": self.cse_id,
-                        "q": search_query,
-                        "start": start,
-                        "num": 10,
-                    },
-                    timeout=15,
-                )
-                resp.raise_for_status()
-                data = resp.json()
+        # Serper returns up to 100 results per request
+        num = min(max_results, 100)
 
-                items = data.get("items", [])
-                if not items:
+        try:
+            resp = self.session.post(
+                "https://google.serper.dev/search",
+                headers={
+                    "X-API-KEY": self.api_key,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "q": search_query,
+                    "num": num,
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            items = data.get("organic", [])
+
+            for item in items:
+                url = item.get("link", "")
+                if not url:
+                    continue
+
+                domain = urlparse(url).netloc.lower().replace("www.", "")
+                if domain in seen_domains:
+                    continue
+                seen_domains.add(domain)
+
+                results.append({
+                    "name": item.get("title", "").split(" - ")[0].split(" | ")[0].strip(),
+                    "url": url,
+                    "snippet": item.get("snippet", ""),
+                    "location": location,
+                    "raw": {
+                        "title": item.get("title", ""),
+                        "displayLink": domain,
+                        "formattedUrl": url,
+                        "position": item.get("position", 0),
+                    },
+                })
+
+                if len(results) >= max_results:
                     break
 
-                for item in items:
-                    url = item.get("link", "")
-                    if not url:
-                        continue
-
-                    domain = urlparse(url).netloc.lower().replace("www.", "")
-                    if domain in seen_domains:
-                        continue
-                    seen_domains.add(domain)
-
-                    results.append({
-                        "name": item.get("title", "").split(" - ")[0].split(" | ")[0].strip(),
-                        "url": url,
-                        "snippet": item.get("snippet", ""),
-                        "location": location,
-                        "raw": {
-                            "title": item.get("title", ""),
-                            "displayLink": item.get("displayLink", ""),
-                            "formattedUrl": item.get("formattedUrl", ""),
-                            "pagemap": item.get("pagemap", {}),
-                        },
-                    })
-
-                    if len(results) >= max_results:
-                        return results
-
-            except Exception as e:
-                print(f"Google Search API error (start={start}): {e}")
-                break
+        except Exception as e:
+            print(f"Serper API error: {e}")
 
         return results

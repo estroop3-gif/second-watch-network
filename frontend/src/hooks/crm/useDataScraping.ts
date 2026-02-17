@@ -180,7 +180,7 @@ export function useDiscoveryRun(id: string | undefined) {
   });
 }
 
-export function useDiscoveryRunSites(runId: string | undefined, params?: {
+export function useDiscoveryRunSites(runId: string | undefined, runStatus?: string, params?: {
   min_score?: number; source_type?: string; is_selected?: boolean;
   search?: string; limit?: number; offset?: number;
 }) {
@@ -188,6 +188,7 @@ export function useDiscoveryRunSites(runId: string | undefined, params?: {
     queryKey: ['crm-discovery-sites', runId, params],
     queryFn: () => api.getCRMDiscoveryRunSites(runId!, params),
     enabled: !!runId,
+    refetchInterval: (runStatus === 'running') ? 5000 : false,
   });
 }
 
@@ -212,6 +213,11 @@ export function useScrapeJobs(params?: { source_id?: string; status?: string }) 
   return useQuery({
     queryKey: ['crm-scrape-jobs', params],
     queryFn: () => api.getCRMScrapeJobs(params),
+    refetchInterval: (query) => {
+      const jobs = query.state.data?.jobs;
+      if (jobs?.some((j: any) => j.status === 'queued' || j.status === 'running')) return 5000;
+      return false;
+    },
   });
 }
 
@@ -270,6 +276,18 @@ export function useBulkRejectLeads() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: { lead_ids: string[] }) => api.bulkRejectCRMLeads(data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-scraped-leads'] });
+      qc.invalidateQueries({ queryKey: ['crm-scrape-jobs'] });
+    },
+  });
+}
+
+export function useRescrapeLeads() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { scrape_profile_id: string; lead_ids?: string[]; filters?: Record<string, any> }) =>
+      api.rescrapeCRMLeads(data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['crm-scraped-leads'] });
       qc.invalidateQueries({ queryKey: ['crm-scrape-jobs'] });

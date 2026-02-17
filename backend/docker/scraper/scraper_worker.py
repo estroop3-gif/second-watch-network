@@ -22,12 +22,16 @@ import logging
 
 from scoring import calculate_match_score
 
-USER_AGENT = os.environ.get("USER_AGENT", "SWN-LeadFinder/1.0 (business directory research)")
-HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT_MS", "30000")) / 1000.0  # convert ms → seconds
+USER_AGENT = os.environ.get("USER_AGENT", "Mozilla/5.0 (compatible; SWN-LeadFinder/1.0)")
+HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT_MS", "10000")) / 1000.0  # 10s default (was 30s)
 
-# Configure log level from env
+# Configure log level from env — force unbuffered output for CloudWatch
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stdout,
+)
 logger = logging.getLogger("scraper_worker")
 
 # Free email domains to skip (configurable via env)
@@ -187,19 +191,56 @@ def scrape_page(url: str, selectors: dict, rate_limit_ms: int, session: requests
     return leads, next_url
 
 
-def extract_generic_data(soup, url: str, company_name: str = "") -> dict:
-    """Extract emails, phones, meta info from a page using regex patterns."""
-    text = soup.get_text(" ", strip=True)
-    html = str(soup)
+def fetch_page_safe(session: requests.Session, url: str, timeout: float) -> requests.Response | None:
+    """Fetch a URL, returning None on any error instead of raising."""
+    try:
+        resp = session.get(url, timeout=timeout, allow_redirects=True)
+        if resp.status_code == 200:
+            return resp
+        # Log non-200 but don't treat as error — pages like /team often 404
+        logger.debug(f"HTTP {resp.status_code} for {url}")
+        return None
+    except requests.exceptions.Timeout:
+        logger.debug(f"Timeout fetching {url}")
+        return None
+    except requests.exceptions.ConnectionError:
+        logger.debug(f"Connection error for {url}")
+        return None
+    except requests.exceptions.TooManyRedirects:
+        logger.debug(f"Too many redirects for {url}")
+        return None
+    except requests.exceptions.SSLError:
+        logger.debug(f"SSL error for {url}")
+        return None
+    except Exception as e:
+        logger.debug(f"Error fetching {url}: {type(e).__name__}: {e}")
+        return None
 
-    # Extract emails
+
+def extract_generic_data(soup, url: str, company_name: str = "") -> dict:
+    """Extract emails, phones, meta info from a page using regex patterns and HTML links."""
+    text = soup.get_text(" ", strip=True)
+
+    # Extract emails from visible text
     email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
     emails = list(set(re.findall(email_pattern, text)))
     emails = [clean_email(e) for e in emails if not is_free_email(e)]
 
-    # Extract phones (US format focus)
+    # Extract phones from visible text (US format focus)
     phone_pattern = r'[\+]?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}'
     phones = list(set(re.findall(phone_pattern, text)))
+
+    # Extract emails from mailto: links and phones from tel: links (often hidden in href)
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href.startswith("mailto:"):
+            email = clean_email(href)
+            if email and "@" in email and not is_free_email(email) and email not in emails:
+                emails.append(email)
+        elif href.startswith("tel:"):
+            phone = href.replace("tel:", "").strip()
+            if phone and phone not in phones:
+                phones.append(phone)
 
     # Extract meta description
     meta_desc = ""
@@ -224,11 +265,34 @@ def extract_generic_data(soup, url: str, company_name: str = "") -> dict:
             address = m.group(0).strip()
             break
 
+    # Parse city/state/country from address
+    city = ""
+    state = ""
+    country = ""
+    if address:
+        parts = [p.strip() for p in address.split(",")]
+        if len(parts) >= 3:
+            city = parts[-3]
+            state = parts[-2]
+            country = parts[-1]
+        elif len(parts) == 2:
+            city = parts[0]
+            state = parts[1]
+        # Try to extract state/zip from last part (e.g. "CA 90210")
+        if state and not country:
+            state_zip = state.strip().split()
+            if len(state_zip) >= 1:
+                state = state_zip[0]
+            country = "US"
+
     return {
         "emails": emails[:5],
         "phones": phones[:3],
         "description": meta_desc or title,
         "address": address,
+        "city": city,
+        "state": state,
+        "country": country,
         "title": title,
         "company_name": company_name or title.split(" - ")[0].split(" | ")[0].strip() if title else "",
     }
@@ -240,6 +304,9 @@ def merge_site_leads(page_data_list: list, site: dict) -> dict:
     all_phones = []
     descriptions = []
     address = ""
+    city = ""
+    state = ""
+    country = ""
     company = site.get("company_name", "")
 
     for pd in page_data_list:
@@ -249,6 +316,12 @@ def merge_site_leads(page_data_list: list, site: dict) -> dict:
             descriptions.append(pd["description"])
         if pd.get("address") and not address:
             address = pd["address"]
+        if pd.get("city") and not city:
+            city = pd["city"]
+        if pd.get("state") and not state:
+            state = pd["state"]
+        if pd.get("country") and not country:
+            country = pd["country"]
         if pd.get("company_name") and not company:
             company = pd["company_name"]
 
@@ -259,9 +332,12 @@ def merge_site_leads(page_data_list: list, site: dict) -> dict:
     return {
         "company_name": company or site.get("domain", ""),
         "website": site.get("homepage_url", ""),
-        "email": emails[0] if emails else None,
-        "phone": phones[0] if phones else None,
+        "email": "\n".join(emails[:10]) if emails else None,
+        "phone": "\n".join(phones[:5]) if phones else None,
         "address": address,
+        "city": city,
+        "state": state,
+        "country": country,
         "description": descriptions[0] if descriptions else None,
         "raw_data": {
             "domain": site.get("domain", ""),
@@ -281,7 +357,7 @@ def run_discovery_based_job(cur, job: dict, job_id: str):
 
     max_pages_per_site = profile_snapshot.get("max_pages_per_site", 5)
     paths_to_visit = profile_snapshot.get("paths_to_visit", ["/about", "/contact", "/team"])
-    delay_ms = profile_snapshot.get("delay_ms", 2000)
+    delay_ms = profile_snapshot.get("delay_ms", 1000)  # Reduced default: 1s between pages
     respect_robots = profile_snapshot.get("respect_robots_txt", True)
     user_agent = profile_snapshot.get("user_agent", USER_AGENT)
     min_match_score = profile_snapshot.get("min_match_score", 0)
@@ -299,69 +375,92 @@ def run_discovery_based_job(cur, job: dict, job_id: str):
     sites = cur.fetchall()
 
     if not sites:
-        print(f"No sites found for job {job_id}")
+        logger.warning(f"No sites found for job {job_id}")
         return
 
     session = requests.Session()
-    session.headers.update({"User-Agent": user_agent})
+    session.headers.update({
+        "User-Agent": user_agent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+    })
 
     stats = {"sites_total": len(sites), "sites_scraped": 0, "leads_found": 0,
-             "leads_filtered": 0, "errors": 0, "pages_scraped": 0}
+             "leads_filtered": 0, "errors": 0, "pages_scraped": 0,
+             "sites_skipped": 0, "pages_failed": 0}
 
-    for site in sites:
+    logger.info(f"Starting scrape of {len(sites)} sites for job {job_id}")
+
+    for idx, site in enumerate(sites):
         domain = site.get("domain", "")
         homepage = site.get("homepage_url", "")
 
         if domain.lower() in excluded_domains:
+            stats["sites_skipped"] += 1
             continue
 
         if not homepage:
             homepage = f"https://{domain}"
 
-        # Check robots.txt
+        # Check robots.txt — soft skip, not an error
         if respect_robots and not check_robots_txt(homepage):
-            print(f"Blocked by robots.txt: {domain}")
-            stats["errors"] += 1
+            logger.info(f"[{idx+1}/{len(sites)}] Skipped {domain} (robots.txt)")
+            stats["sites_skipped"] += 1
             continue
 
+        # Try to fetch homepage first — if it fails, skip the whole site
+        logger.info(f"[{idx+1}/{len(sites)}] Scraping {domain}...")
+        homepage_resp = fetch_page_safe(session, homepage, HTTP_TIMEOUT)
+
         page_data_list = []
-        urls_to_visit = [homepage]
+        if homepage_resp:
+            soup = BeautifulSoup(homepage_resp.text, "html.parser")
+            page_data = extract_generic_data(soup, homepage, site.get("company_name", ""))
+            page_data_list.append(page_data)
+            stats["pages_scraped"] += 1
 
-        # Add configured paths
-        for path in paths_to_visit[:max_pages_per_site - 1]:
+            # Smart link discovery — scan homepage for contact-like internal links
+            CONTACT_KEYWORDS = {"contact", "about", "team", "staff", "people", "reach",
+                                "get-in-touch", "connect", "our-team", "about-us", "contact-us"}
+            discovered_paths = set()
+            for a_tag in soup.find_all("a", href=True):
+                href = a_tag["href"].lower().strip()
+                # Only internal links
+                if href.startswith("/") or href.startswith(f"https://{domain.lower()}") or href.startswith(f"http://{domain.lower()}"):
+                    parsed_href = urlparse(href)
+                    path_part = parsed_href.path.rstrip("/").lower()
+                    if path_part and any(kw in path_part for kw in CONTACT_KEYWORDS):
+                        discovered_paths.add(path_part)
+
+            # Merge discovered paths with configured paths (dedup, preserving order)
+            all_paths = list(dict.fromkeys(list(paths_to_visit) + [p for p in discovered_paths if p not in paths_to_visit]))
+        else:
+            # Homepage unreachable — skip this site entirely, it's not a real error
+            logger.info(f"  Homepage unreachable for {domain}, skipping")
+            stats["sites_skipped"] += 1
+            # Brief delay before next site
+            time.sleep(0.5)
+            continue
+
+        # Scrape additional paths (contact, about, etc.) — failures here are expected
+        for path in all_paths[:max_pages_per_site - 1]:
             if path.startswith("/"):
-                urls_to_visit.append(f"https://{domain}{path}")
+                url = f"https://{domain}{path}"
             else:
-                urls_to_visit.append(f"https://{domain}/{path}")
+                url = f"https://{domain}/{path}"
 
-        urls_to_visit = urls_to_visit[:max_pages_per_site]
-        visited = set()
+            # Brief delay between pages on same site
+            time.sleep(delay_ms / 1000.0)
 
-        for url in urls_to_visit:
-            if url in visited:
-                continue
-            visited.add(url)
-
-            try:
-                resp = session.get(url, timeout=HTTP_TIMEOUT, allow_redirects=True)
-                if resp.status_code != 200:
-                    continue
-
+            resp = fetch_page_safe(session, url, HTTP_TIMEOUT)
+            if resp:
                 soup = BeautifulSoup(resp.text, "html.parser")
                 page_data = extract_generic_data(soup, url, site.get("company_name", ""))
                 page_data_list.append(page_data)
                 stats["pages_scraped"] += 1
-
-            except Exception as e:
-                print(f"Error scraping {url}: {e}")
-                stats["errors"] += 1
-
-            # Rate limit
-            time.sleep(delay_ms / 1000.0)
-
-        if not page_data_list:
-            stats["errors"] += 1
-            continue
+            else:
+                stats["pages_failed"] += 1
 
         # Merge multi-page data into single lead
         lead = merge_site_leads(page_data_list, dict(site))
@@ -375,12 +474,19 @@ def run_discovery_based_job(cur, job: dict, job_id: str):
         # Apply quality filters
         if score < min_match_score:
             stats["leads_filtered"] += 1
+            logger.debug(f"  Filtered {domain} (score {score} < {min_match_score})")
+            stats["sites_scraped"] += 1
+            _update_progress(cur, job_id, stats)
             continue
         if require_email and not lead.get("email"):
             stats["leads_filtered"] += 1
+            stats["sites_scraped"] += 1
+            _update_progress(cur, job_id, stats)
             continue
         if require_phone and not lead.get("phone"):
             stats["leads_filtered"] += 1
+            stats["sites_scraped"] += 1
+            _update_progress(cur, job_id, stats)
             continue
 
         # Insert lead
@@ -388,11 +494,11 @@ def run_discovery_based_job(cur, job: dict, job_id: str):
             cur.execute("""
                 INSERT INTO crm_scraped_leads (
                     job_id, company_name, website, email, phone,
-                    address, description,
+                    address, city, state, country, description,
                     match_score, score_breakdown, raw_data
                 ) VALUES (
                     %s, %s, %s, %s, %s,
-                    %s, %s,
+                    %s, %s, %s, %s, %s,
                     %s, %s::jsonb, %s::jsonb
                 )
                 ON CONFLICT (job_id, website) WHERE website IS NOT NULL
@@ -404,6 +510,9 @@ def run_discovery_based_job(cur, job: dict, job_id: str):
                 lead.get("email"),
                 lead.get("phone"),
                 lead.get("address"),
+                lead.get("city"),
+                lead.get("state"),
+                lead.get("country"),
                 lead.get("description"),
                 lead.get("match_score", 0),
                 json.dumps(lead.get("score_breakdown", {})),
@@ -411,18 +520,26 @@ def run_discovery_based_job(cur, job: dict, job_id: str):
             ))
             if cur.rowcount > 0:
                 stats["leads_found"] += 1
+                logger.info(f"  Lead: {lead.get('company_name')} | email: {lead.get('email') or 'none'} | score: {score}")
         except Exception as e:
-            print(f"Error inserting lead for {domain}: {e}")
+            logger.error(f"  DB insert error for {domain}: {e}")
             stats["errors"] += 1
 
         stats["sites_scraped"] += 1
+        _update_progress(cur, job_id, stats)
 
-        # Update progress
-        cur.execute("""
-            UPDATE crm_scrape_jobs SET stats = %s::jsonb, sites_scraped = %s WHERE id = %s
-        """, (json.dumps(stats), stats["sites_scraped"], job_id))
+        # Brief delay between sites (shorter than between pages)
+        time.sleep(0.5)
 
+    logger.info(f"Job {job_id} finished: {json.dumps(stats)}")
     return stats
+
+
+def _update_progress(cur, job_id: str, stats: dict):
+    """Update job progress in DB."""
+    cur.execute("""
+        UPDATE crm_scrape_jobs SET stats = %s::jsonb, sites_scraped = %s WHERE id = %s
+    """, (json.dumps(stats), stats["sites_scraped"], job_id))
 
 
 def run_job(job_id: str):
@@ -442,7 +559,7 @@ def run_job(job_id: str):
         job = cur.fetchone()
 
         if not job:
-            print(f"Job {job_id} not found")
+            logger.error(f"Job {job_id} not found")
             sys.exit(1)
 
         # Update status to running
@@ -453,14 +570,14 @@ def run_job(job_id: str):
 
         # Mode 2: Discovery-based job
         if job.get("discovery_run_id") and not job.get("source_id"):
-            print(f"Running discovery-based job {job_id}")
+            logger.info(f"Running discovery-based job {job_id}")
             stats = run_discovery_based_job(cur, job, job_id)
             cur.execute("""
                 UPDATE crm_scrape_jobs
                 SET status = 'completed', finished_at = NOW(), stats = %s::jsonb
                 WHERE id = %s
             """, (json.dumps(stats or {}), job_id))
-            print(f"Discovery job {job_id} completed: {stats}")
+            logger.info(f"Discovery job {job_id} completed: {stats}")
             return
 
         # Mode 1: Legacy source-based job
@@ -477,7 +594,7 @@ def run_job(job_id: str):
                 SET status = 'failed', finished_at = NOW(), error_message = 'Blocked by robots.txt'
                 WHERE id = %s
             """, (job_id,))
-            print(f"Blocked by robots.txt for {base_url}")
+            logger.warning(f"Blocked by robots.txt for {base_url}")
             return
 
         session = requests.Session()
@@ -491,7 +608,7 @@ def run_job(job_id: str):
                 break
 
             try:
-                print(f"Scraping page {page_num + 1}: {current_url}")
+                logger.info(f"Scraping page {page_num + 1}: {current_url}")
                 leads, next_url = scrape_page(current_url, selectors, rate_limit_ms, session)
                 stats["pages_scraped"] += 1
 
@@ -529,7 +646,7 @@ def run_job(job_id: str):
                         else:
                             stats["duplicates_skipped"] += 1
                     except Exception as e:
-                        print(f"Error inserting lead: {e}")
+                        logger.error(f"Error inserting lead: {e}")
                         stats["errors"] += 1
 
                 # Update stats incrementally
@@ -544,7 +661,7 @@ def run_job(job_id: str):
                     time.sleep(rate_limit_ms / 1000.0)
 
             except Exception as e:
-                print(f"Error scraping page {current_url}: {e}")
+                logger.error(f"Error scraping page {current_url}: {e}")
                 stats["errors"] += 1
                 break
 
@@ -554,10 +671,10 @@ def run_job(job_id: str):
             SET status = 'completed', finished_at = NOW(), stats = %s::jsonb
             WHERE id = %s
         """, (json.dumps(stats), job_id))
-        print(f"Job {job_id} completed: {stats}")
+        logger.info(f"Job {job_id} completed: {stats}")
 
     except Exception as e:
-        print(f"Job {job_id} failed: {e}")
+        logger.error(f"Job {job_id} failed: {e}")
         try:
             cur.execute("""
                 UPDATE crm_scrape_jobs
@@ -575,8 +692,8 @@ def run_job(job_id: str):
 if __name__ == "__main__":
     job_id = os.environ.get("JOB_ID")
     if not job_id:
-        print("JOB_ID environment variable not set")
+        logger.error("JOB_ID environment variable not set")
         sys.exit(1)
 
-    print(f"Starting scraper worker for job {job_id}")
+    logger.info(f"Starting scraper worker for job {job_id}")
     run_job(job_id)

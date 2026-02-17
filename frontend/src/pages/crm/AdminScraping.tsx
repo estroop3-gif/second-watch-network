@@ -13,6 +13,7 @@ import {
   useMergeScrapedLead,
   useExportLeads,
   useBulkImportContacts,
+  useRescrapeLeads,
   useScrapeProfiles,
   useCreateScrapeProfile,
   useUpdateScrapeProfile,
@@ -85,6 +86,8 @@ import {
   MapPin,
   Zap,
   BarChart3,
+  AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 
 const TABS = ['Discovery', 'Scrape Profiles', 'Jobs', 'Staged Leads', 'Clean & Import', 'Sources', 'Settings'] as const;
@@ -118,7 +121,7 @@ function ScoreBar({ score }: { score: number }) {
 // Discovery Tab — 3-level drill-down
 // ============================================================================
 
-function DiscoveryTab() {
+function DiscoveryTab({ onNavigateToJobs }: { onNavigateToJobs?: () => void } = {}) {
   const { toast } = useToast();
   const { data: profilesData, isLoading: loadingProfiles } = useDiscoveryProfiles();
   const { data: scrapeProfilesData } = useScrapeProfiles();
@@ -164,9 +167,10 @@ function DiscoveryTab() {
   const { data: runDetailData } = useDiscoveryRun(selectedRunId || undefined);
   const selectedRun = runDetailData?.run;
 
-  // Sites for selected run
+  // Sites for selected run (polls while running)
   const { data: sitesData, isLoading: loadingSites } = useDiscoveryRunSites(
     selectedRunId || undefined,
+    selectedRun?.status,
     {
       min_score: siteMinScore ? parseInt(siteMinScore) : undefined,
       search: siteSearch || undefined,
@@ -250,9 +254,10 @@ function DiscoveryTab() {
 
   const handleRunDiscovery = async (profileId: string) => {
     try {
-      await createRun.mutateAsync(profileId);
+      const result = await createRun.mutateAsync(profileId);
       toast({ title: 'Discovery run queued' });
       setSelectedProfileId(profileId);
+      if (result?.run?.id) setSelectedRunId(result.run.id);
     } catch (err: any) {
       toast({ title: 'Error', description: err.message, variant: 'destructive' });
     }
@@ -269,9 +274,10 @@ function DiscoveryTab() {
           min_score: scrapingMinScore ? parseInt(scrapingMinScore) : undefined,
         },
       });
-      toast({ title: `Scraping started: ${result.sites_selected} sites selected` });
+      toast({ title: `Scraping started: ${result.sites_selected} sites selected`, description: 'Switching to Jobs tab to track progress...' });
       setShowScrapingDialog(false);
       setSelectedSiteIds(new Set());
+      if (onNavigateToJobs) onNavigateToJobs();
     } catch (err: any) {
       toast({ title: 'Error', description: err.message, variant: 'destructive' });
     }
@@ -301,9 +307,17 @@ function DiscoveryTab() {
         </div>
 
         {selectedRun && (
-          <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4 mb-4">
+          <div className={`border rounded-lg p-4 mb-4 ${selectedRun.status === 'failed' ? 'bg-red-500/5 border-red-500/30' : 'bg-charcoal-black border-muted-gray/20'}`}>
             <div className="flex items-center justify-between mb-2">
-              <Badge className={STATUS_COLORS[selectedRun.status] || ''}>{selectedRun.status}</Badge>
+              <div className="flex items-center gap-2">
+                <Badge className={STATUS_COLORS[selectedRun.status] || ''}>{selectedRun.status}</Badge>
+                {(selectedRun.status === 'queued' || selectedRun.status === 'running') && (
+                  <span className="flex items-center gap-1.5 text-xs text-blue-400">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    {selectedRun.status === 'queued' ? 'Waiting for worker to start...' : 'Discovering sites...'}
+                  </span>
+                )}
+              </div>
               <span className="text-xs text-muted-gray">{new Date(selectedRun.created_at).toLocaleString()}</span>
             </div>
             <div className="grid grid-cols-3 gap-3 text-sm">
@@ -311,7 +325,18 @@ function DiscoveryTab() {
               <div><span className="text-muted-gray">Selected:</span> <span className="text-bone-white">{selectedRun.sites_selected_count}</span></div>
               <div><span className="text-muted-gray">Created by:</span> <span className="text-bone-white">{selectedRun.created_by_name}</span></div>
             </div>
-            {selectedRun.error_message && <p className="text-xs text-red-400 mt-2">{selectedRun.error_message}</p>}
+            {selectedRun.error_message && (
+              <div className="mt-3 p-2 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-400">
+                <strong>Error:</strong> {selectedRun.error_message}
+              </div>
+            )}
+            {selectedRun.source_stats && typeof selectedRun.source_stats === 'object' && Object.keys(selectedRun.source_stats).length > 0 && (
+              <div className="mt-2 flex gap-4 text-xs text-muted-gray">
+                {Object.entries(selectedRun.source_stats).map(([source, stats]: [string, any]) => (
+                  <span key={source}>{source}: {stats.queries} queries, {stats.results} results, {stats.inserted} new, {stats.filtered} filtered</span>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -396,8 +421,30 @@ function DiscoveryTab() {
             </table>
             {sites.length === 0 && (
               <div className="text-center py-12 text-muted-gray">
-                <Globe className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                <p>No sites found{selectedRun?.status === 'running' ? ' yet — run in progress...' : '.'}</p>
+                {selectedRun?.status === 'queued' ? (
+                  <>
+                    <Loader2 className="h-8 w-8 mx-auto mb-3 animate-spin text-blue-400" />
+                    <p className="text-bone-white font-medium mb-1">Starting discovery worker...</p>
+                    <p className="text-xs">The ECS task is launching. This usually takes 30-60 seconds.</p>
+                  </>
+                ) : selectedRun?.status === 'running' ? (
+                  <>
+                    <Loader2 className="h-8 w-8 mx-auto mb-3 animate-spin text-blue-400" />
+                    <p className="text-bone-white font-medium mb-1">Searching for sites...</p>
+                    <p className="text-xs">Results will appear here as they're discovered. This page auto-refreshes.</p>
+                  </>
+                ) : selectedRun?.status === 'failed' ? (
+                  <>
+                    <AlertTriangle className="h-8 w-8 mx-auto mb-3 text-red-400" />
+                    <p className="text-red-400 font-medium mb-1">Discovery run failed</p>
+                    <p className="text-xs">Check the error message above for details.</p>
+                  </>
+                ) : (
+                  <>
+                    <Globe className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                    <p>No sites found.</p>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -1151,6 +1198,19 @@ function JobsTab() {
   const jobs = data?.jobs || [];
   const selectedJob = jobDetailData?.job || null;
 
+  const activeCount = jobs.filter((j: any) => j.status === 'queued' || j.status === 'running').length;
+
+  const formatElapsed = (createdAt: string, finishedAt?: string) => {
+    const start = new Date(createdAt).getTime();
+    const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
+    const secs = Math.floor((end - start) / 1000);
+    if (secs < 60) return `${secs}s`;
+    const mins = Math.floor(secs / 60);
+    const remainSecs = secs % 60;
+    if (mins < 60) return `${mins}m ${remainSecs}s`;
+    return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+  };
+
   const handleCreateJob = async () => {
     if (!newJobSourceId) return;
     try {
@@ -1189,6 +1249,12 @@ function JobsTab() {
               <SelectItem value="failed">Failed</SelectItem>
             </SelectContent>
           </Select>
+          {activeCount > 0 && (
+            <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30">
+              <Loader2 className="h-3 w-3 animate-spin mr-1" />
+              {activeCount} active
+            </Badge>
+          )}
         </div>
         <Button onClick={() => setShowCreateDialog(true)} size="sm" disabled={enabledSources.length === 0}>
           <Play className="h-4 w-4 mr-1" /> New Job
@@ -1199,8 +1265,14 @@ function JobsTab() {
         {jobs.map((job: any) => {
           const stats = typeof job.stats === 'string' ? JSON.parse(job.stats) : (job.stats || {});
           const isDiscovery = !!job.discovery_profile_name;
+          const isActive = job.status === 'queued' || job.status === 'running';
+          const progressPct = isDiscovery && job.total_sites > 0
+            ? Math.round(((job.sites_scraped || 0) / job.total_sites) * 100)
+            : 0;
           return (
-            <div key={job.id} className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4 cursor-pointer hover:border-muted-gray/40 transition-colors" onClick={() => setSelectedJobId(job.id)}>
+            <div key={job.id} className={`bg-charcoal-black border rounded-lg p-4 cursor-pointer transition-colors ${
+              isActive ? 'border-blue-500/40 hover:border-blue-500/60' : job.status === 'failed' ? 'border-red-500/30 hover:border-red-500/50' : 'border-muted-gray/20 hover:border-muted-gray/40'
+            }`} onClick={() => setSelectedJobId(job.id)}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3 min-w-0">
                   <Badge className={STATUS_COLORS[job.status] || ''}>{job.status}</Badge>
@@ -1224,20 +1296,57 @@ function JobsTab() {
                     <span>{job.sites_scraped || 0}/{job.total_sites} sites</span>
                   )}
                   {stats.pages_scraped > 0 && <span>{stats.pages_scraped} pages</span>}
+                  {isActive && <span className="text-blue-400">{formatElapsed(job.created_at)}</span>}
                   <span>{new Date(job.created_at).toLocaleString()}</span>
                   <Eye className="h-3.5 w-3.5" />
                 </div>
               </div>
-              {job.status === 'running' && (
-                <div className="mt-2 flex items-center gap-2 text-xs text-blue-400">
+
+              {/* Queued state */}
+              {job.status === 'queued' && (
+                <div className="mt-2 flex items-center gap-2 text-xs text-amber-400">
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  {isDiscovery
-                    ? `Scraping... ${job.sites_scraped || 0}/${job.total_sites} sites`
-                    : `Scraping... ${stats.pages_scraped || 0} pages, ${stats.leads_found || 0} leads found`
-                  }
+                  Launching ECS task... waiting for container to start
                 </div>
               )}
-              {job.error_message && <p className="text-xs text-red-400 mt-2 truncate">{job.error_message}</p>}
+
+              {/* Running state with progress */}
+              {job.status === 'running' && (
+                <div className="mt-2 space-y-1.5">
+                  <div className="flex items-center gap-2 text-xs text-blue-400">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    {isDiscovery
+                      ? `Scraping... ${job.sites_scraped || 0}/${job.total_sites} sites (${stats.leads_found || 0} leads, ${stats.sites_skipped || 0} skipped)`
+                      : `Scraping... ${stats.pages_scraped || 0} pages, ${stats.leads_found || 0} leads found`
+                    }
+                  </div>
+                  {isDiscovery && job.total_sites > 0 && (
+                    <div className="w-full h-1.5 rounded-full bg-muted-gray/20 overflow-hidden">
+                      <div className="h-full rounded-full bg-blue-500 transition-all duration-500" style={{ width: `${Math.max(progressPct, 2)}%` }} />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Completed state summary */}
+              {job.status === 'completed' && (stats.leads_found > 0 || stats.sites_scraped > 0) && (
+                <div className="mt-2 flex items-center gap-3 text-xs text-green-400">
+                  <CheckCircle2 className="h-3 w-3" />
+                  {isDiscovery
+                    ? `${stats.sites_scraped || 0} sites scraped, ${stats.leads_found || 0} leads, ${stats.sites_skipped || 0} skipped`
+                    : `${stats.leads_found || 0} leads found, ${stats.duplicates_skipped || 0} duplicates skipped`
+                  }
+                  {job.finished_at && <span className="text-muted-gray">({formatElapsed(job.created_at, job.finished_at)})</span>}
+                </div>
+              )}
+
+              {/* Failed state */}
+              {job.status === 'failed' && (
+                <div className="mt-2 flex items-center gap-2 text-xs text-red-400">
+                  <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+                  <span className="truncate">{job.error_message || 'Job failed — check CloudWatch logs for details'}</span>
+                </div>
+              )}
             </div>
           );
         })}
@@ -1245,6 +1354,7 @@ function JobsTab() {
           <div className="text-center py-12 text-muted-gray">
             <Play className="h-8 w-8 mx-auto mb-2 opacity-50" />
             <p>No scrape jobs yet.</p>
+            <p className="text-xs mt-1">Start scraping from the Discovery tab, or create a manual job from a source.</p>
           </div>
         )}
       </div>
@@ -1291,8 +1401,65 @@ function JobsTab() {
           {selectedJob && (() => {
             const stats = typeof selectedJob.stats === 'string' ? JSON.parse(selectedJob.stats) : (selectedJob.stats || {});
             const isDiscovery = !!selectedJob.discovery_profile_name;
+            const isActive = selectedJob.status === 'queued' || selectedJob.status === 'running';
+            const progressPct = isDiscovery && selectedJob.total_sites > 0
+              ? Math.round(((selectedJob.sites_scraped || 0) / selectedJob.total_sites) * 100)
+              : 0;
             return (
               <div className="space-y-3">
+                {/* Status banner for active jobs */}
+                {isActive && (
+                  <div className={`rounded-lg p-3 ${selectedJob.status === 'queued' ? 'bg-amber-500/10 border border-amber-500/20' : 'bg-blue-500/10 border border-blue-500/20'}`}>
+                    <div className="flex items-center gap-2 text-sm">
+                      <Loader2 className={`h-4 w-4 animate-spin ${selectedJob.status === 'queued' ? 'text-amber-400' : 'text-blue-400'}`} />
+                      <span className={selectedJob.status === 'queued' ? 'text-amber-400' : 'text-blue-400'}>
+                        {selectedJob.status === 'queued'
+                          ? 'Launching ECS Fargate task...'
+                          : isDiscovery
+                            ? `Scraping ${selectedJob.sites_scraped || 0} of ${selectedJob.total_sites} sites...`
+                            : `Scraping... ${stats.pages_scraped || 0} pages processed`
+                        }
+                      </span>
+                    </div>
+                    {selectedJob.status === 'running' && isDiscovery && selectedJob.total_sites > 0 && (
+                      <div className="mt-2 space-y-1">
+                        <div className="w-full h-2 rounded-full bg-muted-gray/20 overflow-hidden">
+                          <div className="h-full rounded-full bg-blue-500 transition-all duration-500" style={{ width: `${Math.max(progressPct, 2)}%` }} />
+                        </div>
+                        <p className="text-xs text-muted-gray text-right">{progressPct}% complete</p>
+                      </div>
+                    )}
+                    <p className="text-xs text-muted-gray mt-1">Elapsed: {formatElapsed(selectedJob.created_at)} &middot; Auto-refreshing every 5s</p>
+                  </div>
+                )}
+
+                {/* Failed banner */}
+                {selectedJob.status === 'failed' && (
+                  <div className="rounded-lg p-3 bg-red-500/10 border border-red-500/20">
+                    <div className="flex items-center gap-2 text-sm text-red-400">
+                      <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                      <span className="font-medium">Job Failed</span>
+                    </div>
+                    <p className="text-xs text-red-300 mt-1 break-words">{selectedJob.error_message || 'Unknown error — check CloudWatch logs at /ecs/swn-scraper'}</p>
+                    {selectedJob.finished_at && (
+                      <p className="text-xs text-muted-gray mt-1">Failed after {formatElapsed(selectedJob.created_at, selectedJob.finished_at)}</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Completed banner */}
+                {selectedJob.status === 'completed' && (
+                  <div className="rounded-lg p-3 bg-green-500/10 border border-green-500/20">
+                    <div className="flex items-center gap-2 text-sm text-green-400">
+                      <CheckCircle2 className="h-4 w-4" />
+                      <span className="font-medium">Job Completed</span>
+                    </div>
+                    {selectedJob.finished_at && (
+                      <p className="text-xs text-muted-gray mt-1">Finished in {formatElapsed(selectedJob.created_at, selectedJob.finished_at)}</p>
+                    )}
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-2 text-sm">
                   <div>
                     <span className="text-muted-gray">Source:</span>
@@ -1316,6 +1483,12 @@ function JobsTab() {
                     <span className="text-muted-gray">Created:</span>
                     <p className="text-bone-white text-xs">{new Date(selectedJob.created_at).toLocaleString()}</p>
                   </div>
+                  {selectedJob.started_at && (
+                    <div>
+                      <span className="text-muted-gray">Started:</span>
+                      <p className="text-bone-white text-xs">{new Date(selectedJob.started_at).toLocaleString()}</p>
+                    </div>
+                  )}
                 </div>
                 <div className="border-t border-muted-gray/20 pt-3">
                   <h4 className="text-sm font-medium text-bone-white mb-2">Stats</h4>
@@ -1334,6 +1507,24 @@ function JobsTab() {
                       <p className="text-muted-gray text-xs">Leads Found</p>
                       <p className="text-bone-white text-lg font-medium">{stats.leads_found || 0}</p>
                     </div>
+                    {isDiscovery && (
+                      <div className="bg-muted-gray/10 rounded p-2">
+                        <p className="text-muted-gray text-xs">Sites Skipped</p>
+                        <p className="text-bone-white text-lg font-medium">{stats.sites_skipped || 0}</p>
+                      </div>
+                    )}
+                    {isDiscovery && (
+                      <div className="bg-muted-gray/10 rounded p-2">
+                        <p className="text-muted-gray text-xs">Pages Failed</p>
+                        <p className={`text-lg font-medium ${(stats.pages_failed || 0) > 0 ? 'text-amber-400' : 'text-bone-white'}`}>{stats.pages_failed || 0}</p>
+                      </div>
+                    )}
+                    {isDiscovery && (
+                      <div className="bg-muted-gray/10 rounded p-2">
+                        <p className="text-muted-gray text-xs">Filtered Out</p>
+                        <p className="text-bone-white text-lg font-medium">{stats.leads_filtered || 0}</p>
+                      </div>
+                    )}
                     {!isDiscovery && (
                       <div className="bg-muted-gray/10 rounded p-2">
                         <p className="text-muted-gray text-xs">Duplicates Skipped</p>
@@ -1353,11 +1544,6 @@ function JobsTab() {
                     </div>
                   )}
                 </div>
-                {selectedJob.error_message && (
-                  <div className="border-t border-muted-gray/20 pt-3">
-                    <p className="text-xs text-red-400">{selectedJob.error_message}</p>
-                  </div>
-                )}
                 {selectedJob.ecs_task_arn && (
                   <div className="border-t border-muted-gray/20 pt-3">
                     <p className="text-xs text-muted-gray break-all">ECS: {selectedJob.ecs_task_arn}</p>
@@ -1379,6 +1565,7 @@ function JobsTab() {
 function StagedLeadsTab() {
   const { toast } = useToast();
   const { data: jobsData } = useScrapeJobs();
+  const { data: scrapeProfilesData } = useScrapeProfiles();
   const [jobFilter, setJobFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('pending');
   const [countryFilter, setCountryFilter] = useState('');
@@ -1390,6 +1577,8 @@ function StagedLeadsTab() {
   const [page, setPage] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showApproveDialog, setShowApproveDialog] = useState(false);
+  const [showRescrapeDialog, setShowRescrapeDialog] = useState(false);
+  const [rescrapeProfileId, setRescrapeProfileId] = useState('');
   const [extraTags, setExtraTags] = useState('');
   const [enrollSequence, setEnrollSequence] = useState(false);
 
@@ -1410,10 +1599,12 @@ function StagedLeadsTab() {
 
   const approveLeads = useBulkApproveLeads();
   const rejectLeads = useBulkRejectLeads();
+  const rescrapeLeads = useRescrapeLeads();
 
   const leads = data?.leads || [];
   const total = data?.total || 0;
   const jobs = jobsData?.jobs || [];
+  const scrapeProfiles = scrapeProfilesData?.profiles || [];
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
   const toggleSelect = (id: string) => {
@@ -1456,6 +1647,23 @@ function StagedLeadsTab() {
       const result = await rejectLeads.mutateAsync({ lead_ids: Array.from(selectedIds) });
       toast({ title: `Rejected ${result.rejected} leads` });
       setSelectedIds(new Set());
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleRescrape = async () => {
+    if (!rescrapeProfileId) return;
+    try {
+      const result = await rescrapeLeads.mutateAsync({
+        scrape_profile_id: rescrapeProfileId,
+        lead_ids: selectedIds.size > 0 ? Array.from(selectedIds) : undefined,
+        filters: selectedIds.size === 0 ? { has_email: false, has_phone: false, status: 'pending' } : undefined,
+      });
+      toast({ title: `Re-scrape job created for ${result.leads_count} sites` });
+      setSelectedIds(new Set());
+      setShowRescrapeDialog(false);
+      setRescrapeProfileId('');
     } catch (err: any) {
       toast({ title: 'Error', description: err.message, variant: 'destructive' });
     }
@@ -1508,6 +1716,9 @@ function StagedLeadsTab() {
           <Button size="sm" variant="outline" className="border-red-500/30 text-red-400 hover:bg-red-500/10" onClick={handleReject} disabled={rejectLeads.isPending}>
             <X className="h-3.5 w-3.5 mr-1" /> Reject
           </Button>
+          <Button size="sm" variant="outline" className="border-blue-500/30 text-blue-400 hover:bg-blue-500/10" onClick={() => { setRescrapeProfileId(''); setShowRescrapeDialog(true); }}>
+            <RefreshCw className="h-3.5 w-3.5 mr-1" /> Re-scrape
+          </Button>
           <Button size="sm" variant="ghost" className="text-muted-gray" onClick={() => setSelectedIds(new Set())}>
             Clear
           </Button>
@@ -1538,6 +1749,7 @@ function StagedLeadsTab() {
                   <th className="p-2 cursor-pointer hover:text-bone-white" onClick={() => { setSortBy('match_score'); setSortOrder(sortBy === 'match_score' && sortOrder === 'desc' ? 'asc' : 'desc'); }}>
                     Score {sortBy === 'match_score' && (sortOrder === 'asc' ? '↑' : '↓')}
                   </th>
+                  <th className="p-2">Source</th>
                   <th className="p-2">Status</th>
                 </tr>
               </thead>
@@ -1558,22 +1770,33 @@ function StagedLeadsTab() {
                     </td>
                     <td className="p-2">
                       {lead.email ? (
-                        <span className="flex items-center gap-1 text-xs text-muted-gray">
-                          <Mail className="h-3 w-3 flex-shrink-0" />
-                          <span className="truncate max-w-[140px]">{lead.email}</span>
-                        </span>
+                        <div className="flex flex-col gap-0.5">
+                          {lead.email.split('\n').map((e: string, i: number) => (
+                            <span key={i} className="flex items-center gap-1 text-xs text-muted-gray">
+                              {i === 0 && <Mail className="h-3 w-3 flex-shrink-0" />}
+                              {i > 0 && <span className="w-3" />}
+                              <span className="truncate max-w-[180px]">{e}</span>
+                            </span>
+                          ))}
+                        </div>
                       ) : <span className="text-muted-gray/50">-</span>}
                     </td>
                     <td className="p-2">
                       {lead.phone ? (
-                        <span className="flex items-center gap-1 text-xs text-muted-gray">
-                          <Phone className="h-3 w-3 flex-shrink-0" />
-                          {lead.phone}
-                        </span>
+                        <div className="flex flex-col gap-0.5">
+                          {lead.phone.split('\n').map((p: string, i: number) => (
+                            <span key={i} className="flex items-center gap-1 text-xs text-muted-gray">
+                              {i === 0 && <Phone className="h-3 w-3 flex-shrink-0" />}
+                              {i > 0 && <span className="w-3" />}
+                              {p}
+                            </span>
+                          ))}
+                        </div>
                       ) : <span className="text-muted-gray/50">-</span>}
                     </td>
                     <td className="p-2 text-xs text-muted-gray">{lead.country || '-'}</td>
                     <td className="p-2"><ScoreBar score={lead.match_score} /></td>
+                    <td className="p-2 text-xs text-muted-gray max-w-[120px] truncate">{lead.source_name || '-'}</td>
                     <td className="p-2"><Badge className={`text-xs ${STATUS_COLORS[lead.status] || ''}`}>{lead.status}</Badge></td>
                   </tr>
                 ))}
@@ -1625,6 +1848,39 @@ function StagedLeadsTab() {
             <Button onClick={handleApprove} disabled={approveLeads.isPending}>
               {approveLeads.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
               Approve & Create Contacts
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Re-scrape Dialog */}
+      <Dialog open={showRescrapeDialog} onOpenChange={setShowRescrapeDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Re-scrape Leads</DialogTitle>
+            <DialogDescription>
+              {selectedIds.size > 0
+                ? `Re-scrape ${selectedIds.size} selected lead${selectedIds.size !== 1 ? 's' : ''} with deeper extraction`
+                : 'Re-scrape all pending leads missing email and phone'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Scrape Profile</Label>
+              <Select value={rescrapeProfileId} onValueChange={setRescrapeProfileId}>
+                <SelectTrigger><SelectValue placeholder="Select profile..." /></SelectTrigger>
+                <SelectContent>
+                  {scrapeProfiles.map((sp: any) => <SelectItem key={sp.id} value={sp.id}>{sp.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-gray mt-1">Uses improved extraction: mailto/tel links, smart page discovery</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowRescrapeDialog(false)}>Cancel</Button>
+            <Button onClick={handleRescrape} disabled={!rescrapeProfileId || rescrapeLeads.isPending}>
+              {rescrapeLeads.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+              <RefreshCw className="h-4 w-4 mr-1" /> Start Re-scrape
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2045,7 +2301,7 @@ const SETTING_GROUPS = [
     title: 'API Keys',
     category: 'api_keys',
     description: 'Third-party API credentials',
-    keys: ['google_api_key', 'google_cse_id'],
+    keys: ['serper_api_key'],
   },
   {
     title: 'Worker Defaults',
@@ -2311,7 +2567,7 @@ const AdminScraping = () => {
         ))}
       </div>
 
-      {activeTab === 'Discovery' && <DiscoveryTab />}
+      {activeTab === 'Discovery' && <DiscoveryTab onNavigateToJobs={() => setActiveTab('Jobs')} />}
       {activeTab === 'Scrape Profiles' && <ScrapeProfilesTab />}
       {activeTab === 'Jobs' && <JobsTab />}
       {activeTab === 'Staged Leads' && <StagedLeadsTab />}

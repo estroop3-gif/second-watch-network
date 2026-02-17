@@ -23,6 +23,59 @@ from sources import SOURCE_REGISTRY
 # Configurable query delay (ms) between discovery API calls
 DISCOVERY_QUERY_DELAY_S = int(os.environ.get("DISCOVERY_QUERY_DELAY_MS", "1000")) / 1000.0
 
+# Default excluded domains — directories, social, aggregators that waste scraper time
+DEFAULT_EXCLUDED_DOMAINS = {
+    # Social media
+    "facebook.com", "www.facebook.com", "m.facebook.com",
+    "instagram.com", "www.instagram.com",
+    "twitter.com", "x.com",
+    "linkedin.com", "www.linkedin.com",
+    "tiktok.com", "www.tiktok.com",
+    "pinterest.com", "www.pinterest.com",
+    "youtube.com", "www.youtube.com",
+    # Directories & review sites
+    "yelp.com", "m.yelp.com", "www.yelp.com",
+    "bbb.org", "www.bbb.org",
+    "glassdoor.com", "www.glassdoor.com",
+    "indeed.com", "www.indeed.com",
+    "thumbtack.com", "www.thumbtack.com",
+    "clutch.co", "www.clutch.co",
+    "bark.com", "www.bark.com",
+    "angieslist.com", "www.angieslist.com",
+    "trustpilot.com", "www.trustpilot.com",
+    "g2.com", "www.g2.com",
+    # Industry aggregators
+    "productionhub.com", "www.productionhub.com",
+    "mandy.com", "www.mandy.com",
+    "staffmeup.com", "www.staffmeup.com",
+    "productionbeast.com",
+    "stage32.com", "www.stage32.com",
+    # Reference / encyclopedias
+    "en.wikipedia.org", "wikipedia.org",
+    "imdb.com", "www.imdb.com",
+    # Government
+    "nyc.gov", "www.nyc.gov",
+    "ny.gov", "ca.gov", "gov.uk",
+    # General platforms
+    "reddit.com", "www.reddit.com", "old.reddit.com",
+    "medium.com",
+    "wordpress.com",
+    "blogspot.com",
+    "tumblr.com",
+    "quora.com", "www.quora.com",
+    "craigslist.org",
+    # Maps / listings
+    "google.com", "maps.google.com",
+    "mapquest.com",
+    "yellowpages.com", "www.yellowpages.com",
+    "whitepages.com",
+    "manta.com", "www.manta.com",
+    "dnb.com", "www.dnb.com",
+    # News / media
+    "nytimes.com", "forbes.com", "bloomberg.com",
+    "variety.com", "deadline.com", "hollywoodreporter.com",
+}
+
 # Configure log level from env
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
@@ -81,11 +134,17 @@ def run_discovery(run_id: str):
         max_results = profile.get("max_results_per_query", 100)
         radius_miles = profile.get("search_radius_miles", 50)
         must_have_website = profile.get("must_have_website", True)
-        excluded_domains = set(d.lower() for d in profile.get("excluded_domains", []))
+        excluded_domains = DEFAULT_EXCLUDED_DOMAINS | set(d.lower() for d in profile.get("excluded_domains", []))
         min_discovery_score = profile.get("min_discovery_score", 0)
+
+        # Load domains from all previous runs to avoid duplicates
+        cur.execute("SELECT DISTINCT domain FROM crm_discovery_sites WHERE run_id != %s", (run_id,))
+        existing_domains = set(row["domain"] for row in cur.fetchall())
+        logger.info(f"Loaded {len(existing_domains)} existing domains to skip")
 
         source_stats = {}
         total_found = 0
+        skipped_existing = 0
 
         for source_type in source_types:
             adapter_class = SOURCE_REGISTRY.get(source_type)
@@ -122,6 +181,11 @@ def run_discovery(run_id: str):
                                 continue
 
                             if domain in excluded_domains:
+                                type_stats["filtered"] += 1
+                                continue
+
+                            if domain in existing_domains:
+                                skipped_existing += 1
                                 type_stats["filtered"] += 1
                                 continue
 
@@ -185,7 +249,7 @@ def run_discovery(run_id: str):
             WHERE id = %s
         """, (json.dumps(source_stats), actual_count, run_id))
 
-        print(f"Discovery run {run_id} completed: {actual_count} sites found")
+        print(f"Discovery run {run_id} completed: {actual_count} new sites found, {skipped_existing} duplicates skipped")
         print(f"Source stats: {json.dumps(source_stats)}")
 
         # Auto-start scraping if configured

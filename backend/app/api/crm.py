@@ -2,7 +2,10 @@
 CRM API — Sales Rep Endpoints
 Contacts, activities, interaction counts, and follow-ups.
 """
+import logging
 import json
+
+logger = logging.getLogger(__name__)
 from psycopg2.extras import Json as PgJson
 from fastapi import APIRouter, HTTPException, Depends, Query, Response, UploadFile, File
 from pydantic import BaseModel, EmailStr, validator
@@ -365,14 +368,17 @@ async def mark_tab_viewed(
 
     # Viewing the Contacts tab also clears unviewed lead assignments
     if data.tab_key == "contacts":
-        execute_query(
-            """
-            UPDATE crm_contact_assignment_log
-            SET viewed_at = NOW()
-            WHERE to_rep_id = :pid AND viewed_at IS NULL
-            """,
-            {"pid": profile["id"]},
-        )
+        from sqlalchemy import text as sa_text
+        from app.core.database import get_db_session
+        with get_db_session() as db:
+            db.execute(
+                sa_text("""
+                    UPDATE crm_contact_assignment_log
+                    SET viewed_at = NOW()
+                    WHERE to_rep_id = :pid AND viewed_at IS NULL
+                """),
+                {"pid": profile["id"]},
+            )
 
     return {"success": True}
 
@@ -6100,10 +6106,8 @@ def _launch_ecs_task(
     ]
     if task_type == "discovery":
         worker_env.append({"name": "DISCOVERY_QUERY_DELAY_MS", "value": settings.get("discovery_query_delay_ms", "1000")})
-        if settings.get("google_api_key"):
-            worker_env.append({"name": "GOOGLE_API_KEY", "value": settings["google_api_key"]})
-        if settings.get("google_cse_id"):
-            worker_env.append({"name": "GOOGLE_CSE_ID", "value": settings["google_cse_id"]})
+        if settings.get("serper_api_key"):
+            worker_env.append({"name": "SERPER_API_KEY", "value": settings["serper_api_key"]})
 
     all_env = env_overrides + worker_env
 
@@ -6133,7 +6137,10 @@ def _launch_ecs_task(
     )
 
     if response.get("tasks"):
-        return response["tasks"][0]["taskArn"]
+        task_arn = response["tasks"][0]["taskArn"]
+        logger.info(f"ECS {task_type} task launched: {task_arn}")
+        return task_arn
+    logger.error(f"ECS {task_type} task returned no tasks. Failures: {response.get('failures', [])}")
     return None
 
 
@@ -6176,6 +6183,12 @@ class BulkLeadAction(BaseModel):
 
 class MergeLeadRequest(BaseModel):
     contact_id: str
+
+
+class RescrapeLeadsRequest(BaseModel):
+    scrape_profile_id: str
+    lead_ids: Optional[List[str]] = None
+    filters: Optional[Dict[str, Any]] = None  # e.g. {"has_email": false}
 
 
 # --- Scrape Sources CRUD ---
@@ -6355,9 +6368,15 @@ async def create_scrape_job(
                 "UPDATE crm_scrape_jobs SET ecs_task_arn = :arn WHERE id = :id RETURNING id",
                 {"arn": ecs_task_arn, "id": job["id"]},
             )
-            print(f"Started ECS scraper task: {ecs_task_arn}")
     except Exception as ecs_error:
-        print(f"Failed to start ECS scraper task (job still queued): {ecs_error}")
+        logger.error(f"Failed to start ECS scraper task: {ecs_error}")
+        try:
+            execute_single(
+                "UPDATE crm_scrape_jobs SET status = 'failed', error_message = :msg WHERE id = :id RETURNING id",
+                {"msg": f"ECS launch failed: {str(ecs_error)[:500]}", "id": job["id"]},
+            )
+        except Exception:
+            pass
 
     job["ecs_task_arn"] = ecs_task_arn
     job["source_name"] = source["name"]
@@ -6582,6 +6601,150 @@ async def bulk_reject_leads(
     )
 
     return {"rejected": len(result) if result else 0}
+
+
+@router.post("/scraping/leads/rescrape")
+async def rescrape_leads(
+    data: RescrapeLeadsRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Re-scrape leads that are missing contact info (email/phone).
+
+    Creates a new scrape job targeting the websites of selected leads
+    using improved scraping (mailto/tel extraction, smart link discovery).
+    """
+    # Validate scrape profile
+    sp = execute_single(
+        "SELECT * FROM crm_scrape_profiles WHERE id = :id",
+        {"id": data.scrape_profile_id},
+    )
+    if not sp:
+        raise HTTPException(404, "Scrape profile not found")
+
+    # Find leads to re-scrape
+    conditions = ["l.website IS NOT NULL", "l.website != ''"]
+    params: Dict[str, Any] = {}
+
+    if data.lead_ids:
+        placeholders = ", ".join(f":lid_{i}" for i in range(len(data.lead_ids)))
+        conditions.append(f"l.id IN ({placeholders})")
+        for i, lid in enumerate(data.lead_ids):
+            params[f"lid_{i}"] = lid
+    elif data.filters:
+        # Apply filters — e.g. leads with no email and/or no phone
+        if data.filters.get("has_email") is False:
+            conditions.append("(l.email IS NULL OR l.email = '')")
+        if data.filters.get("has_phone") is False:
+            conditions.append("(l.phone IS NULL OR l.phone = '')")
+        if data.filters.get("status"):
+            conditions.append("l.status = :filter_status")
+            params["filter_status"] = data.filters["status"]
+        else:
+            conditions.append("l.status = 'pending'")
+    else:
+        raise HTTPException(400, "Must provide lead_ids or filters")
+
+    where = " AND ".join(conditions)
+    leads = execute_query(
+        f"""
+        SELECT l.id, l.website, l.company_name,
+               j.discovery_run_id
+        FROM crm_scraped_leads l
+        JOIN crm_scrape_jobs j ON j.id = l.job_id
+        WHERE {where}
+        LIMIT 500
+        """,
+        params,
+    )
+
+    if not leads:
+        raise HTTPException(400, "No leads match the criteria for re-scraping")
+
+    # Build scrape profile snapshot
+    sp_snapshot = {k: v for k, v in sp.items() if k not in ("created_at", "updated_at", "created_by")}
+
+    # Use the discovery_run_id from the first lead if available
+    discovery_run_id = None
+    for lead in leads:
+        if lead.get("discovery_run_id"):
+            discovery_run_id = lead["discovery_run_id"]
+            break
+
+    # Create scrape job
+    job = execute_single(
+        """
+        INSERT INTO crm_scrape_jobs (
+            discovery_run_id, scrape_profile_id, created_by, filters,
+            total_sites, profile_snapshot
+        ) VALUES (
+            :run_id, :sp_id, :created_by, :filters::jsonb,
+            :total_sites, CAST(:snapshot AS jsonb)
+        ) RETURNING *
+        """,
+        {
+            "run_id": discovery_run_id,
+            "sp_id": data.scrape_profile_id,
+            "created_by": profile["id"],
+            "filters": json.dumps({"rescrape": True, "original_lead_ids": [l["id"] for l in leads]}),
+            "total_sites": len(leads),
+            "snapshot": json.dumps(sp_snapshot, default=str),
+        },
+    )
+
+    # Create discovery_sites entries from the leads' websites
+    for lead in leads:
+        website = lead["website"]
+        parsed = urlparse(website if website.startswith("http") else f"https://{website}")
+        domain = parsed.netloc or parsed.path.split("/")[0]
+
+        execute_single(
+            """
+            INSERT INTO crm_discovery_sites (
+                run_id, domain, homepage_url, company_name,
+                source_type, match_score, is_selected_for_scraping, scrape_job_id
+            ) VALUES (
+                :run_id, :domain, :homepage, :company,
+                'rescrape', 50, true, :job_id
+            )
+            ON CONFLICT DO NOTHING
+            RETURNING id
+            """,
+            {
+                "run_id": discovery_run_id,
+                "domain": domain,
+                "homepage": website if website.startswith("http") else f"https://{website}",
+                "company": lead.get("company_name", ""),
+                "job_id": job["id"],
+            },
+        )
+
+    # Launch ECS scraper
+    ecs_task_arn = None
+    try:
+        ecs_task_arn = _launch_ecs_task(
+            "scraper",
+            [{"name": "JOB_ID", "value": str(job["id"])}],
+        )
+        if ecs_task_arn:
+            execute_single(
+                "UPDATE crm_scrape_jobs SET ecs_task_arn = :arn WHERE id = :id RETURNING id",
+                {"arn": ecs_task_arn, "id": job["id"]},
+            )
+    except Exception as ecs_error:
+        logger.error(f"Failed to start ECS scraper for rescrape: {ecs_error}")
+        try:
+            execute_single(
+                "UPDATE crm_scrape_jobs SET status = 'failed', error_message = :msg WHERE id = :id RETURNING id",
+                {"msg": f"ECS launch failed: {str(ecs_error)[:500]}", "id": job["id"]},
+            )
+        except Exception:
+            pass
+
+    return {
+        "job": job,
+        "leads_count": len(leads),
+        "ecs_task_arn": ecs_task_arn,
+    }
 
 
 @router.post("/scraping/leads/{lead_id}/merge")
@@ -7047,6 +7210,11 @@ async def create_discovery_run(
     if not dp.get("enabled"):
         raise HTTPException(400, "Discovery profile is disabled")
 
+    # Pre-launch validation: Serper API key required for discovery
+    settings = _get_scraping_settings()
+    if not settings.get("serper_api_key"):
+        raise HTTPException(400, "Serper API Key must be configured in Settings before running discovery")
+
     snapshot = {k: v for k, v in dp.items() if k not in ("created_at", "updated_at", "created_by")}
     for k, v in snapshot.items():
         if isinstance(v, (list,)):
@@ -7070,15 +7238,22 @@ async def create_discovery_run(
         ecs_task_arn = _launch_ecs_task(
             "discovery",
             [{"name": "DISCOVERY_RUN_ID", "value": str(run["id"])}],
+            settings=settings,
         )
         if ecs_task_arn:
             execute_single(
                 "UPDATE crm_discovery_runs SET ecs_task_arn = :arn WHERE id = :id RETURNING id",
                 {"arn": ecs_task_arn, "id": run["id"]},
             )
-            print(f"Started ECS discovery task: {ecs_task_arn}")
     except Exception as ecs_error:
-        print(f"Failed to start ECS discovery task (run still queued): {ecs_error}")
+        logger.error(f"Failed to start ECS discovery task: {ecs_error}")
+        try:
+            execute_single(
+                "UPDATE crm_discovery_runs SET status = 'failed', error_message = :msg WHERE id = :id RETURNING id",
+                {"msg": f"ECS launch failed: {str(ecs_error)[:500]}", "id": str(run["id"])},
+            )
+        except Exception:
+            pass
 
     run["ecs_task_arn"] = ecs_task_arn
     return {"run": run}
@@ -7250,7 +7425,14 @@ async def start_scraping_from_discovery(
                 {"arn": ecs_task_arn, "id": job["id"]},
             )
     except Exception as ecs_error:
-        print(f"Failed to start ECS scraper (job still queued): {ecs_error}")
+        logger.error(f"Failed to start ECS scraper: {ecs_error}")
+        try:
+            execute_single(
+                "UPDATE crm_scrape_jobs SET status = 'failed', error_message = :msg WHERE id = :id RETURNING id",
+                {"msg": f"ECS launch failed: {str(ecs_error)[:500]}", "id": job["id"]},
+            )
+        except Exception:
+            pass
 
     job["ecs_task_arn"] = ecs_task_arn
     return {"job": job, "sites_selected": total_sites}

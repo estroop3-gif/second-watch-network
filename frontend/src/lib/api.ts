@@ -5744,6 +5744,10 @@ class APIClient {
     return this.post<{ status: string; contact_id: string }>(`/api/v1/crm/scraping/leads/${id}/merge`, data)
   }
 
+  async rescrapeCRMLeads(data: { scrape_profile_id: string; lead_ids?: string[]; filters?: Record<string, any> }) {
+    return this.post<{ job: any; leads_count: number; ecs_task_arn: string | null }>('/api/v1/crm/scraping/leads/rescrape', data)
+  }
+
   async exportScrapedLeads(params?: { job_id?: string; status?: string; min_score?: number }): Promise<Blob> {
     const searchParams = new URLSearchParams()
     if (params?.job_id) searchParams.set('job_id', params.job_id)
