@@ -6560,6 +6560,7 @@ async def list_scraped_leads(
     max_score: Optional[int] = Query(None),
     country: Optional[str] = Query(None),
     has_email: Optional[bool] = Query(None),
+    has_phone: Optional[bool] = Query(None),
     search: Optional[str] = Query(None),
     sort_by: str = Query("match_score"),
     sort_order: str = Query("desc"),
@@ -6590,6 +6591,11 @@ async def list_scraped_leads(
             conditions.append("l.email IS NOT NULL AND l.email != ''")
         else:
             conditions.append("(l.email IS NULL OR l.email = '')")
+    if has_phone is not None:
+        if has_phone:
+            conditions.append("l.phone IS NOT NULL AND l.phone != ''")
+        else:
+            conditions.append("(l.phone IS NULL OR l.phone = '')")
     if search:
         conditions.append("(l.company_name ILIKE :search OR l.email ILIKE :search OR l.website ILIKE :search)")
         params["search"] = f"%{search}%"

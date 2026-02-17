@@ -261,7 +261,7 @@ export function useRetryScrapeJob() {
 
 export function useScrapedLeads(params?: {
   job_id?: string; status?: string; min_score?: number; max_score?: number;
-  country?: string; has_email?: boolean; search?: string;
+  country?: string; has_email?: boolean; has_phone?: boolean; search?: string;
   sort_by?: string; sort_order?: string; limit?: number; offset?: number;
 }) {
   return useQuery({

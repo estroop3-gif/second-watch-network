@@ -1626,6 +1626,7 @@ function StagedLeadsTab() {
   const [statusFilter, setStatusFilter] = useState('pending');
   const [countryFilter, setCountryFilter] = useState('');
   const [hasEmailFilter, setHasEmailFilter] = useState<string>('all');
+  const [hasPhoneFilter, setHasPhoneFilter] = useState<string>('all');
   const [search, setSearch] = useState('');
   const [minScore, setMinScore] = useState('');
   const [sortBy, setSortBy] = useState('match_score');
@@ -1653,6 +1654,7 @@ function StagedLeadsTab() {
     min_score: minScore ? parseInt(minScore) : undefined,
     country: countryFilter || undefined,
     has_email: hasEmailFilter === 'all' ? undefined : hasEmailFilter === 'yes',
+    has_phone: hasPhoneFilter === 'all' ? undefined : hasPhoneFilter === 'yes',
     search: search || undefined,
     sort_by: sortBy,
     sort_order: sortOrder,
@@ -1831,6 +1833,17 @@ function StagedLeadsTab() {
             <SelectItem value="no">No email</SelectItem>
           </SelectContent>
         </Select>
+        <Select value={hasPhoneFilter} onValueChange={(v) => { setHasPhoneFilter(v); setPage(0); }}>
+          <SelectTrigger className="w-[120px]"><SelectValue placeholder="Has phone" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Any phone</SelectItem>
+            <SelectItem value="yes">Has phone</SelectItem>
+            <SelectItem value="no">No phone</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button size="sm" variant="outline" className="border-blue-500/30 text-blue-400 hover:bg-blue-500/10" onClick={() => { setSelectedIds(new Set()); setRescrapeProfileId(''); setRescrapePreset(''); setRescrapeFilters({}); setShowRescrapeDialog(true); }}>
+          <RefreshCw className="h-3.5 w-3.5 mr-1" /> Re-scrape Batch
+        </Button>
       </div>
 
       {/* Bulk actions */}
