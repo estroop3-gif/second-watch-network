@@ -1393,11 +1393,12 @@ function JobsTab() {
 
       {/* Job Detail Dialog */}
       <Dialog open={!!selectedJobId} onOpenChange={(open) => { if (!open) setSelectedJobId(null); }}>
-        <DialogContent className="max-w-md max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
+        <DialogContent className="max-w-md max-h-[70vh] flex flex-col">
+          <DialogHeader className="flex-shrink-0">
             <DialogTitle>Job Details</DialogTitle>
             <DialogDescription>Scrape job information and stats.</DialogDescription>
           </DialogHeader>
+          <div className="overflow-y-auto flex-1 -mx-6 px-6">
           {selectedJob && (() => {
             const stats = typeof selectedJob.stats === 'string' ? JSON.parse(selectedJob.stats) : (selectedJob.stats || {});
             const isDiscovery = !!selectedJob.discovery_profile_name;
@@ -1552,6 +1553,7 @@ function JobsTab() {
               </div>
             );
           })()}
+          </div>
         </DialogContent>
       </Dialog>
     </div>
