@@ -13,7 +13,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 node -e "
 const { Client } = require('pg');
 const fs = require('fs');
-const sql = fs.readFileSync('migrations/211_*.sql', 'utf8');
+const sql = fs.readFileSync('migrations/246_*.sql', 'utf8');
 const client = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 client.connect().then(() => client.query(sql)).then(() => console.log('Done')).finally(() => client.end());
 "
@@ -24,10 +24,11 @@ sam build && sam deploy
 
 ## Architecture
 
-### API Structure (~70 modules in `app/api/`)
+### API Structure (114 modules in `app/api/`)
 - **Domain modules**: `auth.py`, `users.py`, `profiles.py`, `content.py`, `filmmakers.py`
 - **Admin modules**: `admin.py`, `admin_users.py`, `admin_content.py`, `admin_backlot.py`, etc.
-- **Feature modules**: `backlot.py` (40k lines - production management), `consumer_video.py`, `worlds.py`
+- **Feature modules**: `backlot.py` (~49K lines), `consumer_video.py`, `worlds.py`
+- **CRM modules**: `crm.py` (~8.7K lines, 80+ routes — contacts, deals, email, scraping, pricing), `crm_admin.py` (~2.3K lines, 40+ routes)
 - **Church production**: `church_services.py`, `church_people.py`, `church_content.py`, etc.
 - **Monetization**: `creator_earnings.py`, `organizations.py`, `billing.py`
 
@@ -42,12 +43,22 @@ sam build && sam deploy
 | `storage.py` | S3 storage operations |
 | `exceptions.py` | Structured error handling |
 
-### Services (`app/services/`)
+### Services (`app/services/`, 60 modules)
 - `watch_aggregation.py` - Hourly/daily/monthly watch time rollups
 - `revenue_calculation.py` - Creator earnings from watch share
 - `media_orchestrator.py` - Unified media job tracking
 - `email_service.py` - SES email sending
+- `email_templates.py` - Shared SWN-branded email templates (`base_template()`, `cta_button()`, etc.)
 - `pdf_service.py` - Call sheet, script breakdown PDFs
+- `pricing_engine.py` - Tiered pricing with add-ons and annual prepay
+
+### Background Jobs (`app/jobs/`)
+- `email_scheduler.py` - APScheduler for scheduled sends, snooze expiry, sequence progression, campaign blasts, notification digests
+
+### Docker Workers (`docker/`)
+- `scraper/` - ECS Fargate web scraper (BFS recursive crawl, contact extraction, scoring)
+- `discovery/` - ECS Fargate lead discovery (Google CSE + Maps adapters → find websites → score)
+- `transcode/` - Media transcoding worker
 
 ## Database Patterns
 
@@ -122,9 +133,24 @@ async def route(profile = Depends(require_premium_content_access)):
 - Tiers: BASE ($50), STEWARD ($100), PATRON ($250+)
 - All tiers get premium content access
 
+### CRM (Sales Pipeline)
+- `crm_contacts`, `crm_activities`, `crm_interaction_counts` - Contact management
+- `crm_deals`, `crm_deal_stage_history` - Pipeline/kanban
+- `crm_sales_goals` - Goals and KPIs
+- `crm_email_accounts`, `crm_email_threads`, `crm_email_messages` - Full email client
+- `crm_email_campaigns`, `crm_email_sends` - Campaign blasts with DNC
+- `crm_email_templates` - TipTap WYSIWYG templates
+- `crm_scrape_sources`, `crm_scrape_jobs`, `crm_scraped_leads` - Web scraping
+- `crm_scrape_profiles`, `crm_discovery_profiles`, `crm_discovery_runs`, `crm_discovery_sites` - Discovery
+- `crm_lead_lists`, `crm_lead_list_items` - Lead list management
+- `crm_business_cards` - Rep business card workflow (draft→submitted→approved→printed)
+- `crm_training_resources`, `crm_discussion_*` - Training hub
+- `pricing_quotes`, `pricing_quote_versions` - CPQ pricing wizard
+- CRM roles: `sales_agent` (CRM_VIEW+CREATE), `sales_admin` (full CRM), `sales_rep` (broad platform+CRM)
+
 ## Migrations
 
-Located in `migrations/`. Currently at 169. Run via Node.js pg client (psql not installed).
+Located in `migrations/`. Currently at 246. Run via Node.js pg client (psql not installed).
 
 ## S3 Buckets
 

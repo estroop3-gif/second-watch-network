@@ -244,6 +244,17 @@ export function useScrapeJob(id: string | undefined) {
   });
 }
 
+export function useRetryScrapeJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: string) => api.retryScrapeJob(jobId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-scrape-jobs'] });
+      qc.invalidateQueries({ queryKey: ['crm-scrape-job'] });
+    },
+  });
+}
+
 // ============================================================================
 // Scraped Leads
 // ============================================================================
@@ -286,11 +297,12 @@ export function useBulkRejectLeads() {
 export function useRescrapeLeads() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { scrape_profile_id: string; lead_ids?: string[]; filters?: Record<string, any> }) =>
+    mutationFn: (data: { scrape_profile_id: string; lead_ids?: string[]; filters?: Record<string, any>; thoroughness?: string; profile_overrides?: Record<string, any> }) =>
       api.rescrapeCRMLeads(data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['crm-scraped-leads'] });
       qc.invalidateQueries({ queryKey: ['crm-scrape-jobs'] });
+      qc.invalidateQueries({ queryKey: ['crm-lead-lists'] });
     },
   });
 }
@@ -303,6 +315,111 @@ export function useMergeScrapedLead() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['crm-scraped-leads'] });
       qc.invalidateQueries({ queryKey: ['crm-scrape-jobs'] });
+      qc.invalidateQueries({ queryKey: ['crm-contacts'] });
+    },
+  });
+}
+
+// ============================================================================
+// Lead Lists
+// ============================================================================
+
+export function useLeadLists() {
+  return useQuery({
+    queryKey: ['crm-lead-lists'],
+    queryFn: () => api.getCRMLeadLists(),
+  });
+}
+
+export function useLeadList(id: string | undefined) {
+  return useQuery({
+    queryKey: ['crm-lead-list', id],
+    queryFn: () => api.getCRMLeadList(id!),
+    enabled: !!id,
+  });
+}
+
+export function useCreateLeadList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { name: string; description?: string; lead_ids?: string[] }) =>
+      api.createCRMLeadList(data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-lead-lists'] });
+    },
+  });
+}
+
+export function useUpdateLeadList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { name?: string; description?: string; status?: string } }) =>
+      api.updateCRMLeadList(id, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-lead-lists'] });
+      qc.invalidateQueries({ queryKey: ['crm-lead-list'] });
+    },
+  });
+}
+
+export function useDeleteLeadList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteCRMLeadList(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-lead-lists'] });
+    },
+  });
+}
+
+export function useLeadListLeads(id: string | undefined, params?: { limit?: number; offset?: number }) {
+  return useQuery({
+    queryKey: ['crm-lead-list-leads', id, params],
+    queryFn: () => api.getCRMLeadListLeads(id!, params),
+    enabled: !!id,
+  });
+}
+
+export function useAddLeadsToList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ listId, leadIds }: { listId: string; leadIds: string[] }) =>
+      api.addLeadsToCRMList(listId, { lead_ids: leadIds }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-lead-lists'] });
+      qc.invalidateQueries({ queryKey: ['crm-lead-list'] });
+      qc.invalidateQueries({ queryKey: ['crm-lead-list-leads'] });
+    },
+  });
+}
+
+export function useRemoveLeadsFromList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ listId, leadIds }: { listId: string; leadIds: string[] }) =>
+      api.removeLeadsFromCRMList(listId, leadIds),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-lead-lists'] });
+      qc.invalidateQueries({ queryKey: ['crm-lead-list'] });
+      qc.invalidateQueries({ queryKey: ['crm-lead-list-leads'] });
+    },
+  });
+}
+
+export function useExportLeadList() {
+  return useMutation({
+    mutationFn: (listId: string) => api.exportCRMLeadList(listId),
+  });
+}
+
+export function useImportToLeadList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ listId, file, tags }: { listId: string; file: File; tags?: string }) =>
+      api.importToCRMLeadList(listId, file, tags),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-lead-lists'] });
+      qc.invalidateQueries({ queryKey: ['crm-lead-list'] });
       qc.invalidateQueries({ queryKey: ['crm-contacts'] });
     },
   });

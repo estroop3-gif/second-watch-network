@@ -24,7 +24,7 @@ npx playwright test --headed           # Run with browser visible
 ## Architecture
 
 ### API Client (`src/lib/api.ts`)
-Centralized API client (~4100 lines) with:
+Centralized API client (~6000 lines) with:
 - `APIClient` class with automatic token management
 - JWT token decoding for Cognito user ID extraction
 - Domain-specific API modules exported as `api.admin`, `api.backlot`, etc.
@@ -150,8 +150,17 @@ Equipment rental/checkout management system with barcode/QR scanning:
 - USB scanner input supported (keyboard wedge mode)
 - Settings control verification requirements per flow
 
+### CRM System (`src/pages/crm/`, `src/hooks/crm/`, `src/components/crm/`)
+Full sales CRM with 20 hook files and dedicated layout:
+- `CRMLayout` with sidebar navigation, `EmailComposeContext` wrapper for global compose modal
+- **Hook files**: useContacts, useActivities, useInteractions, useDeals, useGoals, useKPI, useCustomerLog, useReviews, useCampaigns, useEmail, useSequences, useEmailKeyboardShortcuts, useDataScraping, useBusinessCards, useTraining, usePricing, useLeads, useSidebarBadges, useTabViewed
+- **Admin scraping**: `AdminScraping.tsx` (~3K lines) — tabs for Discovery, Scrape Profiles, Jobs, Staged Leads, Lead Lists, Sources, Settings
+- **Global email compose**: `useEmailCompose()` hook, `openCompose(opts)` from any CRM page
+- **CRM Admin**: Single sidebar entry → `AdminLayout.tsx` with horizontal tabs for all admin features
+
 ### Hooks (`src/hooks/`)
 - `backlot/` - 60+ production management hooks (exported via `backlot/index.ts`)
+- `crm/` - 20 CRM hook files (see CRM System above)
 - `gear/` - Equipment management hooks (see Gear House System above)
 - `watch/` - Streaming hooks (useWorlds, useContinueWatching, useEvents, useShorts)
 - General hooks for profiles, notifications, permissions

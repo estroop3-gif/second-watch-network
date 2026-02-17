@@ -5744,8 +5744,12 @@ class APIClient {
     return this.post<{ status: string; contact_id: string }>(`/api/v1/crm/scraping/leads/${id}/merge`, data)
   }
 
-  async rescrapeCRMLeads(data: { scrape_profile_id: string; lead_ids?: string[]; filters?: Record<string, any> }) {
-    return this.post<{ job: any; leads_count: number; ecs_task_arn: string | null }>('/api/v1/crm/scraping/leads/rescrape', data)
+  async rescrapeCRMLeads(data: { scrape_profile_id: string; lead_ids?: string[]; filters?: Record<string, any>; thoroughness?: string; profile_overrides?: Record<string, any> }) {
+    return this.post<{ job: any; leads_count: number; ecs_task_arn: string | null; lead_list_id: string | null }>('/api/v1/crm/scraping/leads/rescrape', data)
+  }
+
+  async retryScrapeJob(jobId: string) {
+    return this.post<{ job: any; sites_remaining: number | null; ecs_task_arn: string | null }>(`/api/v1/crm/scraping/jobs/${jobId}/retry`, {})
   }
 
   async exportScrapedLeads(params?: { job_id?: string; status?: string; min_score?: number }): Promise<Blob> {
@@ -5785,6 +5789,76 @@ class APIClient {
       throw new Error(err.detail || 'Import failed')
     }
     return response.json() as Promise<{ created: number; skipped: number; errors: string[]; total_rows: number }>
+  }
+
+  // CRM Lead Lists
+  async getCRMLeadLists() {
+    return this.get<{ lists: any[] }>('/api/v1/crm/scraping/lead-lists')
+  }
+
+  async getCRMLeadList(id: string) {
+    return this.get<{ list: any }>(`/api/v1/crm/scraping/lead-lists/${id}`)
+  }
+
+  async createCRMLeadList(data: { name: string; description?: string; lead_ids?: string[] }) {
+    return this.post<{ list: any }>('/api/v1/crm/scraping/lead-lists', data)
+  }
+
+  async updateCRMLeadList(id: string, data: { name?: string; description?: string; status?: string }) {
+    return this.put<{ list: any }>(`/api/v1/crm/scraping/lead-lists/${id}`, data)
+  }
+
+  async deleteCRMLeadList(id: string) {
+    return this.delete<any>(`/api/v1/crm/scraping/lead-lists/${id}`)
+  }
+
+  async getCRMLeadListLeads(id: string, params?: { limit?: number; offset?: number }) {
+    const sp = new URLSearchParams()
+    if (params?.limit) sp.set('limit', String(params.limit))
+    if (params?.offset) sp.set('offset', String(params.offset))
+    const qs = sp.toString()
+    return this.get<{ leads: any[]; total: number }>(`/api/v1/crm/scraping/lead-lists/${id}/leads${qs ? `?${qs}` : ''}`)
+  }
+
+  async addLeadsToCRMList(id: string, data: { lead_ids: string[] }) {
+    return this.post<{ added: number }>(`/api/v1/crm/scraping/lead-lists/${id}/leads`, data)
+  }
+
+  async removeLeadsFromCRMList(id: string, leadIds: string[]) {
+    const sp = new URLSearchParams()
+    leadIds.forEach(lid => sp.append('lead_ids', lid))
+    return this.delete<{ removed: number }>(`/api/v1/crm/scraping/lead-lists/${id}/leads?${sp.toString()}`)
+  }
+
+  async exportCRMLeadList(id: string): Promise<Blob> {
+    const token = this.getToken()
+    const baseUrl = this.getBaseUrl()
+    const response = await fetch(`${baseUrl}/api/v1/crm/scraping/lead-lists/${id}/export`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+    })
+    if (!response.ok) throw new Error('Export failed')
+    return response.blob()
+  }
+
+  async importToCRMLeadList(id: string, file: File, tags?: string): Promise<{ created: number; skipped: number; errors: string[]; total_rows: number }> {
+    const sp = new URLSearchParams()
+    if (tags) sp.set('tags', tags)
+    const qs = sp.toString()
+    const formData = new FormData()
+    formData.append('file', file)
+    const token = this.getToken()
+    const baseUrl = this.getBaseUrl()
+    const response = await fetch(`${baseUrl}/api/v1/crm/scraping/lead-lists/${id}/import${qs ? `?${qs}` : ''}`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: formData,
+    })
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ detail: 'Import failed' }))
+      throw new Error(err.detail || 'Import failed')
+    }
+    return response.json()
   }
 
   // CRM Scrape Profiles

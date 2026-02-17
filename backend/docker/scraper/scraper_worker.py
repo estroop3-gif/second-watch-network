@@ -9,6 +9,7 @@ import sys
 import json
 import time
 import re
+import heapq
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
@@ -349,6 +350,51 @@ def merge_site_leads(page_data_list: list, site: dict) -> dict:
     }
 
 
+ASSET_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".ico", ".bmp",
+    ".css", ".js", ".json", ".xml", ".rss", ".atom",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".zip", ".tar", ".gz", ".rar", ".7z",
+    ".mp3", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".wav", ".ogg",
+    ".woff", ".woff2", ".ttf", ".eot",
+}
+
+
+def normalize_internal_link(href: str, domain: str) -> str | None:
+    """Normalize an href to a full internal URL. Returns None for external/asset/non-HTTP links."""
+    if not href:
+        return None
+    href = href.strip()
+    # Skip non-HTTP schemes
+    if href.startswith(("mailto:", "tel:", "javascript:", "data:", "#", "ftp:")):
+        return None
+    # Skip fragments-only
+    if href.startswith("#"):
+        return None
+
+    # Parse the href
+    parsed = urlparse(href)
+
+    # Check if it's an asset
+    path_lower = (parsed.path or "").lower()
+    ext = os.path.splitext(path_lower)[1]
+    if ext in ASSET_EXTENSIONS:
+        return None
+
+    # Determine if internal
+    if parsed.netloc:
+        # Absolute URL — check if same domain
+        if parsed.netloc.lower().replace("www.", "") != domain.lower().replace("www.", ""):
+            return None
+        return f"https://{parsed.netloc}{parsed.path}".rstrip("/")
+    elif href.startswith("/"):
+        # Root-relative
+        return f"https://{domain}{parsed.path}".rstrip("/")
+    else:
+        # Relative (e.g. "about.html")
+        return f"https://{domain}/{parsed.path}".rstrip("/")
+
+
 def run_discovery_based_job(cur, job: dict, job_id: str):
     """Run a discovery-sourced scrape job — scrapes sites from crm_discovery_sites."""
     profile_snapshot = job.get("profile_snapshot", {})
@@ -364,6 +410,8 @@ def run_discovery_based_job(cur, job: dict, job_id: str):
     require_email = profile_snapshot.get("require_email", False)
     require_phone = profile_snapshot.get("require_phone", False)
     scoring_rules = profile_snapshot.get("scoring_rules", {})
+    follow_internal_links = profile_snapshot.get("follow_internal_links", False)
+    max_depth = profile_snapshot.get("max_depth", 0)
     excluded_domains = set(d.lower() for d in profile_snapshot.get("excluded_domains", []))
 
     # Fetch selected sites for this job
@@ -422,45 +470,97 @@ def run_discovery_based_job(cur, job: dict, job_id: str):
 
             # Smart link discovery — scan homepage for contact-like internal links
             CONTACT_KEYWORDS = {"contact", "about", "team", "staff", "people", "reach",
-                                "get-in-touch", "connect", "our-team", "about-us", "contact-us"}
+                                "get-in-touch", "connect", "our-team", "about-us", "contact-us",
+                                "leadership", "management", "directory", "who-we-are", "meet-the-team",
+                                "executives", "careers", "services", "portfolio", "work",
+                                "press", "inquiries", "booking", "locations", "offices", "find-us"}
+        else:
+            # Homepage unreachable — skip this site entirely, it's not a real error
+            logger.info(f"  Homepage unreachable for {domain}, skipping")
+            stats["sites_skipped"] += 1
+            time.sleep(0.5)
+            continue
+
+        if follow_internal_links and max_depth > 0:
+            # ---- Recursive BFS crawl ----
+            # Priority queue: (priority, depth, url)
+            # Priority 0 = contact-keyword URLs, 1 = other internal links
+            visited = {homepage.rstrip("/")}
+            pq = []  # (priority, depth, url)
+            pages_visited = 1  # homepage already visited
+
+            def _enqueue_links(page_soup, current_depth):
+                """Extract internal links from a page and add to priority queue."""
+                for a_tag in page_soup.find_all("a", href=True):
+                    link_url = normalize_internal_link(a_tag["href"], domain)
+                    if not link_url or link_url.rstrip("/") in visited:
+                        continue
+                    path_lower = urlparse(link_url).path.lower()
+                    priority = 0 if any(kw in path_lower for kw in CONTACT_KEYWORDS) else 1
+                    heapq.heappush(pq, (priority, current_depth + 1, link_url))
+
+            # Also enqueue configured paths with high priority
+            for path in paths_to_visit:
+                p_url = f"https://{domain}{path}" if path.startswith("/") else f"https://{domain}/{path}"
+                p_url = p_url.rstrip("/")
+                if p_url not in visited:
+                    heapq.heappush(pq, (0, 1, p_url))
+
+            # Enqueue links found on homepage
+            _enqueue_links(soup, 0)
+
+            while pq and pages_visited < max_pages_per_site:
+                priority, depth, url = heapq.heappop(pq)
+                url_normalized = url.rstrip("/")
+                if url_normalized in visited:
+                    continue
+                if depth > max_depth:
+                    continue
+                visited.add(url_normalized)
+
+                time.sleep(delay_ms / 1000.0)
+                resp = fetch_page_safe(session, url, HTTP_TIMEOUT)
+                if resp:
+                    page_soup = BeautifulSoup(resp.text, "html.parser")
+                    pd = extract_generic_data(page_soup, url, site.get("company_name", ""))
+                    page_data_list.append(pd)
+                    stats["pages_scraped"] += 1
+                    pages_visited += 1
+                    # Enqueue links from this page (if not at max depth)
+                    if depth < max_depth:
+                        _enqueue_links(page_soup, depth)
+                else:
+                    stats["pages_failed"] += 1
+
+            logger.info(f"  BFS crawl: visited {pages_visited} pages (depth {max_depth})")
+        else:
+            # ---- Linear path-based crawl (default) ----
             discovered_paths = set()
             for a_tag in soup.find_all("a", href=True):
                 href = a_tag["href"].lower().strip()
-                # Only internal links
                 if href.startswith("/") or href.startswith(f"https://{domain.lower()}") or href.startswith(f"http://{domain.lower()}"):
                     parsed_href = urlparse(href)
                     path_part = parsed_href.path.rstrip("/").lower()
                     if path_part and any(kw in path_part for kw in CONTACT_KEYWORDS):
                         discovered_paths.add(path_part)
 
-            # Merge discovered paths with configured paths (dedup, preserving order)
             all_paths = list(dict.fromkeys(list(paths_to_visit) + [p for p in discovered_paths if p not in paths_to_visit]))
-        else:
-            # Homepage unreachable — skip this site entirely, it's not a real error
-            logger.info(f"  Homepage unreachable for {domain}, skipping")
-            stats["sites_skipped"] += 1
-            # Brief delay before next site
-            time.sleep(0.5)
-            continue
 
-        # Scrape additional paths (contact, about, etc.) — failures here are expected
-        for path in all_paths[:max_pages_per_site - 1]:
-            if path.startswith("/"):
-                url = f"https://{domain}{path}"
-            else:
-                url = f"https://{domain}/{path}"
+            for path in all_paths[:max_pages_per_site - 1]:
+                if path.startswith("/"):
+                    url = f"https://{domain}{path}"
+                else:
+                    url = f"https://{domain}/{path}"
 
-            # Brief delay between pages on same site
-            time.sleep(delay_ms / 1000.0)
-
-            resp = fetch_page_safe(session, url, HTTP_TIMEOUT)
-            if resp:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                page_data = extract_generic_data(soup, url, site.get("company_name", ""))
-                page_data_list.append(page_data)
-                stats["pages_scraped"] += 1
-            else:
-                stats["pages_failed"] += 1
+                time.sleep(delay_ms / 1000.0)
+                resp = fetch_page_safe(session, url, HTTP_TIMEOUT)
+                if resp:
+                    page_soup = BeautifulSoup(resp.text, "html.parser")
+                    pd = extract_generic_data(page_soup, url, site.get("company_name", ""))
+                    page_data_list.append(pd)
+                    stats["pages_scraped"] += 1
+                else:
+                    stats["pages_failed"] += 1
 
         # Merge multi-page data into single lead
         lead = merge_site_leads(page_data_list, dict(site))

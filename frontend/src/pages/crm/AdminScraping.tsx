@@ -29,6 +29,17 @@ import {
   useStartDiscoveryScraping,
   useScrapingSettings,
   useUpdateScrapingSettings,
+  useRetryScrapeJob,
+  useLeadLists,
+  useLeadList,
+  useCreateLeadList,
+  useUpdateLeadList,
+  useDeleteLeadList,
+  useLeadListLeads,
+  useAddLeadsToList,
+  useRemoveLeadsFromList,
+  useExportLeadList,
+  useImportToLeadList,
 } from '@/hooks/crm/useDataScraping';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -88,9 +99,13 @@ import {
   BarChart3,
   AlertTriangle,
   RefreshCw,
+  RotateCcw,
+  ListPlus,
+  FolderOpen,
+  Filter,
 } from 'lucide-react';
 
-const TABS = ['Discovery', 'Scrape Profiles', 'Jobs', 'Staged Leads', 'Clean & Import', 'Sources', 'Settings'] as const;
+const TABS = ['Discovery', 'Scrape Profiles', 'Jobs', 'Staged Leads', 'Lead Lists', 'Sources', 'Settings'] as const;
 type Tab = typeof TABS[number];
 
 const STATUS_COLORS: Record<string, string> = {
@@ -1192,6 +1207,16 @@ function JobsTab() {
   });
   const { data: jobDetailData } = useScrapeJob(selectedJobId || undefined);
   const createJob = useCreateScrapeJob();
+  const retryJob = useRetryScrapeJob();
+
+  const handleRetryJob = async (jobId: string) => {
+    try {
+      await retryJob.mutateAsync(jobId);
+      toast({ title: 'Retry job created', description: 'A new scrape job has been launched for remaining sites.' });
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
 
   const sources = sourcesData?.sources || [];
   const enabledSources = sources.filter((s: any) => s.enabled);
@@ -1344,7 +1369,16 @@ function JobsTab() {
               {job.status === 'failed' && (
                 <div className="mt-2 flex items-center gap-2 text-xs text-red-400">
                   <AlertTriangle className="h-3 w-3 flex-shrink-0" />
-                  <span className="truncate">{job.error_message || 'Job failed — check CloudWatch logs for details'}</span>
+                  <span className="truncate flex-1">{job.error_message || 'Job failed — check CloudWatch logs for details'}</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-2 text-xs text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 flex-shrink-0"
+                    onClick={(e) => { e.stopPropagation(); handleRetryJob(job.id); }}
+                    disabled={retryJob.isPending}
+                  >
+                    <RotateCcw className="h-3 w-3 mr-1" /> Retry
+                  </Button>
                 </div>
               )}
             </div>
@@ -1393,12 +1427,12 @@ function JobsTab() {
 
       {/* Job Detail Dialog */}
       <Dialog open={!!selectedJobId} onOpenChange={(open) => { if (!open) setSelectedJobId(null); }}>
-        <DialogContent className="max-w-md max-h-[70vh] flex flex-col">
+        <DialogContent className="max-w-md max-h-[70vh] flex flex-col overflow-hidden">
           <DialogHeader className="flex-shrink-0">
             <DialogTitle>Job Details</DialogTitle>
             <DialogDescription>Scrape job information and stats.</DialogDescription>
           </DialogHeader>
-          <div className="overflow-y-auto flex-1 -mx-6 px-6">
+          <div className="overflow-y-auto flex-1 min-h-0 -mx-6 px-6">
           {selectedJob && (() => {
             const stats = typeof selectedJob.stats === 'string' ? JSON.parse(selectedJob.stats) : (selectedJob.stats || {});
             const isDiscovery = !!selectedJob.discovery_profile_name;
@@ -1550,6 +1584,25 @@ function JobsTab() {
                     <p className="text-xs text-muted-gray break-all">ECS: {selectedJob.ecs_task_arn}</p>
                   </div>
                 )}
+
+                {/* Retry button for failed/completed jobs */}
+                {(selectedJob.status === 'failed' || selectedJob.status === 'completed') && (
+                  <div className="border-t border-muted-gray/20 pt-3">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="w-full"
+                      onClick={() => handleRetryJob(selectedJob.id)}
+                      disabled={retryJob.isPending}
+                    >
+                      {retryJob.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <RotateCcw className="h-4 w-4 mr-1" />}
+                      {selectedJob.status === 'failed' ? 'Retry Failed Sites' : 'Re-scrape Remaining Sites'}
+                    </Button>
+                    <p className="text-xs text-muted-gray mt-1 text-center">
+                      Creates a new job targeting sites that weren't successfully scraped
+                    </p>
+                  </div>
+                )}
               </div>
             );
           })()}
@@ -1568,6 +1621,7 @@ function StagedLeadsTab() {
   const { toast } = useToast();
   const { data: jobsData } = useScrapeJobs();
   const { data: scrapeProfilesData } = useScrapeProfiles();
+  const { data: leadListsData } = useLeadLists();
   const [jobFilter, setJobFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('pending');
   const [countryFilter, setCountryFilter] = useState('');
@@ -1580,9 +1634,16 @@ function StagedLeadsTab() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showApproveDialog, setShowApproveDialog] = useState(false);
   const [showRescrapeDialog, setShowRescrapeDialog] = useState(false);
+  const [showAddToListDialog, setShowAddToListDialog] = useState(false);
   const [rescrapeProfileId, setRescrapeProfileId] = useState('');
+  const [rescrapeThouroughness, setRescrapeThouroughness] = useState('standard');
+  const [rescrapePreset, setRescrapePreset] = useState('');
+  const [rescrapeFilters, setRescrapeFilters] = useState<Record<string, boolean>>({});
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [extraTags, setExtraTags] = useState('');
   const [enrollSequence, setEnrollSequence] = useState(false);
+  const [addToListId, setAddToListId] = useState('');
+  const [newListName, setNewListName] = useState('');
 
   const PAGE_SIZE = 50;
 
@@ -1602,11 +1663,14 @@ function StagedLeadsTab() {
   const approveLeads = useBulkApproveLeads();
   const rejectLeads = useBulkRejectLeads();
   const rescrapeLeads = useRescrapeLeads();
+  const createLeadList = useCreateLeadList();
+  const addLeadsToList = useAddLeadsToList();
 
   const leads = data?.leads || [];
   const total = data?.total || 0;
   const jobs = jobsData?.jobs || [];
   const scrapeProfiles = scrapeProfilesData?.profiles || [];
+  const existingLists = leadListsData?.lists || [];
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
   const toggleSelect = (id: string) => {
@@ -1657,17 +1721,78 @@ function StagedLeadsTab() {
   const handleRescrape = async () => {
     if (!rescrapeProfileId) return;
     try {
+      const filters: Record<string, any> = { ...rescrapeFilters, status: 'pending' };
       const result = await rescrapeLeads.mutateAsync({
         scrape_profile_id: rescrapeProfileId,
         lead_ids: selectedIds.size > 0 ? Array.from(selectedIds) : undefined,
-        filters: selectedIds.size === 0 ? { has_email: false, has_phone: false, status: 'pending' } : undefined,
+        filters: selectedIds.size === 0 ? filters : undefined,
+        thoroughness: rescrapeThouroughness,
       });
       toast({ title: `Re-scrape job created for ${result.leads_count} sites` });
       setSelectedIds(new Set());
       setShowRescrapeDialog(false);
       setRescrapeProfileId('');
+      setRescrapeThouroughness('standard');
+      setRescrapePreset('');
+      setRescrapeFilters({});
     } catch (err: any) {
       toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleAddToList = async () => {
+    if (selectedIds.size === 0) return;
+    try {
+      let targetListId = addToListId;
+      if (targetListId === 'new' && newListName) {
+        const result = await createLeadList.mutateAsync({
+          name: newListName,
+          lead_ids: Array.from(selectedIds),
+        });
+        toast({ title: `Created list "${newListName}" with ${selectedIds.size} leads` });
+        setSelectedIds(new Set());
+        setShowAddToListDialog(false);
+        setNewListName('');
+        setAddToListId('');
+        return;
+      }
+      if (!targetListId || targetListId === 'new') return;
+      const result = await addLeadsToList.mutateAsync({
+        listId: targetListId,
+        leadIds: Array.from(selectedIds),
+      });
+      toast({ title: `Added ${result.added} leads to list` });
+      setSelectedIds(new Set());
+      setShowAddToListDialog(false);
+      setAddToListId('');
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const applyRescrapePreset = (preset: string) => {
+    if (rescrapePreset === preset) {
+      setRescrapePreset('');
+      setRescrapeFilters({});
+      return;
+    }
+    setRescrapePreset(preset);
+    switch (preset) {
+      case 'missing_contact':
+        setRescrapeFilters({ has_email: false, has_phone: false });
+        break;
+      case 'missing_email':
+        setRescrapeFilters({ has_email: false });
+        break;
+      case 'missing_phone':
+        setRescrapeFilters({ has_phone: false });
+        break;
+      case 'missing_address':
+        setRescrapeFilters({ has_address: false });
+        break;
+      case 'low_quality':
+        setRescrapeFilters({ max_score: 40 });
+        break;
     }
   };
 
@@ -1720,6 +1845,9 @@ function StagedLeadsTab() {
           </Button>
           <Button size="sm" variant="outline" className="border-blue-500/30 text-blue-400 hover:bg-blue-500/10" onClick={() => { setRescrapeProfileId(''); setShowRescrapeDialog(true); }}>
             <RefreshCw className="h-3.5 w-3.5 mr-1" /> Re-scrape
+          </Button>
+          <Button size="sm" variant="outline" className="border-purple-500/30 text-purple-400 hover:bg-purple-500/10" onClick={() => { setAddToListId(''); setShowAddToListDialog(true); }}>
+            <ListPlus className="h-3.5 w-3.5 mr-1" /> Add to List
           </Button>
           <Button size="sm" variant="ghost" className="text-muted-gray" onClick={() => setSelectedIds(new Set())}>
             Clear
@@ -1855,27 +1983,116 @@ function StagedLeadsTab() {
         </DialogContent>
       </Dialog>
 
-      {/* Re-scrape Dialog */}
+      {/* Enhanced Re-scrape Dialog */}
       <Dialog open={showRescrapeDialog} onOpenChange={setShowRescrapeDialog}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Re-scrape Leads</DialogTitle>
             <DialogDescription>
               {selectedIds.size > 0
                 ? `Re-scrape ${selectedIds.size} selected lead${selectedIds.size !== 1 ? 's' : ''} with deeper extraction`
-                : 'Re-scrape all pending leads missing email and phone'}
+                : 'Re-scrape leads matching filter criteria'}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="space-y-5">
+            {/* Smart filter presets — only show when no specific leads selected */}
+            {selectedIds.size === 0 && (
+              <div>
+                <Label className="text-xs text-muted-gray mb-2 block">Quick Filters</Label>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { id: 'missing_contact', label: 'Missing Contact Info', icon: '📭' },
+                    { id: 'missing_email', label: 'Missing Email Only', icon: '✉️' },
+                    { id: 'missing_phone', label: 'Missing Phone Only', icon: '📱' },
+                    { id: 'missing_address', label: 'Missing Address', icon: '📍' },
+                    { id: 'low_quality', label: 'Low Quality (<40)', icon: '⚠️' },
+                  ].map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => applyRescrapePreset(p.id)}
+                      className={`px-2.5 py-1.5 text-xs rounded-md border transition-colors ${
+                        rescrapePreset === p.id
+                          ? 'bg-accent-yellow/20 border-accent-yellow/40 text-accent-yellow'
+                          : 'bg-muted-gray/5 border-muted-gray/20 text-muted-gray hover:text-bone-white hover:border-muted-gray/40'
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Advanced filters toggle */}
+                <button
+                  onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+                  className="flex items-center gap-1 text-xs text-muted-gray hover:text-bone-white mt-2"
+                >
+                  <Filter className="h-3 w-3" />
+                  {showAdvancedFilters ? 'Hide' : 'Show'} advanced filters
+                </button>
+                {showAdvancedFilters && (
+                  <div className="grid grid-cols-2 gap-2 mt-2 p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                    {[
+                      { key: 'has_email', label: 'Missing email', value: false },
+                      { key: 'has_phone', label: 'Missing phone', value: false },
+                      { key: 'has_address', label: 'Missing address', value: false },
+                    ].map((f) => (
+                      <label key={f.key} className="flex items-center gap-2 text-xs text-muted-gray cursor-pointer">
+                        <Checkbox
+                          checked={rescrapeFilters[f.key] === f.value}
+                          onCheckedChange={(checked) => {
+                            setRescrapePreset('');
+                            setRescrapeFilters((prev) => {
+                              const next = { ...prev };
+                              if (checked) next[f.key] = f.value;
+                              else delete next[f.key];
+                              return next;
+                            });
+                          }}
+                        />
+                        {f.label}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Thoroughness selector */}
             <div>
-              <Label>Scrape Profile</Label>
+              <Label className="text-xs text-muted-gray mb-2 block">Thoroughness</Label>
+              <div className="grid grid-cols-4 gap-1">
+                {[
+                  { id: 'quick', label: 'Quick', desc: '3 pages' },
+                  { id: 'standard', label: 'Standard', desc: '5 pages' },
+                  { id: 'thorough', label: 'Thorough', desc: '10p + links' },
+                  { id: 'deep', label: 'Deep Crawl', desc: '20p recursive' },
+                ].map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => setRescrapeThouroughness(t.id)}
+                    className={`px-2 py-2 rounded-md border text-center transition-colors ${
+                      rescrapeThouroughness === t.id
+                        ? 'bg-accent-yellow/20 border-accent-yellow/40 text-accent-yellow'
+                        : 'bg-muted-gray/5 border-muted-gray/20 text-muted-gray hover:text-bone-white'
+                    }`}
+                  >
+                    <div className="text-xs font-medium">{t.label}</div>
+                    <div className="text-[10px] opacity-70">{t.desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Scrape profile selector */}
+            <div>
+              <Label className="text-xs text-muted-gray">Scrape Profile</Label>
               <Select value={rescrapeProfileId} onValueChange={setRescrapeProfileId}>
-                <SelectTrigger><SelectValue placeholder="Select profile..." /></SelectTrigger>
+                <SelectTrigger className="mt-1"><SelectValue placeholder="Select profile..." /></SelectTrigger>
                 <SelectContent>
                   {scrapeProfiles.map((sp: any) => <SelectItem key={sp.id} value={sp.id}>{sp.name}</SelectItem>)}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-gray mt-1">Uses improved extraction: mailto/tel links, smart page discovery</p>
+              <p className="text-xs text-muted-gray/60 mt-1">Thoroughness overrides page/depth settings from profile</p>
             </div>
           </div>
           <DialogFooter>
@@ -1887,12 +2104,52 @@ function StagedLeadsTab() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Add to List Dialog */}
+      <Dialog open={showAddToListDialog} onOpenChange={setShowAddToListDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Add {selectedIds.size} Lead{selectedIds.size !== 1 ? 's' : ''} to List</DialogTitle>
+            <DialogDescription>Choose an existing list or create a new one.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Select List</Label>
+              <Select value={addToListId} onValueChange={(v) => { setAddToListId(v); setNewListName(''); }}>
+                <SelectTrigger><SelectValue placeholder="Choose a list..." /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="new">+ Create New List</SelectItem>
+                  {existingLists.map((ll: any) => (
+                    <SelectItem key={ll.id} value={ll.id}>{ll.name} ({ll.actual_count || ll.lead_count} leads)</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {addToListId === 'new' && (
+              <div>
+                <Label>New List Name</Label>
+                <Input value={newListName} onChange={(e) => setNewListName(e.target.value)} placeholder="e.g. Q1 2026 Outreach" />
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowAddToListDialog(false)}>Cancel</Button>
+            <Button
+              onClick={handleAddToList}
+              disabled={(!addToListId || (addToListId === 'new' && !newListName)) || addLeadsToList.isPending || createLeadList.isPending}
+            >
+              {(addLeadsToList.isPending || createLeadList.isPending) && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+              <ListPlus className="h-4 w-4 mr-1" /> Add to List
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
 // ============================================================================
-// Clean & Import Tab
+// Lead Lists Tab (replaces Clean & Import)
 // ============================================================================
 
 const CHATGPT_PROMPT = `You are a B2B lead-data cleaning assistant for a film/TV production SaaS company called Backlot (by Second Watch Network).
@@ -1918,55 +2175,113 @@ Here is the data:
 
 [PASTE YOUR EXPORTED DATA HERE]`;
 
-function CleanImportTab() {
+const LIST_STATUS_COLORS: Record<string, string> = {
+  raw: 'bg-muted-gray/20 text-muted-gray border-muted-gray/30',
+  exported: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  cleaning: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+  cleaned: 'bg-green-500/20 text-green-400 border-green-500/30',
+  imported: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+};
+
+const LIST_TYPE_COLORS: Record<string, string> = {
+  manual: 'bg-muted-gray/20 text-muted-gray border-muted-gray/30',
+  auto_export: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  auto_rescrape: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+};
+
+function LeadListsTab() {
   const { toast } = useToast();
-  const { data: jobsData } = useScrapeJobs();
-  const exportLeads = useExportLeads();
-  const bulkImport = useBulkImportContacts();
+  const { data: listsData, isLoading: loadingLists } = useLeadLists();
+  const createList = useCreateLeadList();
+  const deleteList = useDeleteLeadList();
+  const updateList = useUpdateLeadList();
+  const exportList = useExportLeadList();
+  const importToList = useImportToLeadList();
+  const removeLeads = useRemoveLeadsFromList();
+  const addLeads = useAddLeadsToList();
+  const { data: stagedData } = useScrapedLeads({ status: 'pending', limit: 200 });
 
-  // Step tracking
-  const [step, setStep] = useState(1);
-
-  // Step 1: export options
-  const [exportJobFilter, setExportJobFilter] = useState('all');
-  const [exportStatusFilter, setExportStatusFilter] = useState('pending');
-  const [exportMinScore, setExportMinScore] = useState('');
-  const [exported, setExported] = useState(false);
-
-  // Step 2: ChatGPT prompt
+  const [selectedListId, setSelectedListId] = useState<string | null>(null);
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [showRenameDialog, setShowRenameDialog] = useState(false);
+  const [showAddLeadsDialog, setShowAddLeadsDialog] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+  const [renameListId, setRenameListId] = useState('');
+  const [renameName, setRenameName] = useState('');
+  const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
+  const [addLeadSearch, setAddLeadSearch] = useState('');
+  const [addLeadSelected, setAddLeadSelected] = useState<Set<string>>(new Set());
+  const [listPage, setListPage] = useState(0);
   const [copied, setCopied] = useState(false);
-
-  // Step 3: file upload
+  const [importTags, setImportTags] = useState('Backlot Prospect');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [importTags, setImportTags] = useState('Backlot Prospect');
   const [importResult, setImportResult] = useState<{
     created: number; skipped: number; errors: string[]; total_rows: number;
   } | null>(null);
 
-  const jobs = jobsData?.jobs || [];
+  const LIST_PAGE_SIZE = 50;
+  const lists = listsData?.lists || [];
+  const selectedList = lists.find((l: any) => l.id === selectedListId);
+
+  const { data: listLeadsData, isLoading: loadingLeads } = useLeadListLeads(
+    selectedListId || undefined,
+    { limit: LIST_PAGE_SIZE, offset: listPage * LIST_PAGE_SIZE }
+  );
+
+  const listLeads = listLeadsData?.leads || [];
+  const listLeadsTotal = listLeadsData?.total || 0;
+  const listTotalPages = Math.ceil(listLeadsTotal / LIST_PAGE_SIZE);
+  const stagedLeads = stagedData?.leads || [];
+
+  const handleCreate = async () => {
+    if (!newName.trim()) return;
+    try {
+      await createList.mutateAsync({ name: newName.trim(), description: newDesc.trim() || undefined });
+      toast({ title: `List "${newName}" created` });
+      setShowCreateDialog(false);
+      setNewName('');
+      setNewDesc('');
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleRename = async () => {
+    if (!renameName.trim() || !renameListId) return;
+    try {
+      await updateList.mutateAsync({ id: renameListId, data: { name: renameName.trim() } });
+      toast({ title: 'List renamed' });
+      setShowRenameDialog(false);
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteList.mutateAsync(id);
+      toast({ title: 'List deleted' });
+      if (selectedListId === id) setSelectedListId(null);
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
 
   const handleExport = async () => {
+    if (!selectedListId) return;
     try {
-      const params: any = {};
-      if (exportJobFilter !== 'all') params.job_id = exportJobFilter;
-      if (exportStatusFilter !== 'all') params.status = exportStatusFilter;
-      if (exportMinScore) params.min_score = parseInt(exportMinScore);
-
-      const blob = await exportLeads.mutateAsync(params);
-
-      // Trigger download
+      const blob = await exportList.mutateAsync(selectedListId);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `scraped_leads_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.download = `${(selectedList?.name || 'lead_list').replace(/\s+/g, '_')}.xlsx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-
-      setExported(true);
-      toast({ title: 'Leads exported to Excel' });
+      toast({ title: 'List exported to Excel' });
     } catch (err: any) {
       toast({ title: 'Export failed', description: err.message, variant: 'destructive' });
     }
@@ -1978,6 +2293,16 @@ function CleanImportTab() {
     toast({ title: 'ChatGPT prompt copied to clipboard' });
     setTimeout(() => setCopied(false), 3000);
   }, [toast]);
+
+  const handleMarkCleaning = async () => {
+    if (!selectedListId) return;
+    try {
+      await updateList.mutateAsync({ id: selectedListId, data: { status: 'cleaning' } });
+      toast({ title: 'List marked as cleaning' });
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1992,16 +2317,12 @@ function CleanImportTab() {
   };
 
   const handleImport = async () => {
-    if (!selectedFile) return;
+    if (!selectedFile || !selectedListId) return;
     try {
-      const result = await bulkImport.mutateAsync({
+      const result = await importToList.mutateAsync({
+        listId: selectedListId,
         file: selectedFile,
-        params: {
-          tags: importTags || undefined,
-          source: 'other',
-          source_detail: 'Clean & Import',
-          temperature: 'cold',
-        },
+        tags: importTags || undefined,
       });
       setImportResult(result);
       toast({
@@ -2013,271 +2334,388 @@ function CleanImportTab() {
     }
   };
 
-  return (
-    <div className="max-w-3xl">
-      {/* Step indicators */}
-      <div className="flex items-center gap-0 mb-8">
-        {[1, 2, 3].map((s) => (
-          <div key={s} className="flex items-center">
-            <button
-              onClick={() => setStep(s)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-colors ${
-                step === s
-                  ? 'bg-accent-yellow text-charcoal-black'
-                  : s < step
-                    ? 'bg-green-500/20 text-green-400'
-                    : 'bg-muted-gray/10 text-muted-gray'
-              }`}
-            >
-              {s < step ? (
-                <CheckCircle2 className="h-4 w-4" />
-              ) : (
-                <span className="w-5 h-5 rounded-full border border-current flex items-center justify-center text-xs">{s}</span>
-              )}
-              {s === 1 ? 'Export' : s === 2 ? 'Clean with AI' : 'Upload'}
-            </button>
-            {s < 3 && <div className={`w-8 h-px mx-1 ${s < step ? 'bg-green-500/40' : 'bg-muted-gray/20'}`} />}
+  const handleRemoveSelected = async () => {
+    if (selectedLeadIds.size === 0 || !selectedListId) return;
+    try {
+      const result = await removeLeads.mutateAsync({
+        listId: selectedListId,
+        leadIds: Array.from(selectedLeadIds),
+      });
+      toast({ title: `Removed ${result.removed} leads from list` });
+      setSelectedLeadIds(new Set());
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleAddLeads = async () => {
+    if (addLeadSelected.size === 0 || !selectedListId) return;
+    try {
+      const result = await addLeads.mutateAsync({
+        listId: selectedListId,
+        leadIds: Array.from(addLeadSelected),
+      });
+      toast({ title: `Added ${result.added} leads to list` });
+      setShowAddLeadsDialog(false);
+      setAddLeadSelected(new Set());
+      setAddLeadSearch('');
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  // Detail view for a selected list
+  if (selectedListId && selectedList) {
+    const status = selectedList.status;
+
+    return (
+      <div>
+        {/* Breadcrumb */}
+        <button onClick={() => { setSelectedListId(null); setSelectedLeadIds(new Set()); setListPage(0); }} className="flex items-center gap-1 text-sm text-muted-gray hover:text-bone-white mb-4">
+          <ChevronLeft className="h-4 w-4" /> Back to lists
+        </button>
+
+        {/* Header */}
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <FolderOpen className="h-5 w-5 text-accent-yellow" />
+            <h3 className="text-lg font-heading text-bone-white">{selectedList.name}</h3>
+            <Badge className={`text-xs ${LIST_STATUS_COLORS[status] || ''}`}>{status}</Badge>
+            <Badge className={`text-xs ${LIST_TYPE_COLORS[selectedList.list_type] || ''}`}>
+              {selectedList.list_type === 'auto_export' ? 'Auto (Export)' : selectedList.list_type === 'auto_rescrape' ? 'Auto (Re-scrape)' : 'Manual'}
+            </Badge>
+            <span className="text-sm text-muted-gray">{selectedList.actual_count || selectedList.lead_count} leads</span>
           </div>
-        ))}
-      </div>
-
-      {/* Step 1: Export */}
-      {step === 1 && (
-        <div className="space-y-6">
-          <div>
-            <h3 className="text-base font-medium text-bone-white mb-1">Step 1: Export Scraped Leads</h3>
-            <p className="text-sm text-muted-gray">
-              Download your scraped leads as an Excel file. This file will be cleaned with ChatGPT in the next step.
-            </p>
-          </div>
-
-          <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4 space-y-4">
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <Label className="text-xs text-muted-gray">Job</Label>
-                <Select value={exportJobFilter} onValueChange={setExportJobFilter}>
-                  <SelectTrigger className="mt-1"><SelectValue placeholder="All jobs" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All jobs</SelectItem>
-                    {jobs.map((j: any) => (
-                      <SelectItem key={j.id} value={j.id}>
-                        {(j.source_name || j.discovery_profile_name || 'Job')} ({new Date(j.created_at).toLocaleDateString()})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label className="text-xs text-muted-gray">Status</Label>
-                <Select value={exportStatusFilter} onValueChange={setExportStatusFilter}>
-                  <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="pending">Pending</SelectItem>
-                    <SelectItem value="approved">Approved</SelectItem>
-                    <SelectItem value="rejected">Rejected</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label className="text-xs text-muted-gray">Min Score</Label>
-                <Input className="mt-1" type="number" placeholder="Any" value={exportMinScore} onChange={(e) => setExportMinScore(e.target.value)} />
-              </div>
-            </div>
-
-            <Button onClick={handleExport} disabled={exportLeads.isPending} className="w-full">
-              {exportLeads.isPending ? (
-                <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Exporting...</>
-              ) : (
-                <><Download className="h-4 w-4 mr-2" /> Export to Excel</>
-              )}
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => setShowAddLeadsDialog(true)}>
+              <Plus className="h-3.5 w-3.5 mr-1" /> Add Leads
             </Button>
-
-            {exported && (
-              <div className="flex items-center gap-2 text-sm text-green-400">
-                <CheckCircle2 className="h-4 w-4" />
-                File downloaded. Proceed to Step 2.
-              </div>
+            {selectedLeadIds.size > 0 && (
+              <Button size="sm" variant="outline" className="border-red-500/30 text-red-400" onClick={handleRemoveSelected}>
+                <X className="h-3.5 w-3.5 mr-1" /> Remove {selectedLeadIds.size}
+              </Button>
             )}
           </div>
-
-          <div className="flex justify-end">
-            <Button variant="outline" onClick={() => setStep(2)}>
-              Next: Clean with AI <ChevronRight className="h-4 w-4 ml-1" />
-            </Button>
-          </div>
         </div>
-      )}
 
-      {/* Step 2: Clean with ChatGPT */}
-      {step === 2 && (
-        <div className="space-y-6">
-          <div>
-            <h3 className="text-base font-medium text-bone-white mb-1">Step 2: Clean with ChatGPT</h3>
-            <p className="text-sm text-muted-gray">
-              Copy the prompt below, paste it into ChatGPT, then paste your exported data after the prompt.
-              ChatGPT will clean, validate, and enrich your leads.
-            </p>
-          </div>
-
-          <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-2 bg-muted-gray/10 border-b border-muted-gray/20">
-              <div className="flex items-center gap-2 text-sm text-muted-gray">
-                <Sparkles className="h-4 w-4 text-accent-yellow" />
-                ChatGPT Cleaning Prompt
-              </div>
-              <Button size="sm" variant="outline" onClick={handleCopyPrompt}>
-                {copied ? (
-                  <><Check className="h-3.5 w-3.5 mr-1" /> Copied!</>
-                ) : (
-                  <><Copy className="h-3.5 w-3.5 mr-1" /> Copy Prompt</>
-                )}
+        {/* Pipeline actions based on status */}
+        <div className="mb-4 p-3 bg-muted-gray/5 border border-muted-gray/10 rounded-lg">
+          {status === 'raw' && (
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-gray">Export this list to Excel for ChatGPT cleaning.</p>
+              <Button size="sm" onClick={handleExport} disabled={exportList.isPending}>
+                {exportList.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Download className="h-4 w-4 mr-1" />}
+                Export to Excel
               </Button>
             </div>
-            <pre className="p-4 text-xs text-muted-gray/80 whitespace-pre-wrap max-h-[300px] overflow-y-auto font-mono leading-relaxed">
-              {CHATGPT_PROMPT}
-            </pre>
-          </div>
-
-          <div className="bg-accent-yellow/5 border border-accent-yellow/20 rounded-lg p-4">
-            <h4 className="text-sm font-medium text-accent-yellow mb-2">Instructions</h4>
-            <ol className="text-sm text-muted-gray space-y-1 list-decimal list-inside">
-              <li>Open ChatGPT (GPT-4 recommended for best results)</li>
-              <li>Paste the prompt above</li>
-              <li>Open your exported Excel file and copy all data rows</li>
-              <li>Paste the data after the prompt in ChatGPT</li>
-              <li>ChatGPT will return a cleaned table</li>
-              <li>Copy the cleaned data into a new Excel file with the same column headers</li>
-              <li>Save as .xlsx and proceed to Step 3</li>
-            </ol>
-          </div>
-
-          <div className="flex justify-between">
-            <Button variant="outline" onClick={() => setStep(1)}>
-              <ChevronLeft className="h-4 w-4 mr-1" /> Back
-            </Button>
-            <Button variant="outline" onClick={() => setStep(3)}>
-              Next: Upload <ChevronRight className="h-4 w-4 ml-1" />
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Step 3: Upload */}
-      {step === 3 && (
-        <div className="space-y-6">
-          <div>
-            <h3 className="text-base font-medium text-bone-white mb-1">Step 3: Upload Cleaned File</h3>
-            <p className="text-sm text-muted-gray">
-              Upload your ChatGPT-cleaned .xlsx file. Each row will be imported as a CRM contact.
-            </p>
-          </div>
-
-          <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4 space-y-4">
-            {/* File drop area */}
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-muted-gray/30 rounded-lg p-8 text-center cursor-pointer hover:border-accent-yellow/40 transition-colors"
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".xlsx,.xls"
-                onChange={handleFileSelect}
-                className="hidden"
-              />
-              {selectedFile ? (
-                <div className="flex items-center justify-center gap-3">
-                  <FileSpreadsheet className="h-8 w-8 text-green-400" />
-                  <div className="text-left">
-                    <p className="text-sm font-medium text-bone-white">{selectedFile.name}</p>
-                    <p className="text-xs text-muted-gray">{(selectedFile.size / 1024).toFixed(1)} KB</p>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-muted-gray"
-                    onClick={(e) => { e.stopPropagation(); setSelectedFile(null); setImportResult(null); }}
-                  >
-                    <X className="h-4 w-4" />
+          )}
+          {status === 'exported' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-muted-gray">Copy the ChatGPT prompt, clean your data, then mark as cleaning.</p>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={handleCopyPrompt}>
+                    {copied ? <><Check className="h-3.5 w-3.5 mr-1" /> Copied!</> : <><Copy className="h-3.5 w-3.5 mr-1" /> Copy Prompt</>}
                   </Button>
+                  <Button size="sm" onClick={handleMarkCleaning}>Mark as Cleaning</Button>
                 </div>
-              ) : (
-                <>
-                  <Upload className="h-8 w-8 mx-auto text-muted-gray/50 mb-2" />
-                  <p className="text-sm text-muted-gray">Click to select your cleaned .xlsx file</p>
-                  <p className="text-xs text-muted-gray/50 mt-1">Max 10MB</p>
-                </>
-              )}
+              </div>
             </div>
-
-            {/* Tags */}
-            <div>
-              <Label className="text-xs text-muted-gray">Tags (comma-separated)</Label>
-              <Input
-                className="mt-1"
-                value={importTags}
-                onChange={(e) => setImportTags(e.target.value)}
-                placeholder="e.g. Backlot Prospect, Q1 2026"
-              />
-              <p className="text-xs text-muted-gray/60 mt-1">Applied to all imported contacts</p>
-            </div>
-
-            {/* Import button */}
-            <Button
-              onClick={handleImport}
-              disabled={!selectedFile || bulkImport.isPending}
-              className="w-full"
-            >
-              {bulkImport.isPending ? (
-                <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Importing...</>
-              ) : (
-                <><Upload className="h-4 w-4 mr-2" /> Import Contacts</>
-              )}
-            </Button>
-
-            {/* Results */}
-            {importResult && (
-              <div className="border border-muted-gray/20 rounded-lg p-4 space-y-3">
-                <h4 className="text-sm font-medium text-bone-white">Import Results</h4>
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="bg-green-500/10 rounded p-3 text-center">
-                    <p className="text-2xl font-bold text-green-400">{importResult.created}</p>
-                    <p className="text-xs text-muted-gray">Created</p>
-                  </div>
-                  <div className="bg-amber-500/10 rounded p-3 text-center">
-                    <p className="text-2xl font-bold text-amber-400">{importResult.skipped}</p>
-                    <p className="text-xs text-muted-gray">Skipped</p>
-                  </div>
-                  <div className="bg-red-500/10 rounded p-3 text-center">
-                    <p className="text-2xl font-bold text-red-400">{importResult.errors.length}</p>
-                    <p className="text-xs text-muted-gray">Errors</p>
-                  </div>
-                </div>
-                {importResult.errors.length > 0 && (
-                  <div className="mt-2">
-                    <p className="text-xs text-red-400 font-medium mb-1">Errors:</p>
-                    <div className="max-h-[120px] overflow-y-auto space-y-0.5">
-                      {importResult.errors.map((err, i) => (
-                        <p key={i} className="text-xs text-red-400/70 flex items-start gap-1">
-                          <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
-                          {err}
-                        </p>
-                      ))}
+          )}
+          {status === 'cleaning' && (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-gray">Upload your ChatGPT-cleaned .xlsx file to import as CRM contacts.</p>
+              <div className="flex items-center gap-3">
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex-1 border-2 border-dashed border-muted-gray/30 rounded-lg p-4 text-center cursor-pointer hover:border-accent-yellow/40 transition-colors"
+                >
+                  <input ref={fileInputRef} type="file" accept=".xlsx,.xls" onChange={handleFileSelect} className="hidden" />
+                  {selectedFile ? (
+                    <div className="flex items-center justify-center gap-2">
+                      <FileSpreadsheet className="h-5 w-5 text-green-400" />
+                      <span className="text-sm text-bone-white">{selectedFile.name}</span>
+                      <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); setSelectedFile(null); }}><X className="h-3.5 w-3.5" /></Button>
                     </div>
-                  </div>
-                )}
+                  ) : (
+                    <p className="text-sm text-muted-gray"><Upload className="h-4 w-4 inline mr-1" /> Select cleaned .xlsx file</p>
+                  )}
+                </div>
+                <div className="w-[200px]">
+                  <Input value={importTags} onChange={(e) => setImportTags(e.target.value)} placeholder="Tags" className="text-sm" />
+                </div>
+                <Button onClick={handleImport} disabled={!selectedFile || importToList.isPending}>
+                  {importToList.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Upload className="h-4 w-4 mr-1" />}
+                  Import
+                </Button>
+              </div>
+            </div>
+          )}
+          {status === 'imported' && importResult && (
+            <div className="grid grid-cols-3 gap-3">
+              <div className="bg-green-500/10 rounded p-3 text-center">
+                <p className="text-xl font-bold text-green-400">{importResult.created}</p>
+                <p className="text-xs text-muted-gray">Created</p>
+              </div>
+              <div className="bg-amber-500/10 rounded p-3 text-center">
+                <p className="text-xl font-bold text-amber-400">{importResult.skipped}</p>
+                <p className="text-xs text-muted-gray">Skipped</p>
+              </div>
+              <div className="bg-red-500/10 rounded p-3 text-center">
+                <p className="text-xl font-bold text-red-400">{importResult.errors.length}</p>
+                <p className="text-xs text-muted-gray">Errors</p>
+              </div>
+            </div>
+          )}
+          {status === 'imported' && !importResult && (
+            <p className="text-sm text-green-400 flex items-center gap-1"><CheckCircle2 className="h-4 w-4" /> This list has been imported into CRM contacts.</p>
+          )}
+        </div>
+
+        {/* Leads table */}
+        {loadingLeads ? (
+          <div className="flex items-center gap-2 text-muted-gray py-8"><Loader2 className="h-4 w-4 animate-spin" /> Loading leads...</div>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-muted-gray/20 text-left text-xs text-muted-gray">
+                    <th className="p-2 w-8">
+                      <Checkbox
+                        checked={listLeads.length > 0 && selectedLeadIds.size === listLeads.length}
+                        onCheckedChange={() => {
+                          if (selectedLeadIds.size === listLeads.length) setSelectedLeadIds(new Set());
+                          else setSelectedLeadIds(new Set(listLeads.map((l: any) => l.id)));
+                        }}
+                      />
+                    </th>
+                    <th className="p-2">Company</th>
+                    <th className="p-2">Website</th>
+                    <th className="p-2">Email</th>
+                    <th className="p-2">Phone</th>
+                    <th className="p-2">Score</th>
+                    <th className="p-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {listLeads.map((lead: any) => (
+                    <tr key={lead.id} className="border-b border-muted-gray/10 hover:bg-muted-gray/5">
+                      <td className="p-2">
+                        <Checkbox
+                          checked={selectedLeadIds.has(lead.id)}
+                          onCheckedChange={() => {
+                            setSelectedLeadIds((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(lead.id)) next.delete(lead.id);
+                              else next.add(lead.id);
+                              return next;
+                            });
+                          }}
+                        />
+                      </td>
+                      <td className="p-2 text-bone-white font-medium max-w-[200px] truncate">{lead.company_name}</td>
+                      <td className="p-2">
+                        {lead.website ? (
+                          <a href={lead.website} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline flex items-center gap-1 text-xs truncate max-w-[160px]">
+                            <Globe className="h-3 w-3 flex-shrink-0" />
+                            {lead.website.replace(/^https?:\/\//, '')}
+                          </a>
+                        ) : <span className="text-muted-gray/50">-</span>}
+                      </td>
+                      <td className="p-2 text-xs text-muted-gray max-w-[180px] truncate">
+                        {lead.email ? lead.email.split('\n')[0] : <span className="text-muted-gray/50">-</span>}
+                      </td>
+                      <td className="p-2 text-xs text-muted-gray">
+                        {lead.phone ? lead.phone.split('\n')[0] : <span className="text-muted-gray/50">-</span>}
+                      </td>
+                      <td className="p-2"><ScoreBar score={lead.match_score} /></td>
+                      <td className="p-2"><Badge className={`text-xs ${STATUS_COLORS[lead.status] || ''}`}>{lead.status}</Badge></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {listLeads.length === 0 && (
+              <div className="text-center py-8 text-muted-gray">
+                <p>No leads in this list yet.</p>
               </div>
             )}
-          </div>
+            {listTotalPages > 1 && (
+              <div className="flex items-center justify-between mt-4 text-sm text-muted-gray">
+                <span>{listPage * LIST_PAGE_SIZE + 1}-{Math.min((listPage + 1) * LIST_PAGE_SIZE, listLeadsTotal)} of {listLeadsTotal}</span>
+                <div className="flex items-center gap-1">
+                  <Button variant="ghost" size="sm" disabled={listPage === 0} onClick={() => setListPage(listPage - 1)}>
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <span className="px-2">Page {listPage + 1} of {listTotalPages}</span>
+                  <Button variant="ghost" size="sm" disabled={listPage >= listTotalPages - 1} onClick={() => setListPage(listPage + 1)}>
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
 
-          <div className="flex justify-between">
-            <Button variant="outline" onClick={() => setStep(2)}>
-              <ChevronLeft className="h-4 w-4 mr-1" /> Back
-            </Button>
-          </div>
+        {/* Add Leads Dialog */}
+        <Dialog open={showAddLeadsDialog} onOpenChange={setShowAddLeadsDialog}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Add Leads to List</DialogTitle>
+              <DialogDescription>Select staged leads to add to "{selectedList.name}"</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <Input placeholder="Search leads..." value={addLeadSearch} onChange={(e) => setAddLeadSearch(e.target.value)} />
+              <div className="max-h-[300px] overflow-y-auto border border-muted-gray/20 rounded-lg">
+                {stagedLeads
+                  .filter((l: any) => !addLeadSearch || l.company_name?.toLowerCase().includes(addLeadSearch.toLowerCase()) || l.website?.toLowerCase().includes(addLeadSearch.toLowerCase()))
+                  .map((lead: any) => (
+                    <label key={lead.id} className="flex items-center gap-3 px-3 py-2 hover:bg-muted-gray/5 cursor-pointer border-b border-muted-gray/10 last:border-0">
+                      <Checkbox
+                        checked={addLeadSelected.has(lead.id)}
+                        onCheckedChange={() => {
+                          setAddLeadSelected((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(lead.id)) next.delete(lead.id);
+                            else next.add(lead.id);
+                            return next;
+                          });
+                        }}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-bone-white truncate">{lead.company_name}</p>
+                        <p className="text-xs text-muted-gray truncate">{lead.website || 'No website'}</p>
+                      </div>
+                      <ScoreBar score={lead.match_score} />
+                    </label>
+                  ))}
+                {stagedLeads.length === 0 && <p className="p-4 text-center text-sm text-muted-gray">No pending staged leads</p>}
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShowAddLeadsDialog(false)}>Cancel</Button>
+              <Button onClick={handleAddLeads} disabled={addLeadSelected.size === 0 || addLeads.isPending}>
+                {addLeads.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                Add {addLeadSelected.size} Lead{addLeadSelected.size !== 1 ? 's' : ''}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    );
+  }
+
+  // Lists view (default)
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-sm text-muted-gray">Organize leads into named groups for the export, clean, and import pipeline.</p>
+        <Button size="sm" onClick={() => setShowCreateDialog(true)}>
+          <Plus className="h-3.5 w-3.5 mr-1" /> Create List
+        </Button>
+      </div>
+
+      {loadingLists ? (
+        <div className="flex items-center gap-2 text-muted-gray py-8"><Loader2 className="h-4 w-4 animate-spin" /> Loading lists...</div>
+      ) : lists.length === 0 ? (
+        <div className="text-center py-12 text-muted-gray">
+          <FolderOpen className="h-8 w-8 mx-auto mb-2 opacity-50" />
+          <p>No lead lists yet.</p>
+          <p className="text-xs mt-1">Lists are created automatically when you export or re-scrape leads, or you can create one manually.</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-muted-gray/20 text-left text-xs text-muted-gray">
+                <th className="p-2">Name</th>
+                <th className="p-2">Type</th>
+                <th className="p-2">Status</th>
+                <th className="p-2">Leads</th>
+                <th className="p-2">Created</th>
+                <th className="p-2 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lists.map((ll: any) => (
+                <tr key={ll.id} className="border-b border-muted-gray/10 hover:bg-muted-gray/5 cursor-pointer" onClick={() => { setSelectedListId(ll.id); setListPage(0); setSelectedLeadIds(new Set()); }}>
+                  <td className="p-2 text-bone-white font-medium">{ll.name}</td>
+                  <td className="p-2">
+                    <Badge className={`text-xs ${LIST_TYPE_COLORS[ll.list_type] || ''}`}>
+                      {ll.list_type === 'auto_export' ? 'Auto' : ll.list_type === 'auto_rescrape' ? 'Auto' : 'Manual'}
+                    </Badge>
+                  </td>
+                  <td className="p-2"><Badge className={`text-xs ${LIST_STATUS_COLORS[ll.status] || ''}`}>{ll.status}</Badge></td>
+                  <td className="p-2 text-muted-gray">{ll.actual_count || ll.lead_count}</td>
+                  <td className="p-2 text-xs text-muted-gray">{new Date(ll.created_at).toLocaleDateString()}</td>
+                  <td className="p-2 text-right" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center justify-end gap-1">
+                      <Button variant="ghost" size="sm" onClick={() => { setSelectedListId(ll.id); setListPage(0); }}>
+                        <Eye className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => { setRenameListId(ll.id); setRenameName(ll.name); setShowRenameDialog(true); }}>
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="sm" className="text-red-400 hover:text-red-300" onClick={() => handleDelete(ll.id)}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
+
+      {/* Create Dialog */}
+      <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Create Lead List</DialogTitle>
+            <DialogDescription>Create a new list to organize leads.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Name</Label>
+              <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. Q1 2026 Outreach" />
+            </div>
+            <div>
+              <Label>Description (optional)</Label>
+              <Textarea value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder="Notes about this list..." rows={2} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCreateDialog(false)}>Cancel</Button>
+            <Button onClick={handleCreate} disabled={!newName.trim() || createList.isPending}>
+              {createList.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+              Create List
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Rename Dialog */}
+      <Dialog open={showRenameDialog} onOpenChange={setShowRenameDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Rename List</DialogTitle>
+            <DialogDescription>Enter a new name for this list.</DialogDescription>
+          </DialogHeader>
+          <div>
+            <Label>Name</Label>
+            <Input value={renameName} onChange={(e) => setRenameName(e.target.value)} />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowRenameDialog(false)}>Cancel</Button>
+            <Button onClick={handleRename} disabled={!renameName.trim() || updateList.isPending}>
+              {updateList.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -2573,7 +3011,7 @@ const AdminScraping = () => {
       {activeTab === 'Scrape Profiles' && <ScrapeProfilesTab />}
       {activeTab === 'Jobs' && <JobsTab />}
       {activeTab === 'Staged Leads' && <StagedLeadsTab />}
-      {activeTab === 'Clean & Import' && <CleanImportTab />}
+      {activeTab === 'Lead Lists' && <LeadListsTab />}
       {activeTab === 'Sources' && <SourcesTab />}
       {activeTab === 'Settings' && <SettingsTab />}
     </div>

@@ -4,6 +4,7 @@ Contacts, activities, interaction counts, and follow-ups.
 """
 import logging
 import json
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 from psycopg2.extras import Json as PgJson
@@ -6185,10 +6186,20 @@ class MergeLeadRequest(BaseModel):
     contact_id: str
 
 
+THOROUGHNESS_PRESETS = {
+    "quick": {"max_pages_per_site": 3, "follow_internal_links": False, "max_depth": 0, "delay_ms": 1000},
+    "standard": {"max_pages_per_site": 5, "follow_internal_links": False, "max_depth": 0, "delay_ms": 1500},
+    "thorough": {"max_pages_per_site": 10, "follow_internal_links": True, "max_depth": 1, "delay_ms": 1500},
+    "deep": {"max_pages_per_site": 20, "follow_internal_links": True, "max_depth": 2, "delay_ms": 2000},
+}
+
+
 class RescrapeLeadsRequest(BaseModel):
     scrape_profile_id: str
     lead_ids: Optional[List[str]] = None
     filters: Optional[Dict[str, Any]] = None  # e.g. {"has_email": false}
+    thoroughness: Optional[str] = None  # "quick", "standard", "thorough", "deep"
+    profile_overrides: Optional[Dict[str, Any]] = None
 
 
 # --- Scrape Sources CRUD ---
@@ -6411,6 +6422,132 @@ async def get_scrape_job(
     if not job:
         raise HTTPException(404, "Job not found")
     return {"job": job}
+
+
+@router.post("/scraping/jobs/{job_id}/retry")
+async def retry_scrape_job(
+    job_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Retry a failed or incomplete scrape job.
+
+    Creates a new job with the same config, targeting sites that weren't
+    successfully scraped in the original job (no lead created).
+    """
+    original = execute_single(
+        "SELECT * FROM crm_scrape_jobs WHERE id = :id",
+        {"id": job_id},
+    )
+    if not original:
+        raise HTTPException(404, "Job not found")
+    if original["status"] not in ("failed", "completed"):
+        raise HTTPException(400, "Can only retry failed or completed jobs")
+
+    sites_without_leads = []
+
+    # For discovery-based jobs, find sites that were linked but didn't produce leads
+    if original.get("discovery_run_id"):
+        sites_without_leads = execute_query(
+            """
+            SELECT ds.* FROM crm_discovery_sites ds
+            WHERE ds.scrape_job_id = :job_id
+            AND NOT EXISTS (
+                SELECT 1 FROM crm_scraped_leads sl
+                WHERE sl.job_id = :job_id AND sl.website = ds.homepage_url
+            )
+            """,
+            {"job_id": job_id},
+        )
+
+        if not sites_without_leads:
+            raise HTTPException(400, "All sites from this job already have leads — nothing to retry")
+
+        # Create new job with same config
+        new_job = execute_single(
+            """
+            INSERT INTO crm_scrape_jobs (
+                discovery_run_id, scrape_profile_id, created_by, filters,
+                total_sites, profile_snapshot
+            ) VALUES (
+                :run_id, :sp_id, :created_by, CAST(:filters AS jsonb),
+                :total_sites, CAST(:snapshot AS jsonb)
+            ) RETURNING *
+            """,
+            {
+                "run_id": original["discovery_run_id"],
+                "sp_id": original.get("scrape_profile_id"),
+                "created_by": profile["id"],
+                "filters": json.dumps({"retry_of": job_id}),
+                "total_sites": len(sites_without_leads),
+                "snapshot": json.dumps(
+                    original["profile_snapshot"] if isinstance(original["profile_snapshot"], dict)
+                    else json.loads(original["profile_snapshot"] or "{}"),
+                    default=str,
+                ),
+            },
+        )
+
+        # Re-link remaining sites to new job
+        site_ids = [s["id"] for s in sites_without_leads]
+        placeholders = ", ".join(f":sid_{i}" for i in range(len(site_ids)))
+        params = {f"sid_{i}": sid for i, sid in enumerate(site_ids)}
+        params["job_id"] = new_job["id"]
+        execute_query(
+            f"""
+            UPDATE crm_discovery_sites
+            SET scrape_job_id = :job_id
+            WHERE id IN ({placeholders})
+            RETURNING id
+            """,
+            params,
+        )
+
+    elif original.get("source_id"):
+        # Legacy source-based job — just re-create with same source/filters
+        new_job = execute_single(
+            """
+            INSERT INTO crm_scrape_jobs (
+                source_id, created_by, filters
+            ) VALUES (
+                :source_id, :created_by, CAST(:filters AS jsonb)
+            ) RETURNING *
+            """,
+            {
+                "source_id": original["source_id"],
+                "created_by": profile["id"],
+                "filters": json.dumps(original.get("filters") or {}),
+            },
+        )
+    else:
+        raise HTTPException(400, "Job has no source or discovery run to retry from")
+
+    # Launch ECS scraper
+    ecs_task_arn = None
+    try:
+        ecs_task_arn = _launch_ecs_task(
+            "scraper",
+            [{"name": "JOB_ID", "value": str(new_job["id"])}],
+        )
+        if ecs_task_arn:
+            execute_single(
+                "UPDATE crm_scrape_jobs SET ecs_task_arn = :arn WHERE id = :id RETURNING id",
+                {"arn": ecs_task_arn, "id": new_job["id"]},
+            )
+    except Exception as ecs_error:
+        logger.error(f"Failed to start ECS scraper for retry: {ecs_error}")
+        try:
+            execute_single(
+                "UPDATE crm_scrape_jobs SET status = 'failed', error_message = :msg WHERE id = :id RETURNING id",
+                {"msg": f"ECS launch failed: {str(ecs_error)[:500]}", "id": new_job["id"]},
+            )
+        except Exception:
+            pass
+
+    return {
+        "job": new_job,
+        "sites_remaining": len(sites_without_leads) if original.get("discovery_run_id") else None,
+        "ecs_task_arn": ecs_task_arn,
+    }
 
 
 # --- Scraped Leads ---
@@ -6636,6 +6773,11 @@ async def rescrape_leads(
             conditions.append("(l.email IS NULL OR l.email = '')")
         if data.filters.get("has_phone") is False:
             conditions.append("(l.phone IS NULL OR l.phone = '')")
+        if data.filters.get("has_address") is False:
+            conditions.append("(l.address IS NULL OR l.address = '')")
+        if data.filters.get("max_score") is not None:
+            conditions.append("l.match_score <= :max_score")
+            params["max_score"] = data.filters["max_score"]
         if data.filters.get("status"):
             conditions.append("l.status = :filter_status")
             params["filter_status"] = data.filters["status"]
@@ -6663,6 +6805,16 @@ async def rescrape_leads(
     # Build scrape profile snapshot
     sp_snapshot = {k: v for k, v in sp.items() if k not in ("created_at", "updated_at", "created_by")}
 
+    # Apply thoroughness overrides
+    if data.thoroughness and data.thoroughness in THOROUGHNESS_PRESETS:
+        sp_snapshot.update(THOROUGHNESS_PRESETS[data.thoroughness])
+
+    # Apply any additional profile overrides
+    if data.profile_overrides:
+        for k, v in data.profile_overrides.items():
+            if k in ("max_pages_per_site", "follow_internal_links", "max_depth", "delay_ms"):
+                sp_snapshot[k] = v
+
     # Use the discovery_run_id from the first lead if available
     discovery_run_id = None
     for lead in leads:
@@ -6677,7 +6829,7 @@ async def rescrape_leads(
             discovery_run_id, scrape_profile_id, created_by, filters,
             total_sites, profile_snapshot
         ) VALUES (
-            :run_id, :sp_id, :created_by, :filters::jsonb,
+            :run_id, :sp_id, :created_by, CAST(:filters AS jsonb),
             :total_sites, CAST(:snapshot AS jsonb)
         ) RETURNING *
         """,
@@ -6740,10 +6892,37 @@ async def rescrape_leads(
         except Exception:
             pass
 
+    # Auto-create lead list tracking re-scraped leads
+    lead_list = None
+    try:
+        lead_list = execute_single(
+            """
+            INSERT INTO crm_lead_lists (name, list_type, status, lead_count, source_job_id, created_by, metadata)
+            VALUES (:name, 'auto_rescrape', 'raw', :count, :job_id, :uid, :meta)
+            RETURNING *
+            """,
+            {
+                "name": f"Re-scrape {len(leads)} leads ({data.thoroughness or 'standard'})",
+                "count": len(leads),
+                "job_id": job["id"],
+                "uid": profile["id"],
+                "meta": json.dumps({"thoroughness": data.thoroughness or "standard", "filters": data.filters}),
+            },
+        )
+        if lead_list:
+            for idx, lead in enumerate(leads):
+                execute_single(
+                    "INSERT INTO crm_lead_list_items (list_id, lead_id, position) VALUES (:lid, :lead_id, :pos) ON CONFLICT DO NOTHING RETURNING id",
+                    {"lid": lead_list["id"], "lead_id": lead["id"], "pos": idx},
+                )
+    except Exception as list_err:
+        logger.warning(f"Failed to create auto lead list for rescrape: {list_err}")
+
     return {
         "job": job,
         "leads_count": len(leads),
         "ecs_task_arn": ecs_task_arn,
+        "lead_list_id": lead_list["id"] if lead_list else None,
     }
 
 
@@ -7471,7 +7650,7 @@ async def export_scraped_leads(
 
     rows = execute_query(
         f"""
-        SELECT l.company_name, l.website, l.email, l.phone,
+        SELECT l.id, l.company_name, l.website, l.email, l.phone,
                l.address, l.city, l.state, l.country,
                l.description, l.tags, l.match_score, l.status,
                l.raw_data
@@ -7481,6 +7660,31 @@ async def export_scraped_leads(
         """,
         params,
     )
+
+    # Auto-create lead list for exported leads
+    try:
+        if rows:
+            lead_list = execute_single(
+                """
+                INSERT INTO crm_lead_lists (name, list_type, status, lead_count, created_by, export_filters)
+                VALUES (:name, 'auto_export', 'exported', :count, :uid, :filters)
+                RETURNING *
+                """,
+                {
+                    "name": f"Export {len(rows)} leads ({datetime.now().strftime('%Y-%m-%d %H:%M')})",
+                    "count": len(rows),
+                    "uid": profile["id"],
+                    "filters": json.dumps({"job_id": job_id, "status": status, "min_score": min_score}),
+                },
+            )
+            if lead_list:
+                for idx, row in enumerate(rows):
+                    execute_single(
+                        "INSERT INTO crm_lead_list_items (list_id, lead_id, position) VALUES (:lid, :lead_id, :pos) ON CONFLICT DO NOTHING RETURNING id",
+                        {"lid": lead_list["id"], "lead_id": row["id"], "pos": idx},
+                    )
+    except Exception as list_err:
+        logger.warning(f"Failed to create auto lead list for export: {list_err}")
 
     wb = Workbook()
     ws = wb.active
@@ -7662,6 +7866,419 @@ async def bulk_import_contacts(
                 break
 
     wb.close()
+
+    return {
+        "created": created,
+        "skipped": skipped,
+        "errors": errors[:20],
+        "total_rows": created + skipped + len(errors),
+    }
+
+
+# ============================================================================
+# Scraping — Lead Lists
+# ============================================================================
+
+class LeadListCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    lead_ids: Optional[List[str]] = None
+
+
+class LeadListUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+
+
+@router.get("/scraping/lead-lists")
+async def list_lead_lists(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """List all lead lists."""
+    rows = execute_query(
+        """
+        SELECT ll.*, p.first_name || ' ' || p.last_name as created_by_name,
+               (SELECT COUNT(*) FROM crm_lead_list_items WHERE list_id = ll.id) as actual_count
+        FROM crm_lead_lists ll
+        LEFT JOIN profiles p ON p.id = ll.created_by
+        ORDER BY ll.created_at DESC
+        """
+    )
+    return {"lists": rows or []}
+
+
+@router.post("/scraping/lead-lists")
+async def create_lead_list(
+    data: LeadListCreate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Create a new lead list, optionally with initial leads."""
+    lead_list = execute_single(
+        """
+        INSERT INTO crm_lead_lists (name, description, list_type, created_by, lead_count)
+        VALUES (:name, :desc, 'manual', :uid, 0)
+        RETURNING *
+        """,
+        {"name": data.name, "desc": data.description, "uid": profile["id"]},
+    )
+    if data.lead_ids:
+        for idx, lid in enumerate(data.lead_ids):
+            execute_single(
+                "INSERT INTO crm_lead_list_items (list_id, lead_id, position) VALUES (:lid, :lead_id, :pos) ON CONFLICT DO NOTHING RETURNING id",
+                {"lid": lead_list["id"], "lead_id": lid, "pos": idx},
+            )
+        execute_single(
+            "UPDATE crm_lead_lists SET lead_count = :count WHERE id = :id RETURNING id",
+            {"count": len(data.lead_ids), "id": lead_list["id"]},
+        )
+        lead_list["lead_count"] = len(data.lead_ids)
+    return {"list": lead_list}
+
+
+@router.get("/scraping/lead-lists/{list_id}")
+async def get_lead_list(
+    list_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Get a single lead list with its lead count."""
+    ll = execute_single(
+        """
+        SELECT ll.*, p.first_name || ' ' || p.last_name as created_by_name,
+               (SELECT COUNT(*) FROM crm_lead_list_items WHERE list_id = ll.id) as actual_count
+        FROM crm_lead_lists ll
+        LEFT JOIN profiles p ON p.id = ll.created_by
+        WHERE ll.id = :id
+        """,
+        {"id": list_id},
+    )
+    if not ll:
+        raise HTTPException(404, "Lead list not found")
+    return {"list": ll}
+
+
+@router.put("/scraping/lead-lists/{list_id}")
+async def update_lead_list(
+    list_id: str,
+    data: LeadListUpdate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Update a lead list name, description, or status."""
+    updates = []
+    params: Dict[str, Any] = {"id": list_id}
+    if data.name is not None:
+        updates.append("name = :name")
+        params["name"] = data.name
+    if data.description is not None:
+        updates.append("description = :desc")
+        params["desc"] = data.description
+    if data.status is not None:
+        updates.append("status = :status")
+        params["status"] = data.status
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+    updates.append("updated_at = NOW()")
+    result = execute_single(
+        f"UPDATE crm_lead_lists SET {', '.join(updates)} WHERE id = :id RETURNING *",
+        params,
+    )
+    if not result:
+        raise HTTPException(404, "Lead list not found")
+    return {"list": result}
+
+
+@router.delete("/scraping/lead-lists/{list_id}")
+async def delete_lead_list(
+    list_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Delete a lead list (not the leads themselves)."""
+    result = execute_single(
+        "DELETE FROM crm_lead_lists WHERE id = :id RETURNING id",
+        {"id": list_id},
+    )
+    if not result:
+        raise HTTPException(404, "Lead list not found")
+    return {"deleted": True}
+
+
+@router.get("/scraping/lead-lists/{list_id}/leads")
+async def get_lead_list_leads(
+    list_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Get paginated leads in a list."""
+    total_row = execute_single(
+        "SELECT COUNT(*) as cnt FROM crm_lead_list_items WHERE list_id = :lid",
+        {"lid": list_id},
+    )
+    total = total_row["cnt"] if total_row else 0
+    rows = execute_query(
+        """
+        SELECT l.*, li.position, li.added_at as list_added_at,
+               j.discovery_run_id, j.source_id
+        FROM crm_lead_list_items li
+        JOIN crm_scraped_leads l ON l.id = li.lead_id
+        LEFT JOIN crm_scrape_jobs j ON j.id = l.job_id
+        WHERE li.list_id = :lid
+        ORDER BY li.position, li.added_at
+        LIMIT :lim OFFSET :off
+        """,
+        {"lid": list_id, "lim": limit, "off": offset},
+    )
+    return {"leads": rows or [], "total": total}
+
+
+@router.post("/scraping/lead-lists/{list_id}/leads")
+async def add_leads_to_list(
+    list_id: str,
+    data: BulkLeadAction,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Add leads to a list."""
+    ll = execute_single("SELECT id FROM crm_lead_lists WHERE id = :id", {"id": list_id})
+    if not ll:
+        raise HTTPException(404, "Lead list not found")
+    added = 0
+    max_pos = execute_single(
+        "SELECT COALESCE(MAX(position), -1) as mp FROM crm_lead_list_items WHERE list_id = :lid",
+        {"lid": list_id},
+    )
+    pos = (max_pos["mp"] if max_pos else -1) + 1
+    for lid in data.lead_ids:
+        result = execute_single(
+            "INSERT INTO crm_lead_list_items (list_id, lead_id, position) VALUES (:lid, :lead_id, :pos) ON CONFLICT DO NOTHING RETURNING id",
+            {"lid": list_id, "lead_id": lid, "pos": pos},
+        )
+        if result:
+            added += 1
+            pos += 1
+    execute_single(
+        "UPDATE crm_lead_lists SET lead_count = (SELECT COUNT(*) FROM crm_lead_list_items WHERE list_id = :lid), updated_at = NOW() WHERE id = :lid RETURNING id",
+        {"lid": list_id},
+    )
+    return {"added": added}
+
+
+@router.delete("/scraping/lead-lists/{list_id}/leads")
+async def remove_leads_from_list(
+    list_id: str,
+    lead_ids: List[str] = Query(...),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Remove leads from a list."""
+    removed = 0
+    for lid in lead_ids:
+        result = execute_single(
+            "DELETE FROM crm_lead_list_items WHERE list_id = :list_id AND lead_id = :lead_id RETURNING id",
+            {"list_id": list_id, "lead_id": lid},
+        )
+        if result:
+            removed += 1
+    execute_single(
+        "UPDATE crm_lead_lists SET lead_count = (SELECT COUNT(*) FROM crm_lead_list_items WHERE list_id = :lid), updated_at = NOW() WHERE id = :lid RETURNING id",
+        {"lid": list_id},
+    )
+    return {"removed": removed}
+
+
+@router.post("/scraping/lead-lists/{list_id}/export")
+async def export_lead_list(
+    list_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Export a lead list to Excel."""
+    from openpyxl import Workbook
+    from io import BytesIO
+    from starlette.responses import StreamingResponse
+
+    ll = execute_single("SELECT * FROM crm_lead_lists WHERE id = :id", {"id": list_id})
+    if not ll:
+        raise HTTPException(404, "Lead list not found")
+
+    rows = execute_query(
+        """
+        SELECT l.company_name, l.website, l.email, l.phone,
+               l.address, l.city, l.state, l.country,
+               l.description, l.tags, l.match_score, l.status
+        FROM crm_lead_list_items li
+        JOIN crm_scraped_leads l ON l.id = li.lead_id
+        WHERE li.list_id = :lid
+        ORDER BY li.position
+        """,
+        {"lid": list_id},
+    )
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Lead List"
+    headers = [
+        "company_name", "contact_name", "contact_title", "email", "phone",
+        "website", "address_line1", "city", "state_region", "postal_code",
+        "country", "tags", "source_url", "notes", "import_source",
+    ]
+    ws.append(headers)
+
+    for row in (rows or []):
+        tags_val = row.get("tags") or []
+        if isinstance(tags_val, str):
+            tags_val = [tags_val]
+        ws.append([
+            row.get("company_name", ""), "", "",
+            row.get("email", ""), row.get("phone", ""),
+            row.get("website", ""), row.get("address", ""),
+            row.get("city", ""), row.get("state", ""), "",
+            row.get("country", ""),
+            ", ".join(tags_val) if tags_val else "",
+            row.get("website", ""), row.get("description", ""), "scraped",
+        ])
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    # Update list status to exported
+    execute_single(
+        "UPDATE crm_lead_lists SET status = 'exported', updated_at = NOW() WHERE id = :id RETURNING id",
+        {"id": list_id},
+    )
+
+    safe_name = (ll.get("name") or "lead_list").replace(" ", "_")[:40]
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={safe_name}.xlsx"},
+    )
+
+
+@router.post("/scraping/lead-lists/{list_id}/import")
+async def import_lead_list(
+    list_id: str,
+    file: UploadFile = File(...),
+    tags: Optional[str] = Query(None),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Import a cleaned Excel file from a lead list into CRM contacts."""
+    from openpyxl import load_workbook
+    from io import BytesIO
+
+    ll = execute_single("SELECT * FROM crm_lead_lists WHERE id = :id", {"id": list_id})
+    if not ll:
+        raise HTTPException(404, "Lead list not found")
+
+    if not file.filename or not file.filename.endswith((".xlsx", ".xls")):
+        raise HTTPException(400, "File must be .xlsx or .xls")
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(400, "File too large (max 10MB)")
+
+    wb = load_workbook(BytesIO(content), read_only=True)
+    ws = wb.active
+    rows_iter = ws.iter_rows(values_only=True)
+
+    header_row = next(rows_iter, None)
+    if not header_row:
+        raise HTTPException(400, "Empty spreadsheet")
+
+    headers = [str(h).strip().lower().replace(" ", "_") if h else "" for h in header_row]
+    col_map = {name: idx for idx, name in enumerate(headers) if name}
+
+    extra_tags = []
+    if tags:
+        extra_tags = [t.strip() for t in tags.split(",") if t.strip()]
+
+    created = 0
+    skipped = 0
+    errors = []
+
+    for row_num, row in enumerate(rows_iter, start=2):
+        try:
+            def get_val(col_name: str, default=""):
+                idx = col_map.get(col_name)
+                if idx is not None and idx < len(row) and row[idx] is not None:
+                    return str(row[idx]).strip()
+                return default
+
+            company = get_val("company_name") or get_val("company")
+            contact_name = get_val("contact_name")
+            email = get_val("email")
+            phone = get_val("phone")
+
+            if not company and not contact_name and not email:
+                skipped += 1
+                continue
+
+            first_name = "Unknown"
+            last_name = "(Import)"
+            if contact_name:
+                parts = contact_name.split(None, 1)
+                first_name = parts[0]
+                last_name = parts[1] if len(parts) > 1 else "(Import)"
+            elif company:
+                first_name = company.split()[0] if company.split() else "Unknown"
+                last_name = "(Company)"
+
+            row_tags = list(extra_tags)
+            row_tags_val = get_val("tags")
+            if row_tags_val:
+                row_tags.extend([t.strip() for t in row_tags_val.split(",") if t.strip()])
+
+            notes_parts = []
+            notes_val = get_val("notes")
+            if notes_val:
+                notes_parts.append(notes_val)
+            contact_title = get_val("contact_title")
+            if contact_title:
+                notes_parts.append(f"Title: {contact_title}")
+
+            execute_single(
+                """
+                INSERT INTO crm_contacts (
+                    first_name, last_name, email, phone, company,
+                    job_title, address_line1, city, state, zip, country,
+                    source, source_detail, temperature, tags,
+                    assigned_rep_id, visibility, notes
+                ) VALUES (
+                    :first_name, :last_name, :email, :phone, :company,
+                    :job_title, :address_line1, :city, :state, :zip, :country,
+                    'other', :source_detail, 'cold', :tags,
+                    :rep_id, 'team', :notes
+                ) RETURNING id
+                """,
+                {
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "email": email or None,
+                    "phone": phone or None,
+                    "company": company or None,
+                    "job_title": contact_title or None,
+                    "address_line1": get_val("address_line1") or get_val("address") or None,
+                    "city": get_val("city") or None,
+                    "state": get_val("state_region") or get_val("state") or None,
+                    "zip": get_val("postal_code") or get_val("zip") or None,
+                    "country": get_val("country") or "US",
+                    "source_detail": f"Lead List: {ll.get('name', '')}",
+                    "tags": row_tags if row_tags else [],
+                    "rep_id": profile["id"],
+                    "notes": "\n".join(notes_parts) if notes_parts else None,
+                },
+            )
+            created += 1
+        except Exception as e:
+            errors.append(f"Row {row_num}: {str(e)}")
+            if len(errors) > 50:
+                break
+
+    wb.close()
+
+    # Update list status to imported
+    execute_single(
+        "UPDATE crm_lead_lists SET status = 'imported', updated_at = NOW() WHERE id = :id RETURNING id",
+        {"id": list_id},
+    )
 
     return {
         "created": created,

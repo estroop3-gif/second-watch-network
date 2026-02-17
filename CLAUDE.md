@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 Second Watch Network is a faith-driven filmmaking platform with four main components:
-- **Backend**: FastAPI Python REST API (117+ route modules) — see `backend/CLAUDE.md`
+- **Backend**: FastAPI Python REST API (114 route modules) — see `backend/CLAUDE.md`
 - **Frontend**: Vite/React TypeScript web app with shadcn/ui — see `frontend/CLAUDE.md`
 - **SWN Dailies Helper**: PyQt6 desktop app for footage management (offload, proxy generation, upload)
 - **Flet App**: Cross-platform desktop/mobile app in `app/` (Python/Flet)
@@ -74,7 +74,7 @@ cd backend
 node -e "
 const { Client } = require('pg');
 const fs = require('fs');
-const sql = fs.readFileSync('migrations/211_*.sql', 'utf8');
+const sql = fs.readFileSync('migrations/246_*.sql', 'utf8');
 const client = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 client.connect().then(() => client.query(sql)).then(() => console.log('Done')).finally(() => client.end());
 "
@@ -82,7 +82,7 @@ client.connect().then(() => client.query(sql)).then(() => console.log('Done')).f
 
 Two migration directories exist:
 - `database/` — Schema migrations (001–059), the original migration set
-- `backend/migrations/` — Feature migrations (001–211), the active migration directory
+- `backend/migrations/` — Feature migrations (001–246), the active migration directory
 
 ## Service Ports
 
@@ -96,11 +96,12 @@ Two migration directories exist:
 ## Architecture
 
 ### Backend Structure (`backend/app/`)
-- `api/` — 117+ route modules organized by domain (largest: `backlot.py` at ~49K lines)
+- `api/` — 114 route modules organized by domain (largest: `backlot.py` ~49K lines, `crm.py` ~8.7K lines)
 - `core/` — Config, database client, auth, permissions, storage, roles, exceptions
-- `services/` — 67 service modules (email, PDF generation, media orchestration, revenue, gear, AI)
-- `jobs/` — Background jobs and scheduled tasks
-- `main.py` — FastAPI app entry with 119 router registrations and middleware stack
+- `services/` — 60 service modules (email, PDF generation, media orchestration, revenue, gear, AI, pricing engine)
+- `jobs/` — Background jobs (APScheduler: scheduled sends, snooze expiry, sequence progression, campaign blasts, notification digests)
+- `docker/` — ECS Fargate workers: `scraper/` (web scraping), `discovery/` (Google CSE/Maps lead discovery), `transcode/` (media)
+- `main.py` — FastAPI app entry with router registrations and middleware stack
 - `socketio_app.py` — WebSocket server for real-time features
 
 **Request pipeline (middleware order):** RequestContextMiddleware (request ID, logging) → CORSPreflightMiddleware (OPTIONS) → CORSMiddleware → FastAPI route handler → exception handlers
@@ -108,9 +109,9 @@ Two migration directories exist:
 ### Frontend Structure (`frontend/src/`)
 - `pages/` — Route components organized by domain (`admin/`, `backlot/`, `gear/`, `order/`, `watch/`)
 - `components/` — Feature-based: `backlot/workspace/` (120+ components), `gear/`, `admin/`, `order/`, `dashboard/`
-- `hooks/` — Domain hooks: `backlot/` (60+ hooks via `index.ts`), `gear/`, `watch/`
+- `hooks/` — Domain hooks: `backlot/` (60+ hooks via `index.ts`), `crm/` (20 hook files), `gear/`, `watch/`
 - `context/` — Providers: AuthContext, EnrichedProfileContext, SocketContext, DashboardSettingsContext
-- `lib/api.ts` — Centralized API client (~4500 lines) with domain sub-clients
+- `lib/api.ts` — Centralized API client (~6000 lines) with domain sub-clients
 
 **Provider nesting order** (in `App.tsx`): QueryClient → AuthProvider → ThemeProvider → SettingsProvider → EnrichedProfileProvider → DashboardSettingsProvider → SocketProvider → GearCartProvider → SetHouseCartProvider → PlatformStatusGate → Router
 
@@ -145,6 +146,14 @@ Connection pooling: NullPool for Lambda, QueuePool for local dev (auto-detected)
 
 **Church Production**: Service management, people rosters, content planning, and production readiness tools.
 
+**CRM** (Sales Pipeline): Full sales CRM with contacts, activities, deals (kanban), goals/KPIs, email campaigns, email sequences, customer log, rep reviews, business cards, training hub. Backend: `crm.py` (~8.7K lines, 80+ routes) + `crm_admin.py` (~2.3K lines, 40+ routes). Frontend: `/crm/*` routes with `CRMLayout`, 20 hook files in `hooks/crm/`. Roles: `sales_agent`, `sales_admin`, `sales_rep`.
+
+**CRM Email**: Full email client — outbound via Resend API from `firstname.lastname@secondwatch.network`, inbound via webhook. Reply routing: `reply+{thread_uuid}@mail.secondwatch.network`. Global compose modal (`EmailComposeContext`), templates (TipTap WYSIWYG), sequences, signatures, attachments, scheduled sends, starred/snooze, forwarding, labels/tags.
+
+**Data Scraping & Discovery**: Admin-only lead generation. ECS Fargate workers for web scraping (`docker/scraper/`) and Google CSE/Maps discovery (`docker/discovery/`). Tables: `crm_scrape_sources`, `crm_scrape_jobs`, `crm_scraped_leads`, `crm_scrape_profiles`, `crm_discovery_profiles`, `crm_discovery_runs`, `crm_discovery_sites`, `crm_lead_lists`. Pipeline: Discovery → Scrape → Staged Leads → Lead Lists (export→ChatGPT clean→import) → CRM Contacts.
+
+**Pricing/CPQ**: Quote wizard with tiered pricing engine. `app/services/pricing_engine.py` — TIERS, ADDON_PRICES, annual prepay (pay 10 months for 12).
+
 ## Authentication & Permissions
 
 - AWS Cognito JWT tokens validated in `app/core/auth.py`
@@ -173,7 +182,7 @@ Connection pooling: NullPool for Lambda, QueuePool for local dev (auto-detected)
 - **No nested joins in query builder**: `client.table("x").select("*, y(*)")` will fail. Use separate queries or raw SQL.
 - **Date timezone shifts**: Use `parseLocalDate` from `@/lib/dateUtils` in frontend to prevent "2024-01-15" from becoming Jan 14 in US timezones.
 - **shadcn/ui components**: Files in `frontend/src/components/ui/` are auto-generated. Don't edit directly — create wrapper components instead. Dialogs need `DialogTitle` or `ariaLabel` prop for accessibility.
-- **Large backend files**: `backlot.py` is ~49K lines. Read the full file before making changes to understand structure.
+- **Large backend files**: `backlot.py` is ~49K lines, `crm.py` is ~8.7K lines. Read the full file before making changes to understand structure.
 - **TypeScript is relaxed**: `noImplicitAny: false`, `strictNullChecks: false`. ESLint unused-vars check is off.
 - **Frontend path alias**: `@/` maps to `src/` (e.g., `import { api } from '@/lib/api'`).
 
@@ -195,6 +204,16 @@ VITE_API_URL=https://vnvvoelid6.execute-api.us-east-1.amazonaws.com npm run buil
 aws s3 sync dist/ s3://swn-frontend-517220555400 --delete
 aws cloudfront create-invalidation --distribution-id EJRGRTMJFSXN2 --paths "/*"
 ```
+
+### Docker Workers (ECR + ECS Fargate)
+```bash
+cd backend/docker/scraper   # or discovery/
+aws ecr get-login-password --region us-east-1 | sudo docker login --username AWS --password-stdin 517220555400.dkr.ecr.us-east-1.amazonaws.com
+sudo docker build -t swn-scraper:latest .
+sudo docker tag swn-scraper:latest 517220555400.dkr.ecr.us-east-1.amazonaws.com/swn-scraper:latest
+sudo docker push 517220555400.dkr.ecr.us-east-1.amazonaws.com/swn-scraper:latest
+```
+Each worker dir has a `deploy.sh` with full ECS task registration.
 
 ### Dailies Helper (PyInstaller)
 ```bash
