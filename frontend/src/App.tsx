@@ -159,6 +159,7 @@ const CRMAdminEmail = React.lazy(() => import("./pages/crm/AdminEmail"));
 const CRMAdminBusinessCards = React.lazy(() => import("./pages/crm/AdminBusinessCards"));
 const CRMRepDetail = React.lazy(() => import("./pages/crm/admin/RepDetail"));
 const CRMAdminScraping = React.lazy(() => import("./pages/crm/AdminScraping"));
+const CRMCompanyDetail = React.lazy(() => import("./pages/crm/CompanyDetail"));
 const CRMPricingTab = React.lazy(() => import("./pages/crm/PricingTab"));
 const CRMTraining = React.lazy(() => import("./pages/crm/Training"));
 const CRMDiscussions = React.lazy(() => import("./pages/crm/Discussions"));
@@ -497,6 +498,7 @@ const App = () => (
                         <Route path="dashboard" element={<CRMDashboard />} />
                         <Route path="contacts" element={<CRMContacts />} />
                         <Route path="contacts/:id" element={<CRMContactDetail />} />
+                        <Route path="companies/:id" element={<CRMCompanyDetail />} />
                         <Route path="email" element={<CRMEmail />} />
                         <Route path="calendar" element={<CRMActivityCalendar />} />
                         <Route path="interactions" element={<CRMInteractionTracker />} />

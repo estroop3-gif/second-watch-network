@@ -4627,6 +4627,7 @@ class APIClient {
     tag?: string
     assigned_rep_id?: string
     unassigned?: boolean
+    scope?: string
     sort_by?: string
     sort_order?: string
     limit?: number
@@ -4639,6 +4640,7 @@ class APIClient {
     if (params?.tag) query.append('tag', params.tag)
     if (params?.assigned_rep_id) query.append('assigned_rep_id', params.assigned_rep_id)
     if (params?.unassigned) query.append('unassigned', 'true')
+    if (params?.scope) query.append('scope', params.scope)
     if (params?.sort_by) query.append('sort_by', params.sort_by)
     if (params?.sort_order) query.append('sort_order', params.sort_order)
     if (params?.limit !== undefined) query.append('limit', params.limit.toString())
@@ -4667,6 +4669,51 @@ class APIClient {
 
   async linkCRMContactProfile(contactId: string, profileId: string) {
     return this.post<any>(`/api/v1/crm/contacts/${contactId}/link-profile`, { profile_id: profileId })
+  }
+
+  // CRM Companies
+  async searchCRMCompanies(q: string, limit?: number) {
+    const query = new URLSearchParams()
+    if (q) query.append('q', q)
+    if (limit) query.append('limit', limit.toString())
+    const qs = query.toString()
+    return this.get<any[]>(`/api/v1/crm/companies/search${qs ? `?${qs}` : ''}`)
+  }
+
+  async getCRMCompanies(params?: { search?: string; limit?: number; offset?: number }) {
+    const query = new URLSearchParams()
+    if (params?.search) query.append('search', params.search)
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.offset !== undefined) query.append('offset', params.offset.toString())
+    const qs = query.toString()
+    return this.get<{ companies: any[]; total: number; limit: number; offset: number }>(
+      `/api/v1/crm/companies${qs ? `?${qs}` : ''}`
+    )
+  }
+
+  async getCRMCompany(id: string) {
+    return this.get<any>(`/api/v1/crm/companies/${id}`)
+  }
+
+  async createCRMCompany(data: any) {
+    return this.post<any>('/api/v1/crm/companies', data)
+  }
+
+  async updateCRMCompany(id: string, data: any) {
+    return this.put<any>(`/api/v1/crm/companies/${id}`, data)
+  }
+
+  async deleteCRMCompany(id: string) {
+    return this.delete<any>(`/api/v1/crm/companies/${id}`)
+  }
+
+  // Direct Import (Leads → Contacts)
+  async directImportLeads(data: { lead_ids: string[]; tags?: string[]; assigned_rep_id?: string; enroll_sequence_id?: string }) {
+    return this.post<{ imported: number; contact_ids: string[] }>('/api/v1/crm/scraping/leads/direct-import', data)
+  }
+
+  async directImportLeadList(listId: string, data?: { tags?: string[]; assigned_rep_id?: string; enroll_sequence_id?: string }) {
+    return this.post<{ imported: number; contact_ids: string[] }>(`/api/v1/crm/scraping/lead-lists/${listId}/direct-import`, data || {})
   }
 
   async getCRMActivities(params?: {
@@ -5824,8 +5871,11 @@ class APIClient {
     return this.get<{ leads: any[]; total: number }>(`/api/v1/crm/scraping/lead-lists/${id}/leads${qs ? `?${qs}` : ''}`)
   }
 
-  async addLeadsToCRMList(id: string, data: { lead_ids: string[] }) {
-    return this.post<{ added: number }>(`/api/v1/crm/scraping/lead-lists/${id}/leads`, data)
+  async addLeadsToCRMList(id: string, data: { lead_ids: string[] }, allPending?: boolean) {
+    const url = allPending
+      ? `/api/v1/crm/scraping/lead-lists/${id}/leads?all_pending=true`
+      : `/api/v1/crm/scraping/lead-lists/${id}/leads`;
+    return this.post<{ added: number }>(url, data)
   }
 
   async removeLeadsFromCRMList(id: string, leadIds: string[]) {

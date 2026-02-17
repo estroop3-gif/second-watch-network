@@ -274,10 +274,11 @@ export function useScrapedLeads(params?: {
   job_id?: string; status?: string; min_score?: number; max_score?: number;
   country?: string; has_email?: boolean; has_phone?: boolean; search?: string;
   sort_by?: string; sort_order?: string; limit?: number; offset?: number;
-}) {
+} | null) {
   return useQuery({
     queryKey: ['crm-scraped-leads', params],
-    queryFn: () => api.getCRMScrapedLeads(params),
+    queryFn: () => api.getCRMScrapedLeads(params || undefined),
+    enabled: params !== null,
   });
 }
 
@@ -394,12 +395,13 @@ export function useLeadListLeads(id: string | undefined, params?: { limit?: numb
 export function useAddLeadsToList() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ listId, leadIds }: { listId: string; leadIds: string[] }) =>
-      api.addLeadsToCRMList(listId, { lead_ids: leadIds }),
+    mutationFn: ({ listId, leadIds, allPending }: { listId: string; leadIds: string[]; allPending?: boolean }) =>
+      api.addLeadsToCRMList(listId, { lead_ids: leadIds }, allPending),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['crm-lead-lists'] });
       qc.invalidateQueries({ queryKey: ['crm-lead-list'] });
       qc.invalidateQueries({ queryKey: ['crm-lead-list-leads'] });
+      qc.invalidateQueries({ queryKey: ['crm-scraped-leads'] });
     },
   });
 }
@@ -456,6 +458,37 @@ export function useBulkImportContacts() {
     }) => api.bulkImportContacts(file, params),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['crm-contacts'] });
+    },
+  });
+}
+
+// ============================================================================
+// Direct Import (Leads → Contacts)
+// ============================================================================
+
+export function useDirectImportLeads() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { lead_ids: string[]; tags?: string[]; assigned_rep_id?: string; enroll_sequence_id?: string }) =>
+      api.directImportLeads(data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-scraped-leads'] });
+      qc.invalidateQueries({ queryKey: ['crm-contacts'] });
+      qc.invalidateQueries({ queryKey: ['crm-companies'] });
+    },
+  });
+}
+
+export function useDirectImportLeadList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ listId, data }: { listId: string; data?: { tags?: string[]; assigned_rep_id?: string; enroll_sequence_id?: string } }) =>
+      api.directImportLeadList(listId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-lead-lists'] });
+      qc.invalidateQueries({ queryKey: ['crm-lead-list'] });
+      qc.invalidateQueries({ queryKey: ['crm-contacts'] });
+      qc.invalidateQueries({ queryKey: ['crm-companies'] });
     },
   });
 }

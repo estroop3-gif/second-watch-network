@@ -7,6 +7,7 @@ interface ContactFilters {
   status?: string;
   tag?: string;
   assigned_rep_id?: string;
+  scope?: string;
   sort_by?: string;
   sort_order?: string;
   limit?: number;

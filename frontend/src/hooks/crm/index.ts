@@ -168,3 +168,11 @@ export {
 } from './useLeads';
 
 export { useSidebarBadges } from './useSidebarBadges';
+
+export {
+  useCRMCompanies,
+  useCRMCompany,
+  useCreateCRMCompany,
+  useUpdateCRMCompany,
+  useDeleteCRMCompany,
+} from './useCompanies';

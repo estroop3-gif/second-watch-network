@@ -41,6 +41,8 @@ import {
   useRemoveLeadsFromList,
   useExportLeadList,
   useImportToLeadList,
+  useDirectImportLeads,
+  useDirectImportLeadList,
 } from '@/hooks/crm/useDataScraping';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -105,6 +107,7 @@ import {
   FolderOpen,
   Filter,
   StopCircle,
+  UserPlus,
 } from 'lucide-react';
 
 const TABS = ['Discovery', 'Scrape Profiles', 'Jobs', 'Staged Leads', 'Lead Lists', 'Sources', 'Settings'] as const;
@@ -120,6 +123,7 @@ const STATUS_COLORS: Record<string, string> = {
   approved: 'bg-green-500/20 text-green-400 border-green-500/30',
   rejected: 'bg-red-500/20 text-red-400 border-red-500/30',
   merged: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+  listed: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
 };
 
 function ScoreBar({ score }: { score: number }) {
@@ -1730,6 +1734,9 @@ function StagedLeadsTab() {
   const rescrapeLeads = useRescrapeLeads();
   const createLeadList = useCreateLeadList();
   const addLeadsToList = useAddLeadsToList();
+  const directImport = useDirectImportLeads();
+  const [showDirectImportDialog, setShowDirectImportDialog] = useState(false);
+  const [directImportTags, setDirectImportTags] = useState('');
 
   const leads = data?.leads || [];
   const total = data?.total || 0;
@@ -1924,6 +1931,9 @@ function StagedLeadsTab() {
           </Button>
           <Button size="sm" variant="outline" className="border-purple-500/30 text-purple-400 hover:bg-purple-500/10" onClick={() => { setAddToListId(''); setShowAddToListDialog(true); }}>
             <ListPlus className="h-3.5 w-3.5 mr-1" /> Add to List
+          </Button>
+          <Button size="sm" variant="outline" className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10" onClick={() => { setDirectImportTags(''); setShowDirectImportDialog(true); }}>
+            <UserPlus className="h-3.5 w-3.5 mr-1" /> Import as Contacts
           </Button>
           <Button size="sm" variant="ghost" className="text-muted-gray" onClick={() => setSelectedIds(new Set())}>
             Clear
@@ -2220,6 +2230,48 @@ function StagedLeadsTab() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Direct Import Dialog */}
+      <Dialog open={showDirectImportDialog} onOpenChange={setShowDirectImportDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Import {selectedIds.size} Lead{selectedIds.size !== 1 ? 's' : ''} as Contacts</DialogTitle>
+            <DialogDescription>Create CRM contacts directly from selected leads. Companies will be auto-created.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Extra Tags (comma-separated)</Label>
+              <Input value={directImportTags} onChange={(e) => setDirectImportTags(e.target.value)} placeholder="e.g. Q1 2026, Film" />
+              <p className="text-xs text-muted-gray mt-1">All leads auto-tagged "Backlot Prospect" + source name</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDirectImportDialog(false)}>Cancel</Button>
+            <Button onClick={async () => {
+              try {
+                const tags = directImportTags ? directImportTags.split(',').map(t => t.trim()).filter(Boolean) : [];
+                const result = await directImport.mutateAsync({
+                  lead_ids: Array.from(selectedIds),
+                  tags,
+                });
+                const desc = result.skipped ? `${result.skipped} skipped` : undefined;
+                toast({ title: `Imported ${result.imported} contacts`, description: desc });
+                setShowDirectImportDialog(false);
+                setSelectedIds(new Set());
+              } catch (err: any) {
+                const msg = err?.response?.data?.detail || err?.response?.data?.error?.message || err.message || 'Unknown error';
+                toast({ title: 'Import failed', description: msg, variant: 'destructive' });
+              }
+            }} disabled={directImport.isPending}>
+              {directImport.isPending ? (
+                <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Importing...</>
+              ) : (
+                <><UserPlus className="h-4 w-4 mr-1" /> Import as Contacts</>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -2275,9 +2327,10 @@ function LeadListsTab() {
   const importToList = useImportToLeadList();
   const removeLeads = useRemoveLeadsFromList();
   const addLeads = useAddLeadsToList();
-  const { data: stagedData } = useScrapedLeads({ status: 'pending', limit: 200 });
-
+  const directImportList = useDirectImportLeadList();
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
+  const [showDirectImportListDialog, setShowDirectImportListDialog] = useState(false);
+  const [directImportListTags, setDirectImportListTags] = useState('');
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showAddLeadsDialog, setShowAddLeadsDialog] = useState(false);
@@ -2288,6 +2341,20 @@ function LeadListsTab() {
   const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
   const [addLeadSearch, setAddLeadSearch] = useState('');
   const [addLeadSelected, setAddLeadSelected] = useState<Set<string>>(new Set());
+  const [addLeadPage, setAddLeadPage] = useState(0);
+  const [selectAllLeads, setSelectAllLeads] = useState(false);
+  const ADD_LEAD_PAGE_SIZE = 50;
+
+  const { data: addLeadData, isLoading: loadingAddLeads } = useScrapedLeads(
+    showAddLeadsDialog ? {
+      status: 'pending',
+      search: addLeadSearch || undefined,
+      limit: ADD_LEAD_PAGE_SIZE,
+      offset: addLeadPage * ADD_LEAD_PAGE_SIZE,
+      sort_by: 'match_score',
+      sort_order: 'desc',
+    } : null
+  );
   const [listPage, setListPage] = useState(0);
   const [copied, setCopied] = useState(false);
   const [importTags, setImportTags] = useState('Backlot Prospect');
@@ -2309,7 +2376,9 @@ function LeadListsTab() {
   const listLeads = listLeadsData?.leads || [];
   const listLeadsTotal = listLeadsData?.total || 0;
   const listTotalPages = Math.ceil(listLeadsTotal / LIST_PAGE_SIZE);
-  const stagedLeads = stagedData?.leads || [];
+  const addLeads_list = addLeadData?.leads || [];
+  const addLeadsTotal = addLeadData?.total || 0;
+  const addLeadTotalPages = Math.ceil(addLeadsTotal / ADD_LEAD_PAGE_SIZE);
 
   const handleCreate = async () => {
     if (!newName.trim()) return;
@@ -2425,16 +2494,20 @@ function LeadListsTab() {
   };
 
   const handleAddLeads = async () => {
-    if (addLeadSelected.size === 0 || !selectedListId) return;
+    if (!selectAllLeads && addLeadSelected.size === 0) return;
+    if (!selectedListId) return;
     try {
       const result = await addLeads.mutateAsync({
         listId: selectedListId,
-        leadIds: Array.from(addLeadSelected),
+        leadIds: selectAllLeads ? [] : Array.from(addLeadSelected),
+        allPending: selectAllLeads,
       });
       toast({ title: `Added ${result.added} leads to list` });
       setShowAddLeadsDialog(false);
       setAddLeadSelected(new Set());
       setAddLeadSearch('');
+      setSelectAllLeads(false);
+      setAddLeadPage(0);
     } catch (err: any) {
       toast({ title: 'Error', description: err.message, variant: 'destructive' });
     }
@@ -2466,6 +2539,11 @@ function LeadListsTab() {
             <Button size="sm" variant="outline" onClick={() => setShowAddLeadsDialog(true)}>
               <Plus className="h-3.5 w-3.5 mr-1" /> Add Leads
             </Button>
+            {status !== 'imported' && (
+              <Button size="sm" variant="outline" className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10" onClick={() => { setDirectImportListTags(''); setShowDirectImportListDialog(true); }}>
+                <UserPlus className="h-3.5 w-3.5 mr-1" /> Import as Contacts
+              </Button>
+            )}
             {selectedLeadIds.size > 0 && (
               <Button size="sm" variant="outline" className="border-red-500/30 text-red-400" onClick={handleRemoveSelected}>
                 <X className="h-3.5 w-3.5 mr-1" /> Remove {selectedLeadIds.size}
@@ -2635,21 +2713,49 @@ function LeadListsTab() {
         )}
 
         {/* Add Leads Dialog */}
-        <Dialog open={showAddLeadsDialog} onOpenChange={setShowAddLeadsDialog}>
-          <DialogContent className="max-w-lg">
-            <DialogHeader>
+        <Dialog open={showAddLeadsDialog} onOpenChange={(open) => {
+          setShowAddLeadsDialog(open);
+          if (!open) { setAddLeadSelected(new Set()); setAddLeadSearch(''); setSelectAllLeads(false); setAddLeadPage(0); }
+        }}>
+          <DialogContent className="max-w-lg h-[80vh] flex flex-col overflow-hidden">
+            <DialogHeader className="flex-shrink-0">
               <DialogTitle>Add Leads to List</DialogTitle>
-              <DialogDescription>Select staged leads to add to "{selectedList.name}"</DialogDescription>
+              <DialogDescription>Select staged leads to add to "{selectedList.name}" ({addLeadsTotal} pending leads)</DialogDescription>
             </DialogHeader>
-            <div className="space-y-3">
-              <Input placeholder="Search leads..." value={addLeadSearch} onChange={(e) => setAddLeadSearch(e.target.value)} />
-              <div className="max-h-[300px] overflow-y-auto border border-muted-gray/20 rounded-lg">
-                {stagedLeads
-                  .filter((l: any) => !addLeadSearch || l.company_name?.toLowerCase().includes(addLeadSearch.toLowerCase()) || l.website?.toLowerCase().includes(addLeadSearch.toLowerCase()))
-                  .map((lead: any) => (
+            <div className="flex-1 flex flex-col gap-3 min-h-0 overflow-hidden">
+              <Input placeholder="Search leads..." value={addLeadSearch} onChange={(e) => { setAddLeadSearch(e.target.value); setAddLeadPage(0); setSelectAllLeads(false); }} className="flex-shrink-0" />
+              <div className="flex items-center gap-3 px-3 py-1.5 flex-shrink-0">
+                <Checkbox
+                  checked={selectAllLeads || (addLeads_list.length > 0 && addLeads_list.every((l: any) => addLeadSelected.has(l.id)))}
+                  onCheckedChange={(checked) => {
+                    if (checked) {
+                      setSelectAllLeads(true);
+                      setAddLeadSelected(new Set(addLeads_list.map((l: any) => l.id)));
+                    } else {
+                      setSelectAllLeads(false);
+                      setAddLeadSelected(new Set());
+                    }
+                  }}
+                />
+                <span className="text-sm text-muted-gray">
+                  {selectAllLeads
+                    ? `All ${addLeadsTotal} pending leads selected`
+                    : addLeadSelected.size > 0
+                      ? `${addLeadSelected.size} selected`
+                      : `Select all ${addLeadsTotal} leads`}
+                </span>
+              </div>
+              <div className="flex-1 overflow-y-auto border border-muted-gray/20 rounded-lg min-h-0">
+                {loadingAddLeads ? (
+                  <div className="flex items-center justify-center p-8"><Loader2 className="h-5 w-5 animate-spin text-muted-gray" /></div>
+                ) : addLeads_list.length === 0 ? (
+                  <p className="p-4 text-center text-sm text-muted-gray">No pending staged leads</p>
+                ) : (
+                  addLeads_list.map((lead: any) => (
                     <label key={lead.id} className="flex items-center gap-3 px-3 py-2 hover:bg-muted-gray/5 cursor-pointer border-b border-muted-gray/10 last:border-0">
                       <Checkbox
-                        checked={addLeadSelected.has(lead.id)}
+                        checked={selectAllLeads || addLeadSelected.has(lead.id)}
+                        disabled={selectAllLeads}
                         onCheckedChange={() => {
                           setAddLeadSelected((prev) => {
                             const next = new Set(prev);
@@ -2665,15 +2771,64 @@ function LeadListsTab() {
                       </div>
                       <ScoreBar score={lead.match_score} />
                     </label>
-                  ))}
-                {stagedLeads.length === 0 && <p className="p-4 text-center text-sm text-muted-gray">No pending staged leads</p>}
+                  ))
+                )}
+              </div>
+              {addLeadTotalPages > 1 && (
+                <div className="flex items-center justify-between flex-shrink-0 pt-1">
+                  <Button variant="outline" size="sm" disabled={addLeadPage === 0} onClick={() => setAddLeadPage(p => p - 1)}>Previous</Button>
+                  <span className="text-xs text-muted-gray">Page {addLeadPage + 1} of {addLeadTotalPages}</span>
+                  <Button variant="outline" size="sm" disabled={addLeadPage >= addLeadTotalPages - 1} onClick={() => setAddLeadPage(p => p + 1)}>Next</Button>
+                </div>
+              )}
+            </div>
+            <DialogFooter className="flex-shrink-0">
+              <Button variant="outline" onClick={() => setShowAddLeadsDialog(false)}>Cancel</Button>
+              <Button onClick={handleAddLeads} disabled={(!selectAllLeads && addLeadSelected.size === 0) || addLeads.isPending}>
+                {addLeads.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                {selectAllLeads ? `Add All ${addLeadsTotal} Leads` : `Add ${addLeadSelected.size} Lead${addLeadSelected.size !== 1 ? 's' : ''}`}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Direct Import List Dialog */}
+        <Dialog open={showDirectImportListDialog} onOpenChange={setShowDirectImportListDialog}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Import List as Contacts</DialogTitle>
+              <DialogDescription>Import all {selectedList?.actual_count || selectedList?.lead_count || 0} leads from "{selectedList?.name}" directly as CRM contacts.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label>Extra Tags (comma-separated)</Label>
+                <Input value={directImportListTags} onChange={(e) => setDirectImportListTags(e.target.value)} placeholder="e.g. Q1 2026, Film" />
+                <p className="text-xs text-muted-gray mt-1">All leads auto-tagged "Backlot Prospect" + source name</p>
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setShowAddLeadsDialog(false)}>Cancel</Button>
-              <Button onClick={handleAddLeads} disabled={addLeadSelected.size === 0 || addLeads.isPending}>
-                {addLeads.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
-                Add {addLeadSelected.size} Lead{addLeadSelected.size !== 1 ? 's' : ''}
+              <Button variant="outline" onClick={() => setShowDirectImportListDialog(false)}>Cancel</Button>
+              <Button onClick={async () => {
+                if (!selectedListId) return;
+                try {
+                  const tags = directImportListTags ? directImportListTags.split(',').map(t => t.trim()).filter(Boolean) : [];
+                  const result = await directImportList.mutateAsync({
+                    listId: selectedListId,
+                    data: { tags },
+                  });
+                  const desc = result.skipped ? `${result.skipped} skipped` : undefined;
+                  toast({ title: `Imported ${result.imported} contacts from list`, description: desc });
+                  setShowDirectImportListDialog(false);
+                } catch (err: any) {
+                  const msg = err?.response?.data?.detail || err?.response?.data?.error?.message || err.message || 'Unknown error';
+                  toast({ title: 'Import failed', description: msg, variant: 'destructive' });
+                }
+              }} disabled={directImportList.isPending}>
+                {directImportList.isPending ? (
+                  <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Importing...</>
+                ) : (
+                  <><UserPlus className="h-4 w-4 mr-1" /> Import as Contacts</>
+                )}
               </Button>
             </DialogFooter>
           </DialogContent>
