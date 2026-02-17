@@ -163,7 +163,7 @@ const ContactDetail = () => {
         <div>
           <div className="flex items-center gap-3">
             <h1 className="text-3xl font-heading text-bone-white">
-              {contact.first_name} {contact.last_name}
+              {contact.first_name}{contact.last_name ? ` ${contact.last_name}` : ''}
             </h1>
             {contact.visibility === 'private' && (
               <Badge variant="outline" className="bg-orange-500/10 text-orange-400 border-orange-500/30">
@@ -287,6 +287,26 @@ const ContactDetail = () => {
               <div className="flex items-center gap-2 text-bone-white/80">
                 <Phone className="h-4 w-4 text-muted-gray" />
                 <a href={`tel:${contact.phone}`} className="hover:text-accent-yellow">{contact.phone}</a>
+              </div>
+            )}
+            {contact.phone_secondary && (
+              <div className="flex items-center gap-2 text-bone-white/80">
+                <Phone className="h-4 w-4 text-muted-gray" />
+                <a href={`tel:${contact.phone_secondary}`} className="hover:text-accent-yellow">{contact.phone_secondary}</a>
+                <span className="text-xs text-muted-gray">(secondary)</span>
+              </div>
+            )}
+            {contact.website && (
+              <div className="flex items-center gap-2 text-bone-white/80">
+                <Globe className="h-4 w-4 text-muted-gray" />
+                <a
+                  href={contact.website.startsWith('http') ? contact.website : `https://${contact.website}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:text-accent-yellow truncate"
+                >
+                  {contact.website}
+                </a>
               </div>
             )}
             {contact.company && (
@@ -478,7 +498,7 @@ const ContactDetail = () => {
         <DialogContent className="bg-charcoal-black border-muted-gray/30 text-bone-white max-w-sm">
           <DialogHeader>
             <DialogTitle>
-              DNC — {contact.first_name} {contact.last_name}
+              DNC — {contact.first_name}{contact.last_name ? ` ${contact.last_name}` : ''}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">

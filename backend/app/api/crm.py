@@ -31,7 +31,9 @@ class ContactCreate(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     phone_secondary: Optional[str] = None
+    website: Optional[str] = None
     company: Optional[str] = None
+    company_id: Optional[str] = None
     job_title: Optional[str] = None
     address_line1: Optional[str] = None
     address_line2: Optional[str] = None
@@ -45,7 +47,7 @@ class ContactCreate(BaseModel):
     tags: Optional[List[str]] = []
     custom_fields: Optional[Dict[str, Any]] = {}
     notes: Optional[str] = None
-    visibility: Optional[str] = "team"
+    visibility: Optional[str] = "private"
 
 
 class ContactUpdate(BaseModel):
@@ -54,7 +56,9 @@ class ContactUpdate(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     phone_secondary: Optional[str] = None
+    website: Optional[str] = None
     company: Optional[str] = None
+    company_id: Optional[str] = None
     job_title: Optional[str] = None
     address_line1: Optional[str] = None
     address_line2: Optional[str] = None
@@ -137,6 +141,35 @@ class StageChangeRequest(BaseModel):
     stage: str
     notes: Optional[str] = None
     close_reason: Optional[str] = None
+
+
+# ============================================================================
+# Helpers
+# ============================================================================
+
+async def resolve_company(company_name: Optional[str], company_id: Optional[str], profile_id: str):
+    """Resolve company_id and company_name. Creates company if needed."""
+    if company_id:
+        row = execute_single("SELECT id, name FROM crm_companies WHERE id = :id", {"id": company_id})
+        if row:
+            return row["id"], row["name"]
+    if company_name and company_name.strip():
+        name = company_name.strip()
+        existing = execute_single(
+            "SELECT id, name FROM crm_companies WHERE LOWER(name) = LOWER(:name)",
+            {"name": name},
+        )
+        if existing:
+            return existing["id"], existing["name"]
+        # Use ON CONFLICT to handle race conditions
+        created = execute_insert(
+            """INSERT INTO crm_companies (name, created_by) VALUES (:name, :uid)
+               ON CONFLICT (LOWER(name)) DO UPDATE SET updated_at = NOW()
+               RETURNING id, name""",
+            {"name": name, "uid": profile_id},
+        )
+        return created["id"], created["name"]
+    return None, None
 
 
 # ============================================================================
@@ -396,6 +429,7 @@ async def list_contacts(
     tag: Optional[str] = Query(None),
     assigned_rep_id: Optional[str] = Query(None),
     unassigned: Optional[bool] = Query(None),
+    scope: Optional[str] = Query(None),
     sort_by: Optional[str] = Query("created_at"),
     sort_order: Optional[str] = Query("desc"),
     limit: int = Query(50, ge=1, le=200),
@@ -408,9 +442,19 @@ async def list_contacts(
     conditions = ["c.status != 'inactive'"]
     params = {}
 
-    if not is_admin:
-        conditions.append("(c.assigned_rep_id = :rep_id OR c.visibility = 'team')")
+    if scope == "mine":
+        conditions.append("c.assigned_rep_id = :rep_id")
         params["rep_id"] = profile["id"]
+    elif scope == "all":
+        if not is_admin:
+            conditions.append("(c.assigned_rep_id = :rep_id OR c.visibility = 'team')")
+            params["rep_id"] = profile["id"]
+        # admins see everything
+    else:
+        # Default backward compat: same as current behavior
+        if not is_admin:
+            conditions.append("(c.assigned_rep_id = :rep_id OR c.visibility = 'team')")
+            params["rep_id"] = profile["id"]
 
     if unassigned and is_admin:
         conditions.append("c.assigned_rep_id IS NULL")
@@ -419,7 +463,7 @@ async def list_contacts(
         conditions.append(
             "(c.first_name ILIKE :search OR c.last_name ILIKE :search "
             "OR c.email ILIKE :search OR c.company ILIKE :search "
-            "OR c.phone ILIKE :search)"
+            "OR c.phone ILIKE :search OR c.website ILIKE :search)"
         )
         params["search"] = f"%{search}%"
 
@@ -458,9 +502,11 @@ async def list_contacts(
     rows = execute_query(
         f"""
         WITH paged AS (
-            SELECT c.*, p.full_name as assigned_rep_name
+            SELECT c.*, p.full_name as assigned_rep_name,
+                   cc.name as company_name
             FROM crm_contacts c
             LEFT JOIN profiles p ON p.id = c.assigned_rep_id
+            LEFT JOIN crm_companies cc ON cc.id = c.company_id
             WHERE {where}
             ORDER BY c.{sort_by} {order_dir}
             LIMIT :limit OFFSET :offset
@@ -538,6 +584,14 @@ async def create_contact(
     contact_data["assigned_rep_id"] = profile["id"]
     contact_data["created_by"] = profile["id"]
 
+    # Resolve company
+    resolved_company_id, resolved_company_name = await resolve_company(
+        contact_data.get("company"), contact_data.get("company_id"), profile["id"]
+    )
+    if resolved_company_id:
+        contact_data["company_id"] = resolved_company_id
+        contact_data["company"] = resolved_company_name
+
     # Wrap JSONB fields for psycopg2
     if "custom_fields" in contact_data:
         contact_data["custom_fields"] = PgJson(contact_data["custom_fields"])
@@ -575,6 +629,15 @@ async def update_contact(
     update_data = data.dict(exclude_none=True)
     if not update_data:
         raise HTTPException(400, "No fields to update")
+
+    # Resolve company if company_id or company changed
+    if "company_id" in update_data or "company" in update_data:
+        resolved_company_id, resolved_company_name = await resolve_company(
+            update_data.get("company"), update_data.get("company_id"), profile["id"]
+        )
+        if resolved_company_id:
+            update_data["company_id"] = resolved_company_id
+            update_data["company"] = resolved_company_name
 
     # Wrap JSONB fields for psycopg2
     if "custom_fields" in update_data:
@@ -6706,23 +6769,31 @@ async def bulk_approve_leads(
         if data.tags:
             tags.extend(data.tags)
 
+        # Resolve company
+        resolved_company_id, _ = await resolve_company(lead.get("company_name"), None, profile["id"])
+
+        # Skip leads with no contact info
+        if not lead.get("email") and not lead.get("phone") and not lead.get("website"):
+            continue
+
         # Create contact
         contact = execute_single(
             """
             INSERT INTO crm_contacts (
-                company, email, phone, city, state, country,
+                company, company_id, email, phone, city, state, country,
                 source, source_detail, temperature, tags,
                 assigned_rep_id, visibility, notes,
-                first_name, last_name
+                first_name, last_name, website
             ) VALUES (
-                :company, :email, :phone, :city, :state, :country,
+                :company, :company_id, :email, :phone, :city, :state, :country,
                 'scraped', :source_detail, 'cold', :tags,
-                :rep_id, 'team', :notes,
-                :first_name, :last_name
+                NULL, 'team', :notes,
+                :first_name, :last_name, :website
             ) RETURNING *
             """,
             {
                 "company": lead["company_name"],
+                "company_id": resolved_company_id,
                 "email": lead.get("email"),
                 "phone": lead.get("phone"),
                 "city": lead.get("city"),
@@ -6730,10 +6801,10 @@ async def bulk_approve_leads(
                 "country": lead.get("country") or "US",
                 "source_detail": lead["source_name"],
                 "tags": tags,
-                "rep_id": profile["id"],
                 "notes": lead.get("description"),
-                "first_name": (lead["company_name"] or "").split()[0] if lead.get("company_name") else "Unknown",
-                "last_name": "(Company)",
+                "first_name": (lead.get("company_name") or "Unknown").strip(),
+                "last_name": "",
+                "website": lead.get("website"),
             },
         )
 
@@ -7833,22 +7904,28 @@ async def bulk_import_contacts(
             contact_name = get_val("contact_name")
             email = get_val("email")
             phone = get_val("phone")
+            website = get_val("website") or get_val("source_url")
 
             # Skip rows with no useful data
             if not company and not contact_name and not email:
                 skipped += 1
                 continue
 
+            # Skip rows with no contact info
+            if not email and not phone and not website:
+                skipped += 1
+                continue
+
             # Split contact_name into first/last
             first_name = "Unknown"
-            last_name = "(Import)"
+            last_name = ""
             if contact_name:
                 parts = contact_name.split(None, 1)
                 first_name = parts[0]
-                last_name = parts[1] if len(parts) > 1 else "(Import)"
+                last_name = parts[1] if len(parts) > 1 else ""
             elif company:
-                first_name = company.split()[0] if company.split() else "Unknown"
-                last_name = "(Company)"
+                first_name = company.strip()
+                last_name = ""
 
             # Build tags
             row_tags = list(extra_tags)
@@ -7868,9 +7945,6 @@ async def bulk_import_contacts(
             contact_title = get_val("contact_title")
             if contact_title:
                 notes_parts.append(f"Title: {contact_title}")
-            source_url = get_val("source_url")
-            if source_url:
-                notes_parts.append(f"Source URL: {source_url}")
 
             execute_single(
                 """
@@ -7878,12 +7952,12 @@ async def bulk_import_contacts(
                     first_name, last_name, email, phone, company,
                     job_title, address_line1, city, state, zip, country,
                     source, source_detail, temperature, tags,
-                    assigned_rep_id, visibility, notes
+                    assigned_rep_id, visibility, notes, website
                 ) VALUES (
                     :first_name, :last_name, :email, :phone, :company,
                     :job_title, :address_line1, :city, :state, :zip, :country,
                     :source, :source_detail, :temperature, :tags,
-                    :rep_id, 'team', :notes
+                    NULL, 'team', :notes, :website
                 ) RETURNING id
                 """,
                 {
@@ -7902,8 +7976,8 @@ async def bulk_import_contacts(
                     "source_detail": source_detail or file.filename,
                     "temperature": temperature or "cold",
                     "tags": row_tags if row_tags else [],
-                    "rep_id": profile["id"],
                     "notes": "\n".join(notes_parts) if notes_parts else None,
+                    "website": website or None,
                 },
             )
             created += 1
@@ -8082,19 +8156,30 @@ async def get_lead_list_leads(
 async def add_leads_to_list(
     list_id: str,
     data: BulkLeadAction,
+    all_pending: bool = Query(False),
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
 ):
-    """Add leads to a list."""
+    """Add leads to a list. If all_pending=true, ignores lead_ids and adds all pending leads."""
     ll = execute_single("SELECT id FROM crm_lead_lists WHERE id = :id", {"id": list_id})
     if not ll:
         raise HTTPException(404, "Lead list not found")
+
+    # Resolve lead IDs
+    if all_pending:
+        rows = execute_query(
+            "SELECT id FROM crm_scraped_leads WHERE status = 'pending'", {}
+        )
+        lead_ids = [r["id"] for r in (rows or [])]
+    else:
+        lead_ids = data.lead_ids
+
     added = 0
     max_pos = execute_single(
         "SELECT COALESCE(MAX(position), -1) as mp FROM crm_lead_list_items WHERE list_id = :lid",
         {"lid": list_id},
     )
     pos = (max_pos["mp"] if max_pos else -1) + 1
-    for lid in data.lead_ids:
+    for lid in lead_ids:
         result = execute_single(
             "INSERT INTO crm_lead_list_items (list_id, lead_id, position) VALUES (:lid, :lead_id, :pos) ON CONFLICT DO NOTHING RETURNING id",
             {"lid": list_id, "lead_id": lid, "pos": pos},
@@ -8106,6 +8191,12 @@ async def add_leads_to_list(
         "UPDATE crm_lead_lists SET lead_count = (SELECT COUNT(*) FROM crm_lead_list_items WHERE list_id = :lid), updated_at = NOW() WHERE id = :lid RETURNING id",
         {"lid": list_id},
     )
+    # Mark added leads as 'listed' so they no longer appear in Staged Leads
+    if lead_ids:
+        execute_query(
+            "UPDATE crm_scraped_leads SET status = 'listed' WHERE id = ANY(:ids::uuid[]) AND status = 'pending'",
+            {"ids": lead_ids},
+        )
     return {"added": added}
 
 
@@ -8253,20 +8344,26 @@ async def import_lead_list(
             contact_name = get_val("contact_name")
             email = get_val("email")
             phone = get_val("phone")
+            website = get_val("website") or get_val("source_url")
 
             if not company and not contact_name and not email:
                 skipped += 1
                 continue
 
+            # Skip rows with no contact info
+            if not email and not phone and not website:
+                skipped += 1
+                continue
+
             first_name = "Unknown"
-            last_name = "(Import)"
+            last_name = ""
             if contact_name:
                 parts = contact_name.split(None, 1)
                 first_name = parts[0]
-                last_name = parts[1] if len(parts) > 1 else "(Import)"
+                last_name = parts[1] if len(parts) > 1 else ""
             elif company:
-                first_name = company.split()[0] if company.split() else "Unknown"
-                last_name = "(Company)"
+                first_name = company.strip()
+                last_name = ""
 
             row_tags = list(extra_tags)
             row_tags_val = get_val("tags")
@@ -8287,12 +8384,12 @@ async def import_lead_list(
                     first_name, last_name, email, phone, company,
                     job_title, address_line1, city, state, zip, country,
                     source, source_detail, temperature, tags,
-                    assigned_rep_id, visibility, notes
+                    assigned_rep_id, visibility, notes, website
                 ) VALUES (
                     :first_name, :last_name, :email, :phone, :company,
                     :job_title, :address_line1, :city, :state, :zip, :country,
                     'other', :source_detail, 'cold', :tags,
-                    :rep_id, 'team', :notes
+                    NULL, 'team', :notes, :website
                 ) RETURNING id
                 """,
                 {
@@ -8309,8 +8406,8 @@ async def import_lead_list(
                     "country": get_val("country") or "US",
                     "source_detail": f"Lead List: {ll.get('name', '')}",
                     "tags": row_tags if row_tags else [],
-                    "rep_id": profile["id"],
                     "notes": "\n".join(notes_parts) if notes_parts else None,
+                    "website": website or None,
                 },
             )
             created += 1
@@ -8761,3 +8858,426 @@ async def get_quote_text(
         lines.append(f"\nNotes: {row['notes']}")
 
     return {"text": "\n".join(lines)}
+
+
+# ============================================================================
+# CRM Companies
+# ============================================================================
+
+class CompanyCreate(BaseModel):
+    name: str
+    website: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    zip: Optional[str] = None
+    country: Optional[str] = "US"
+    description: Optional[str] = None
+    tags: Optional[List[str]] = []
+
+
+class CompanyUpdate(BaseModel):
+    name: Optional[str] = None
+    website: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    zip: Optional[str] = None
+    country: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+
+@router.get("/companies/search")
+async def search_companies(
+    q: str = Query(""),
+    limit: int = Query(15, ge=1, le=50),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Search CRM companies by name for autocomplete."""
+    if not q.strip():
+        rows = execute_query(
+            "SELECT id, name, website, city, state FROM crm_companies ORDER BY name LIMIT :limit",
+            {"limit": limit},
+        )
+    else:
+        rows = execute_query(
+            "SELECT id, name, website, city, state FROM crm_companies WHERE name ILIKE :q ORDER BY name LIMIT :limit",
+            {"q": f"%{q}%", "limit": limit},
+        )
+    return rows
+
+
+@router.get("/companies")
+async def list_companies(
+    search: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """List CRM companies with contact counts."""
+    conditions = []
+    params = {}
+
+    if search:
+        conditions.append("c.name ILIKE :search")
+        params["search"] = f"%{search}%"
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+
+    count_row = execute_single(
+        f"SELECT COUNT(*) as total FROM crm_companies c WHERE {where}",
+        params,
+    )
+    total = count_row["total"] if count_row else 0
+
+    rows = execute_query(
+        f"""
+        SELECT c.*,
+               COALESCE(cc.contact_count, 0) as contact_count
+        FROM crm_companies c
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) as contact_count
+            FROM crm_contacts ct WHERE ct.company_id = c.id AND ct.status != 'inactive'
+        ) cc ON true
+        WHERE {where}
+        ORDER BY c.name
+        LIMIT :limit OFFSET :offset
+        """,
+        {**params, "limit": limit, "offset": offset},
+    )
+
+    return {"companies": rows, "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/companies/{company_id}")
+async def get_company(
+    company_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
+):
+    """Get a company with linked contacts."""
+    company = execute_single(
+        "SELECT * FROM crm_companies WHERE id = :id",
+        {"id": company_id},
+    )
+    if not company:
+        raise HTTPException(404, "Company not found")
+
+    contacts = execute_query(
+        """
+        SELECT c.*, p.full_name as assigned_rep_name
+        FROM crm_contacts c
+        LEFT JOIN profiles p ON p.id = c.assigned_rep_id
+        WHERE c.company_id = :cid AND c.status != 'inactive'
+        ORDER BY c.last_name, c.first_name
+        """,
+        {"cid": company_id},
+    )
+
+    company["contacts"] = contacts
+    return company
+
+
+@router.post("/companies")
+async def create_company(
+    data: CompanyCreate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Create a CRM company. Returns existing if name matches (dedup)."""
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(400, "Company name is required")
+
+    existing = execute_single(
+        "SELECT * FROM crm_companies WHERE LOWER(name) = LOWER(:name)",
+        {"name": name},
+    )
+    if existing:
+        return existing
+
+    company_data = data.dict(exclude_none=True)
+    company_data["name"] = name
+    company_data["created_by"] = profile["id"]
+
+    columns = ", ".join(company_data.keys())
+    placeholders = ", ".join(f":{k}" for k in company_data.keys())
+
+    result = execute_insert(
+        f"INSERT INTO crm_companies ({columns}) VALUES ({placeholders}) RETURNING *",
+        company_data,
+    )
+    return result
+
+
+@router.put("/companies/{company_id}")
+async def update_company(
+    company_id: str,
+    data: CompanyUpdate,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_CREATE)),
+):
+    """Update a CRM company."""
+    existing = execute_single(
+        "SELECT id FROM crm_companies WHERE id = :id",
+        {"id": company_id},
+    )
+    if not existing:
+        raise HTTPException(404, "Company not found")
+
+    update_data = data.dict(exclude_none=True)
+    if not update_data:
+        raise HTTPException(400, "No fields to update")
+
+    update_data["updated_at"] = "NOW()"
+    set_clauses = []
+    params = {"id": company_id}
+
+    for key, value in update_data.items():
+        if value == "NOW()":
+            set_clauses.append(f"{key} = NOW()")
+        else:
+            set_clauses.append(f"{key} = :{key}")
+            params[key] = value
+
+    result = execute_single(
+        f"UPDATE crm_companies SET {', '.join(set_clauses)} WHERE id = :id RETURNING *",
+        params,
+    )
+    return result
+
+
+@router.delete("/companies/{company_id}")
+async def delete_company(
+    company_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """Delete a CRM company. Unlinks contacts (sets company_id to NULL)."""
+    existing = execute_single(
+        "SELECT id FROM crm_companies WHERE id = :id",
+        {"id": company_id},
+    )
+    if not existing:
+        raise HTTPException(404, "Company not found")
+
+    # Unlink contacts first
+    execute_query(
+        "UPDATE crm_contacts SET company_id = NULL, updated_at = NOW() WHERE company_id = :id",
+        {"id": company_id},
+    )
+
+    execute_single(
+        "DELETE FROM crm_companies WHERE id = :id RETURNING id",
+        {"id": company_id},
+    )
+    return {"deleted": True}
+
+
+# ============================================================================
+# Direct Import (Leads -> Contacts)
+# ============================================================================
+
+class DirectImportRequest(BaseModel):
+    lead_ids: List[str]
+    tags: Optional[List[str]] = []
+    assigned_rep_id: Optional[str] = None
+    enroll_sequence_id: Optional[str] = None
+
+class DirectImportListRequest(BaseModel):
+    tags: Optional[List[str]] = []
+    assigned_rep_id: Optional[str] = None
+    enroll_sequence_id: Optional[str] = None
+
+
+@router.post("/scraping/leads/direct-import")
+async def direct_import_leads(
+    data: DirectImportRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Import staged leads directly as CRM contacts using pure bulk SQL."""
+    if not data.lead_ids:
+        raise HTTPException(400, "No lead IDs provided")
+
+    extra_tags = data.tags or []
+    base_tags = ["Backlot Prospect"]
+
+    # Step 1: Bulk upsert companies (single query), backfill website
+    execute_query(
+        """
+        INSERT INTO crm_companies (name, website, created_by)
+        SELECT DISTINCT ON (LOWER(TRIM(l.company_name))) TRIM(l.company_name), l.website, :uid
+        FROM crm_scraped_leads l
+        WHERE l.id = ANY(:ids::uuid[])
+          AND l.status IN ('pending', 'listed')
+          AND l.company_name IS NOT NULL
+          AND TRIM(l.company_name) != ''
+        ORDER BY LOWER(TRIM(l.company_name)), l.created_at ASC
+        ON CONFLICT (LOWER(name)) DO UPDATE
+          SET website = COALESCE(crm_companies.website, EXCLUDED.website)
+        """,
+        {"ids": data.lead_ids, "uid": profile["id"]},
+    )
+
+    # Step 2: Bulk INSERT contacts — skip leads with no contact info
+    imported = execute_query(
+        """
+        INSERT INTO crm_contacts (
+            company, company_id, email, phone, city, state, country,
+            source, source_detail, temperature, tags,
+            assigned_rep_id, visibility, notes,
+            first_name, last_name, website, created_by
+        )
+        SELECT
+            NULLIF(TRIM(l.company_name), ''),
+            cc.id,
+            l.email,
+            l.phone,
+            l.city,
+            l.state,
+            COALESCE(l.country, 'US'),
+            'scraped',
+            COALESCE(s.name, dp.name, 'Discovery'),
+            'cold',
+            :base_tags::text[] || ARRAY[COALESCE(s.name, dp.name, 'Discovery')] || :extra_tags::text[],
+            NULL,
+            'team',
+            l.description,
+            COALESCE(NULLIF(TRIM(l.company_name), ''), 'Unknown'),
+            '',
+            l.website,
+            :uid
+        FROM crm_scraped_leads l
+        JOIN crm_scrape_jobs j ON j.id = l.job_id
+        LEFT JOIN crm_scrape_sources s ON s.id = j.source_id
+        LEFT JOIN crm_discovery_runs dr ON dr.id = j.discovery_run_id
+        LEFT JOIN crm_discovery_profiles dp ON dp.id = dr.profile_id
+        LEFT JOIN crm_companies cc ON LOWER(cc.name) = LOWER(TRIM(l.company_name))
+        WHERE l.id = ANY(:ids::uuid[]) AND l.status IN ('pending', 'listed')
+          AND (l.email IS NOT NULL OR l.phone IS NOT NULL OR l.website IS NOT NULL)
+        RETURNING id
+        """,
+        {
+            "ids": data.lead_ids,
+            "uid": profile["id"],
+            "base_tags": base_tags,
+            "extra_tags": extra_tags,
+        },
+    )
+
+    imported_count = len(imported) if imported else 0
+
+    # Step 3: Bulk update lead statuses (single query)
+    execute_query(
+        "UPDATE crm_scraped_leads SET status = 'approved' WHERE id = ANY(:ids::uuid[]) AND status IN ('pending', 'listed')",
+        {"ids": data.lead_ids},
+    )
+
+    return {"imported": imported_count, "skipped": 0, "contact_ids": []}
+
+
+@router.post("/scraping/lead-lists/{list_id}/direct-import")
+async def direct_import_lead_list(
+    list_id: str,
+    data: Optional[DirectImportListRequest] = None,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Import all leads in a lead list directly as CRM contacts using pure bulk SQL."""
+    lead_list = execute_single(
+        "SELECT * FROM crm_lead_lists WHERE id = :id",
+        {"id": list_id},
+    )
+    if not lead_list:
+        raise HTTPException(404, "Lead list not found")
+
+    extra_tags = data.tags if data and data.tags else []
+    base_tags = ["Backlot Prospect"]
+
+    # Step 1: Bulk upsert companies from all leads in this list, backfill website
+    execute_query(
+        """
+        INSERT INTO crm_companies (name, website, created_by)
+        SELECT DISTINCT ON (LOWER(TRIM(l.company_name))) TRIM(l.company_name), l.website, :uid
+        FROM crm_lead_list_items li
+        JOIN crm_scraped_leads l ON l.id = li.lead_id
+        WHERE li.list_id = :lid
+          AND l.status IN ('pending', 'listed')
+          AND l.company_name IS NOT NULL
+          AND TRIM(l.company_name) != ''
+        ORDER BY LOWER(TRIM(l.company_name)), l.created_at ASC
+        ON CONFLICT (LOWER(name)) DO UPDATE
+          SET website = COALESCE(crm_companies.website, EXCLUDED.website)
+        """,
+        {"lid": list_id, "uid": profile["id"]},
+    )
+
+    # Step 2: Bulk INSERT contacts — skip leads with no contact info
+    imported = execute_query(
+        """
+        INSERT INTO crm_contacts (
+            company, company_id, email, phone, city, state, country,
+            source, source_detail, temperature, tags,
+            assigned_rep_id, visibility, notes,
+            first_name, last_name, website, created_by
+        )
+        SELECT
+            NULLIF(TRIM(l.company_name), ''),
+            cc.id,
+            l.email,
+            l.phone,
+            l.city,
+            l.state,
+            COALESCE(l.country, 'US'),
+            'scraped',
+            COALESCE(s.name, dp.name, 'Discovery'),
+            'cold',
+            :base_tags::text[] || ARRAY[COALESCE(s.name, dp.name, 'Discovery')] || :extra_tags::text[],
+            NULL,
+            'team',
+            l.description,
+            COALESCE(NULLIF(TRIM(l.company_name), ''), 'Unknown'),
+            '',
+            l.website,
+            :uid
+        FROM crm_lead_list_items li
+        JOIN crm_scraped_leads l ON l.id = li.lead_id
+        JOIN crm_scrape_jobs j ON j.id = l.job_id
+        LEFT JOIN crm_scrape_sources s ON s.id = j.source_id
+        LEFT JOIN crm_discovery_runs dr ON dr.id = j.discovery_run_id
+        LEFT JOIN crm_discovery_profiles dp ON dp.id = dr.profile_id
+        LEFT JOIN crm_companies cc ON LOWER(cc.name) = LOWER(TRIM(l.company_name))
+        WHERE li.list_id = :lid AND l.status IN ('pending', 'listed')
+          AND (l.email IS NOT NULL OR l.phone IS NOT NULL OR l.website IS NOT NULL)
+        RETURNING id
+        """,
+        {
+            "lid": list_id,
+            "uid": profile["id"],
+            "base_tags": base_tags,
+            "extra_tags": extra_tags,
+        },
+    )
+
+    imported_count = len(imported) if imported else 0
+
+    # Step 3: Bulk update lead statuses (single query)
+    execute_query(
+        """
+        UPDATE crm_scraped_leads SET status = 'approved'
+        WHERE id IN (
+            SELECT li.lead_id FROM crm_lead_list_items li WHERE li.list_id = :lid
+        ) AND status IN ('pending', 'listed')
+        """,
+        {"lid": list_id},
+    )
+
+    # Step 4: Update list status
+    execute_single(
+        "UPDATE crm_lead_lists SET status = 'imported', updated_at = NOW() WHERE id = :id RETURNING id",
+        {"id": list_id},
+    )
+
+    return {"imported": imported_count, "skipped": 0, "contact_ids": []}

@@ -7,14 +7,17 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import CRMCompanySelector from './CRMCompanySelector';
 
 const contactSchema = z.object({
   first_name: z.string().min(1, 'First name is required'),
-  last_name: z.string().min(1, 'Last name is required'),
+  last_name: z.string().optional().or(z.literal('')),
   email: z.string().email('Invalid email').optional().or(z.literal('')),
   phone: z.string().optional().or(z.literal('')),
   phone_secondary: z.string().optional().or(z.literal('')),
+  website: z.string().optional().or(z.literal('')),
   company: z.string().optional().or(z.literal('')),
+  company_id: z.string().optional().or(z.literal('')),
   job_title: z.string().optional().or(z.literal('')),
   address_line1: z.string().optional().or(z.literal('')),
   address_line2: z.string().optional().or(z.literal('')),
@@ -26,13 +29,13 @@ const contactSchema = z.object({
   source: z.enum(['inbound', 'outbound', 'referral', 'event', 'website', 'social', 'other']),
   source_detail: z.string().optional().or(z.literal('')),
   notes: z.string().optional().or(z.literal('')),
-  visibility: z.enum(['private', 'team']).default('team'),
+  visibility: z.enum(['private', 'team']).default('private'),
 });
 
 type ContactFormValues = z.infer<typeof contactSchema>;
 
 interface ContactFormProps {
-  defaultValues?: Partial<ContactFormValues>;
+  defaultValues?: Partial<ContactFormValues> & { company_id?: string };
   onSubmit: (values: ContactFormValues) => void;
   isSubmitting?: boolean;
   submitLabel?: string;
@@ -47,7 +50,9 @@ const ContactForm = ({ defaultValues, onSubmit, isSubmitting, submitLabel = 'Sav
       email: '',
       phone: '',
       phone_secondary: '',
+      website: '',
       company: '',
+      company_id: '',
       job_title: '',
       address_line1: '',
       address_line2: '',
@@ -59,7 +64,7 @@ const ContactForm = ({ defaultValues, onSubmit, isSubmitting, submitLabel = 'Sav
       source: 'outbound',
       source_detail: '',
       notes: '',
-      visibility: 'team',
+      visibility: 'private',
       ...defaultValues,
     },
   });
@@ -78,7 +83,7 @@ const ContactForm = ({ defaultValues, onSubmit, isSubmitting, submitLabel = 'Sav
           )} />
           <FormField control={form.control} name="last_name" render={({ field }) => (
             <FormItem>
-              <FormLabel>Last Name *</FormLabel>
+              <FormLabel>Last Name</FormLabel>
               <FormControl><Input {...field} className="bg-charcoal-black border-muted-gray" /></FormControl>
               <FormMessage />
             </FormItem>
@@ -103,12 +108,44 @@ const ContactForm = ({ defaultValues, onSubmit, isSubmitting, submitLabel = 'Sav
           )} />
         </div>
 
+        {/* Phone Secondary + Website */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <FormField control={form.control} name="phone_secondary" render={({ field }) => (
+            <FormItem>
+              <FormLabel>Secondary Phone</FormLabel>
+              <FormControl><Input {...field} className="bg-charcoal-black border-muted-gray" /></FormControl>
+              <FormMessage />
+            </FormItem>
+          )} />
+          <FormField control={form.control} name="website" render={({ field }) => (
+            <FormItem>
+              <FormLabel>Website</FormLabel>
+              <FormControl><Input {...field} placeholder="https://example.com" className="bg-charcoal-black border-muted-gray" /></FormControl>
+              <FormMessage />
+            </FormItem>
+          )} />
+        </div>
+
         {/* Company */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <FormField control={form.control} name="company" render={({ field }) => (
+          <FormField control={form.control} name="company_id" render={({ field }) => (
             <FormItem>
               <FormLabel>Company</FormLabel>
-              <FormControl><Input {...field} className="bg-charcoal-black border-muted-gray" /></FormControl>
+              <FormControl>
+                <CRMCompanySelector
+                  value={field.value || null}
+                  onChange={(id, name) => {
+                    form.setValue('company_id', id || '');
+                    form.setValue('company', name || '');
+                  }}
+                  initialSelectedItem={
+                    defaultValues?.company_id && defaultValues?.company
+                      ? { id: defaultValues.company_id, name: defaultValues.company }
+                      : null
+                  }
+                  className="bg-charcoal-black border-muted-gray"
+                />
+              </FormControl>
               <FormMessage />
             </FormItem>
           )} />

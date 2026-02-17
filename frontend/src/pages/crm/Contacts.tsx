@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, ClipboardList, UserPlus, Sparkles } from 'lucide-react';
+import { Plus, ClipboardList, UserPlus, Sparkles, LayoutGrid, List } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 import ContactCard from '@/components/crm/ContactCard';
+import ContactListView from '@/components/crm/ContactListView';
 import ContactForm from '@/components/crm/ContactForm';
 import ContactFilters from '@/components/crm/ContactFilters';
 import CalendarActivityDialog from '@/components/crm/CalendarActivityDialog';
@@ -17,6 +18,7 @@ import { usePermissions } from '@/hooks/usePermissions';
 import { toast } from 'sonner';
 
 type Tab = 'my_contacts' | 'new_leads' | 'all_contacts';
+type ViewMode = 'grid' | 'list';
 
 const Contacts = () => {
   const navigate = useNavigate();
@@ -32,7 +34,15 @@ const Contacts = () => {
   const [showLogActivity, setShowLogActivity] = useState(false);
   const [offset, setOffset] = useState(0);
   const [assignTarget, setAssignTarget] = useState<any>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    return (localStorage.getItem('crm-contacts-view') as ViewMode) || 'grid';
+  });
   const limit = 50;
+
+  const handleViewModeChange = (mode: ViewMode) => {
+    setViewMode(mode);
+    localStorage.setItem('crm-contacts-view', mode);
+  };
 
   const { data: badges } = useSidebarBadges();
   const newLeadsCount = badges?.new_leads || 0;
@@ -44,6 +54,7 @@ const Contacts = () => {
     status: status !== 'all' ? status : undefined,
     sort_by: sortBy,
     sort_order: sortBy === 'created_at' ? 'desc' : 'asc',
+    scope: activeTab === 'my_contacts' ? 'mine' : activeTab === 'all_contacts' ? 'all' : undefined,
     limit,
     offset,
   });
@@ -120,9 +131,60 @@ const Contacts = () => {
   // Always show New Leads tab — show badge when there are unviewed
   tabs.push({ id: 'new_leads', label: 'New Leads', badge: newLeadsCount });
 
-  if (isAdmin) {
-    tabs.push({ id: 'all_contacts', label: 'All Contacts' });
-  }
+  tabs.push({ id: 'all_contacts', label: 'All Contacts' });
+
+  const renderContacts = (contactList: any[], showAdmin: boolean) => {
+    if (viewMode === 'list') {
+      return (
+        <ContactListView
+          contacts={contactList}
+          onEmail={handleEmail}
+          showAdminControls={showAdmin}
+          onAssign={showAdmin ? (c) => setAssignTarget(c) : undefined}
+        />
+      );
+    }
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {contactList.map((contact: any) => (
+          <ContactCard
+            key={contact.id}
+            contact={contact}
+            onEmail={handleEmail}
+            showAdminControls={showAdmin}
+            onAssign={showAdmin ? (c) => setAssignTarget(c) : undefined}
+          />
+        ))}
+      </div>
+    );
+  };
+
+  const viewToggle = (
+    <div className="flex items-center gap-1 bg-muted-gray/10 rounded-lg p-0.5">
+      <button
+        onClick={() => handleViewModeChange('grid')}
+        className={`p-1.5 rounded transition-colors ${
+          viewMode === 'grid'
+            ? 'bg-muted-gray/30 text-accent-yellow'
+            : 'text-muted-gray hover:text-bone-white'
+        }`}
+        title="Grid view"
+      >
+        <LayoutGrid className="h-4 w-4" />
+      </button>
+      <button
+        onClick={() => handleViewModeChange('list')}
+        className={`p-1.5 rounded transition-colors ${
+          viewMode === 'list'
+            ? 'bg-muted-gray/30 text-accent-yellow'
+            : 'text-muted-gray hover:text-bone-white'
+        }`}
+        title="List view"
+      >
+        <List className="h-4 w-4" />
+      </button>
+    </div>
+  );
 
   return (
     <div className="space-y-6">
@@ -146,32 +208,35 @@ const Contacts = () => {
       </div>
 
       {/* Tab switcher */}
-      <div className="flex gap-1 border-b border-muted-gray/30">
-        {tabs.map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => switchTab(tab.id)}
-            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === tab.id
-                ? 'border-accent-yellow text-accent-yellow'
-                : 'border-transparent text-muted-gray hover:text-bone-white hover:border-muted-gray/50'
-            }`}
-          >
-            {tab.id === 'new_leads' && <Sparkles className="h-3.5 w-3.5" />}
-            {tab.label}
-            {tab.badge != null && tab.badge > 0 && (
-              <span className={`text-xs px-1.5 py-0 rounded-full ${
-                tab.id === 'new_leads'
-                  ? 'bg-primary-red/20 text-primary-red'
-                  : activeTab === tab.id
-                    ? 'bg-accent-yellow/20 text-accent-yellow'
-                    : 'bg-muted-gray/20 text-muted-gray'
-              }`}>
-                {tab.badge}
-              </span>
-            )}
-          </button>
-        ))}
+      <div className="flex items-center justify-between border-b border-muted-gray/30">
+        <div className="flex gap-1">
+          {tabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => switchTab(tab.id)}
+              className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === tab.id
+                  ? 'border-accent-yellow text-accent-yellow'
+                  : 'border-transparent text-muted-gray hover:text-bone-white hover:border-muted-gray/50'
+              }`}
+            >
+              {tab.id === 'new_leads' && <Sparkles className="h-3.5 w-3.5" />}
+              {tab.label}
+              {tab.badge != null && tab.badge > 0 && (
+                <span className={`text-xs px-1.5 py-0 rounded-full ${
+                  tab.id === 'new_leads'
+                    ? 'bg-primary-red/20 text-primary-red'
+                    : activeTab === tab.id
+                      ? 'bg-accent-yellow/20 text-accent-yellow'
+                      : 'bg-muted-gray/20 text-muted-gray'
+                }`}>
+                  {tab.badge}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+        {viewToggle}
       </div>
 
       {/* New Leads Tab */}
@@ -192,21 +257,28 @@ const Contacts = () => {
           ) : (
             <>
               <div className="text-sm text-muted-gray">{newLeads.length} new lead{newLeads.length !== 1 ? 's' : ''} assigned to you</div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {newLeads.map((contact: any) => (
-                  <div key={contact.id} className="relative">
-                    {contact.assigned_by_name && (
-                      <div className="text-xs text-muted-gray mb-1 px-1">
-                        Assigned by {contact.assigned_by_name}
-                        {contact.assignment_notes && <> &mdash; {contact.assignment_notes}</>}
+              {viewMode === 'list' ? (
+                <ContactListView
+                  contacts={newLeads}
+                  onEmail={handleEmail}
+                />
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {newLeads.map((contact: any) => (
+                    <div key={contact.id} className="relative">
+                      {contact.assigned_by_name && (
+                        <div className="text-xs text-muted-gray mb-1 px-1">
+                          Assigned by {contact.assigned_by_name}
+                          {contact.assignment_notes && <> &mdash; {contact.assignment_notes}</>}
+                        </div>
+                      )}
+                      <div onClick={() => handleNewLeadClick(contact)} className="cursor-pointer">
+                        <ContactCard contact={contact} onEmail={handleEmail} />
                       </div>
-                    )}
-                    <div onClick={() => handleNewLeadClick(contact)} className="cursor-pointer">
-                      <ContactCard contact={contact} onEmail={handleEmail} />
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </>
           )}
         </>
@@ -240,17 +312,7 @@ const Contacts = () => {
           ) : (
             <>
               <div className="text-sm text-muted-gray">{total} contacts</div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {contacts.map((contact: any) => (
-                  <ContactCard
-                    key={contact.id}
-                    contact={contact}
-                    onEmail={handleEmail}
-                    showAdminControls={isAdmin}
-                    onAssign={isAdmin ? (c) => setAssignTarget(c) : undefined}
-                  />
-                ))}
-              </div>
+              {renderContacts(contacts, isAdmin)}
 
               {/* Pagination */}
               {total > limit && (

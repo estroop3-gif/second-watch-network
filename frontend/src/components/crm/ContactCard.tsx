@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Phone, Mail, Building2, Clock, Send, PhoneOff, UserPlus, Lock } from 'lucide-react';
+import { Phone, Mail, Building2, Clock, Send, PhoneOff, UserPlus, Lock, Globe } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -24,6 +24,15 @@ interface ContactCardProps {
   showAdminControls?: boolean;
   onAssign?: (contact: any) => void;
 }
+
+const formatDomain = (url: string) => {
+  try {
+    const u = new URL(url.startsWith('http') ? url : `https://${url}`);
+    return u.hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+};
 
 const ContactCard = ({ contact, onEmail, showAdminControls, onAssign }: ContactCardProps) => {
   const lastActivity = contact.last_activity_date
@@ -58,6 +67,8 @@ const ContactCard = ({ contact, onEmail, showAdminControls, onAssign }: ContactC
     );
   };
 
+  const displayName = contact.first_name + (contact.last_name ? ` ${contact.last_name}` : '');
+
   return (
     <Link to={`/crm/contacts/${contact.id}`}>
       <Card className={`bg-charcoal-black border-muted-gray/30 hover:border-accent-yellow/50 transition-colors cursor-pointer ${isDNC ? 'border-red-500/30' : ''}`}>
@@ -66,8 +77,13 @@ const ContactCard = ({ contact, onEmail, showAdminControls, onAssign }: ContactC
             <div className="space-y-1 min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <h3 className="font-medium text-bone-white truncate">
-                  {contact.first_name} {contact.last_name}
+                  {displayName}
                 </h3>
+                {!contact.last_name && (
+                  <Badge className="bg-blue-500/10 text-blue-400 border-blue-500/30 text-[10px] px-1.5 py-0 h-5 flex-shrink-0">
+                    <Building2 className="h-2.5 w-2.5 mr-0.5" /> Company
+                  </Badge>
+                )}
                 {contact.visibility === 'private' && (
                   <Badge variant="outline" className="bg-orange-500/10 text-orange-400 border-orange-500/30 text-[10px] px-1.5 py-0 h-5 flex-shrink-0">
                     <Lock className="h-2.5 w-2.5 mr-0.5" /> Private
@@ -82,7 +98,17 @@ const ContactCard = ({ contact, onEmail, showAdminControls, onAssign }: ContactC
               {contact.company && (
                 <div className="flex items-center gap-1 text-sm text-muted-gray">
                   <Building2 className="h-3 w-3" />
-                  <span>{contact.company}</span>
+                  {contact.company_id ? (
+                    <Link
+                      to={`/crm/companies/${contact.company_id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="hover:text-accent-yellow transition-colors"
+                    >
+                      {contact.company}
+                    </Link>
+                  ) : (
+                    <span>{contact.company}</span>
+                  )}
                   {contact.job_title && <span>- {contact.job_title}</span>}
                 </div>
               )}
@@ -142,6 +168,22 @@ const ContactCard = ({ contact, onEmail, showAdminControls, onAssign }: ContactC
               <span className="flex items-center gap-1">
                 <Phone className="h-3 w-3" /> {contact.phone}
               </span>
+            )}
+            {contact.phone_secondary && (
+              <span className="flex items-center gap-1">
+                <Phone className="h-3 w-3" /> {contact.phone_secondary}
+              </span>
+            )}
+            {contact.website && (
+              <a
+                href={contact.website.startsWith('http') ? contact.website : `https://${contact.website}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={e => e.stopPropagation()}
+                className="flex items-center gap-1 hover:text-accent-yellow transition-colors"
+              >
+                <Globe className="h-3 w-3" /> {formatDomain(contact.website)}
+              </a>
             )}
           </div>
 
