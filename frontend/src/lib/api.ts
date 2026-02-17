@@ -5752,6 +5752,10 @@ class APIClient {
     return this.post<{ job: any; sites_remaining: number | null; ecs_task_arn: string | null }>(`/api/v1/crm/scraping/jobs/${jobId}/retry`, {})
   }
 
+  async cancelScrapeJob(jobId: string) {
+    return this.post<{ job: any }>(`/api/v1/crm/scraping/jobs/${jobId}/cancel`, {})
+  }
+
   async exportScrapedLeads(params?: { job_id?: string; status?: string; min_score?: number }): Promise<Blob> {
     const searchParams = new URLSearchParams()
     if (params?.job_id) searchParams.set('job_id', params.job_id)

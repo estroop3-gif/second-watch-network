@@ -30,6 +30,7 @@ import {
   useScrapingSettings,
   useUpdateScrapingSettings,
   useRetryScrapeJob,
+  useCancelScrapeJob,
   useLeadLists,
   useLeadList,
   useCreateLeadList,
@@ -103,6 +104,7 @@ import {
   ListPlus,
   FolderOpen,
   Filter,
+  StopCircle,
 } from 'lucide-react';
 
 const TABS = ['Discovery', 'Scrape Profiles', 'Jobs', 'Staged Leads', 'Lead Lists', 'Sources', 'Settings'] as const;
@@ -113,6 +115,7 @@ const STATUS_COLORS: Record<string, string> = {
   running: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
   completed: 'bg-green-500/20 text-green-400 border-green-500/30',
   failed: 'bg-red-500/20 text-red-400 border-red-500/30',
+  cancelled: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
   pending: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
   approved: 'bg-green-500/20 text-green-400 border-green-500/30',
   rejected: 'bg-red-500/20 text-red-400 border-red-500/30',
@@ -1208,11 +1211,22 @@ function JobsTab() {
   const { data: jobDetailData } = useScrapeJob(selectedJobId || undefined);
   const createJob = useCreateScrapeJob();
   const retryJob = useRetryScrapeJob();
+  const cancelJob = useCancelScrapeJob();
 
   const handleRetryJob = async (jobId: string) => {
     try {
       await retryJob.mutateAsync(jobId);
       toast({ title: 'Retry job created', description: 'A new scrape job has been launched for remaining sites.' });
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleCancelJob = async (jobId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    try {
+      await cancelJob.mutateAsync(jobId);
+      toast({ title: 'Job cancelled' });
     } catch (err: any) {
       toast({ title: 'Error', description: err.message, variant: 'destructive' });
     }
@@ -1272,6 +1286,7 @@ function JobsTab() {
               <SelectItem value="running">Running</SelectItem>
               <SelectItem value="completed">Completed</SelectItem>
               <SelectItem value="failed">Failed</SelectItem>
+              <SelectItem value="cancelled">Cancelled</SelectItem>
             </SelectContent>
           </Select>
           {activeCount > 0 && (
@@ -1329,21 +1344,33 @@ function JobsTab() {
 
               {/* Queued state */}
               {job.status === 'queued' && (
-                <div className="mt-2 flex items-center gap-2 text-xs text-amber-400">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Launching ECS task... waiting for container to start
+                <div className="mt-2 flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs text-amber-400">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Launching ECS task... waiting for container to start
+                  </div>
+                  <Button variant="ghost" size="sm" className="h-6 px-2 text-xs text-orange-400 hover:text-orange-300 hover:bg-orange-500/10"
+                    onClick={(e) => handleCancelJob(job.id, e)} disabled={cancelJob.isPending}>
+                    <StopCircle className="h-3 w-3 mr-1" /> Cancel
+                  </Button>
                 </div>
               )}
 
               {/* Running state with progress */}
               {job.status === 'running' && (
                 <div className="mt-2 space-y-1.5">
-                  <div className="flex items-center gap-2 text-xs text-blue-400">
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                    {isDiscovery
-                      ? `Scraping... ${job.sites_scraped || 0}/${job.total_sites} sites (${stats.leads_found || 0} leads, ${stats.sites_skipped || 0} skipped)`
-                      : `Scraping... ${stats.pages_scraped || 0} pages, ${stats.leads_found || 0} leads found`
-                    }
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-xs text-blue-400">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      {isDiscovery
+                        ? `Scraping... ${job.sites_scraped || 0}/${job.total_sites} sites (${stats.leads_found || 0} leads, ${stats.sites_skipped || 0} skipped)`
+                        : `Scraping... ${stats.pages_scraped || 0} pages, ${stats.leads_found || 0} leads found`
+                      }
+                    </div>
+                    <Button variant="ghost" size="sm" className="h-6 px-2 text-xs text-orange-400 hover:text-orange-300 hover:bg-orange-500/10"
+                      onClick={(e) => handleCancelJob(job.id, e)} disabled={cancelJob.isPending}>
+                      <StopCircle className="h-3 w-3 mr-1" /> Cancel
+                    </Button>
                   </div>
                   {isDiscovery && job.total_sites > 0 && (
                     <div className="w-full h-1.5 rounded-full bg-muted-gray/20 overflow-hidden">
@@ -1464,7 +1491,26 @@ function JobsTab() {
                         <p className="text-xs text-muted-gray text-right">{progressPct}% complete</p>
                       </div>
                     )}
-                    <p className="text-xs text-muted-gray mt-1">Elapsed: {formatElapsed(selectedJob.created_at)} &middot; Auto-refreshing every 5s</p>
+                    <div className="flex items-center justify-between mt-2">
+                      <p className="text-xs text-muted-gray">Elapsed: {formatElapsed(selectedJob.created_at)} &middot; Auto-refreshing every 5s</p>
+                      <Button variant="ghost" size="sm" className="h-6 px-2 text-xs text-orange-400 hover:text-orange-300 hover:bg-orange-500/10"
+                        onClick={() => handleCancelJob(selectedJob.id)} disabled={cancelJob.isPending}>
+                        <StopCircle className="h-3.5 w-3.5 mr-1" /> Cancel Job
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Cancelled banner */}
+                {selectedJob.status === 'cancelled' && (
+                  <div className="rounded-lg p-3 bg-orange-500/10 border border-orange-500/20">
+                    <div className="flex items-center gap-2 text-sm text-orange-400">
+                      <StopCircle className="h-4 w-4 flex-shrink-0" />
+                      <span className="font-medium">Job Cancelled</span>
+                    </div>
+                    {selectedJob.finished_at && (
+                      <p className="text-xs text-muted-gray mt-1">Cancelled after {formatElapsed(selectedJob.created_at, selectedJob.finished_at)}</p>
+                    )}
                   </div>
                 )}
 

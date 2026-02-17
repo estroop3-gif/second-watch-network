@@ -6104,6 +6104,7 @@ def _launch_ecs_task(
         {"name": "USER_AGENT", "value": settings.get("default_user_agent", "")},
         {"name": "LOG_LEVEL", "value": settings.get("default_log_level", "INFO")},
         {"name": "FREE_EMAIL_DOMAINS", "value": settings.get("free_email_domains", "")},
+        {"name": "MAX_JOB_SECONDS", "value": settings.get("max_job_seconds", "7200")},
     ]
     if task_type == "discovery":
         worker_env.append({"name": "DISCOVERY_QUERY_DELAY_MS", "value": settings.get("discovery_query_delay_ms", "1000")})
@@ -6548,6 +6549,46 @@ async def retry_scrape_job(
         "sites_remaining": len(sites_without_leads) if original.get("discovery_run_id") else None,
         "ecs_task_arn": ecs_task_arn,
     }
+
+
+@router.post("/scraping/jobs/{job_id}/cancel")
+async def cancel_scrape_job(
+    job_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_ADMIN)),
+):
+    """Cancel a queued or running scrape job."""
+    job = execute_single(
+        "SELECT * FROM crm_scrape_jobs WHERE id = :id",
+        {"id": job_id},
+    )
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job["status"] not in ("queued", "running"):
+        raise HTTPException(400, "Can only cancel queued or running jobs")
+
+    # Stop ECS Fargate task if it exists
+    if job.get("ecs_task_arn"):
+        try:
+            import boto3
+            settings = _get_scraping_settings()
+            ecs_client = boto3.client("ecs", region_name="us-east-1")
+            ecs_client.stop_task(
+                cluster=settings["ecs_cluster"],
+                task=job["ecs_task_arn"],
+                reason="Cancelled by user",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to stop ECS task for job {job_id}: {e}")
+
+    updated = execute_single(
+        """
+        UPDATE crm_scrape_jobs
+        SET status = 'cancelled', finished_at = NOW(), error_message = 'Cancelled by user'
+        WHERE id = :id RETURNING *
+        """,
+        {"id": job_id},
+    )
+    return {"job": updated}
 
 
 # --- Scraped Leads ---

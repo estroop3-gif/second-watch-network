@@ -25,6 +25,7 @@ from scoring import calculate_match_score
 
 USER_AGENT = os.environ.get("USER_AGENT", "Mozilla/5.0 (compatible; SWN-LeadFinder/1.0)")
 HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT_MS", "10000")) / 1000.0  # 10s default (was 30s)
+MAX_JOB_SECONDS = int(os.environ.get("MAX_JOB_SECONDS", "7200"))  # 2 hour default
 
 # Configure log level from env — force unbuffered output for CloudWatch
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -438,9 +439,17 @@ def run_discovery_based_job(cur, job: dict, job_id: str):
              "leads_filtered": 0, "errors": 0, "pages_scraped": 0,
              "sites_skipped": 0, "pages_failed": 0}
 
-    logger.info(f"Starting scrape of {len(sites)} sites for job {job_id}")
+    logger.info(f"Starting scrape of {len(sites)} sites for job {job_id} (timeout: {MAX_JOB_SECONDS}s)")
+    job_start = time.monotonic()
 
     for idx, site in enumerate(sites):
+        # Check overall job timeout
+        elapsed = time.monotonic() - job_start
+        if elapsed >= MAX_JOB_SECONDS:
+            logger.warning(f"Job {job_id} hit timeout after {elapsed:.0f}s — stopping with partial results")
+            stats["timeout"] = True
+            stats["timeout_after_seconds"] = round(elapsed)
+            break
         domain = site.get("domain", "")
         homepage = site.get("homepage_url", "")
 
@@ -702,9 +711,18 @@ def run_job(job_id: str):
 
         stats = {"pages_scraped": 0, "leads_found": 0, "duplicates_skipped": 0, "errors": 0}
         current_url = base_url
+        legacy_job_start = time.monotonic()
 
         for page_num in range(max_pages):
             if not current_url:
+                break
+
+            # Check overall job timeout
+            elapsed = time.monotonic() - legacy_job_start
+            if elapsed >= MAX_JOB_SECONDS:
+                logger.warning(f"Job {job_id} hit timeout after {elapsed:.0f}s")
+                stats["timeout"] = True
+                stats["timeout_after_seconds"] = round(elapsed)
                 break
 
             try:

@@ -255,6 +255,17 @@ export function useRetryScrapeJob() {
   });
 }
 
+export function useCancelScrapeJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: string) => api.cancelScrapeJob(jobId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-scrape-jobs'] });
+      qc.invalidateQueries({ queryKey: ['crm-scrape-job'] });
+    },
+  });
+}
+
 // ============================================================================
 // Scraped Leads
 // ============================================================================
