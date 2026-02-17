@@ -154,7 +154,7 @@ const ContactDetail = () => {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="sm" onClick={() => navigate('/crm/contacts')}>
+        <Button variant="ghost" size="sm" onClick={() => navigate(-1)}>
           <ArrowLeft className="h-4 w-4 mr-1" /> Back
         </Button>
       </div>
@@ -277,18 +277,56 @@ const ContactDetail = () => {
             <CardTitle className="text-bone-white text-base">Contact Info</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
-            {contact.email && (
-              <div className="flex items-center gap-2 text-bone-white/80">
-                <Mail className="h-4 w-4 text-muted-gray" />
-                <CopyableEmail email={contact.email} className="hover:text-accent-yellow" />
-              </div>
-            )}
-            {contact.phone && (
-              <div className="flex items-center gap-2 text-bone-white/80">
-                <Phone className="h-4 w-4 text-muted-gray" />
-                <a href={`tel:${contact.phone}`} className="hover:text-accent-yellow">{contact.phone}</a>
-              </div>
-            )}
+            {(() => {
+              const allEmails = contact.emails?.length > 0 ? contact.emails : (contact.email ? [contact.email] : []);
+              const extractName = (email: string): string | null => {
+                const local = email.split('@')[0];
+                const parts = local.split(/[._-]/).filter(Boolean);
+                if (parts.length >= 2) {
+                  return parts.map((p: string) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(' ');
+                }
+                return null;
+              };
+              return allEmails.length > 0 && (
+                <div className="space-y-2">
+                  {allEmails.map((em: string, i: number) => {
+                    const name = extractName(em);
+                    return (
+                      <div key={em} className="flex items-center gap-2 text-bone-white/80">
+                        <Mail className="h-4 w-4 text-muted-gray flex-shrink-0" />
+                        <div className="min-w-0">
+                          {name && <span className="text-xs text-muted-gray block">{name}</span>}
+                          <CopyableEmail email={em} className="hover:text-accent-yellow" />
+                        </div>
+                        {i === 0 && allEmails.length > 1 && (
+                          <Badge className="bg-accent-yellow/10 text-accent-yellow border-accent-yellow/30 text-[10px] px-1.5 py-0 h-4 flex-shrink-0">
+                            primary
+                          </Badge>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+            {(() => {
+              const allPhones = contact.phones?.length > 0 ? contact.phones : (contact.phone ? [contact.phone] : []);
+              return allPhones.length > 0 && (
+                <div className="space-y-2">
+                  {allPhones.map((ph: string, i: number) => (
+                    <div key={ph} className="flex items-center gap-2 text-bone-white/80">
+                      <Phone className="h-4 w-4 text-muted-gray flex-shrink-0" />
+                      <a href={`tel:${ph}`} className="hover:text-accent-yellow">{ph}</a>
+                      {i === 0 && allPhones.length > 1 && (
+                        <Badge className="bg-accent-yellow/10 text-accent-yellow border-accent-yellow/30 text-[10px] px-1.5 py-0 h-4 flex-shrink-0">
+                          primary
+                        </Badge>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
             {contact.phone_secondary && (
               <div className="flex items-center gap-2 text-bone-white/80">
                 <Phone className="h-4 w-4 text-muted-gray" />

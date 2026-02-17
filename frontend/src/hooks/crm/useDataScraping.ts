@@ -272,7 +272,7 @@ export function useCancelScrapeJob() {
 
 export function useScrapedLeads(params?: {
   job_id?: string; status?: string; min_score?: number; max_score?: number;
-  country?: string; has_email?: boolean; has_phone?: boolean; search?: string;
+  country?: string; has_email?: boolean; has_phone?: boolean; has_website?: boolean; search?: string;
   sort_by?: string; sort_order?: string; limit?: number; offset?: number;
 } | null) {
   return useQuery({

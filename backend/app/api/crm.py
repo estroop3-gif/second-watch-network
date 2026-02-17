@@ -31,6 +31,8 @@ class ContactCreate(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     phone_secondary: Optional[str] = None
+    emails: Optional[List[str]] = []
+    phones: Optional[List[str]] = []
     website: Optional[str] = None
     company: Optional[str] = None
     company_id: Optional[str] = None
@@ -56,6 +58,8 @@ class ContactUpdate(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     phone_secondary: Optional[str] = None
+    emails: Optional[List[str]] = None
+    phones: Optional[List[str]] = None
     website: Optional[str] = None
     company: Optional[str] = None
     company_id: Optional[str] = None
@@ -592,6 +596,20 @@ async def create_contact(
         contact_data["company_id"] = resolved_company_id
         contact_data["company"] = resolved_company_name
 
+    # Sync emails array <-> primary email
+    if contact_data.get("emails"):
+        if not contact_data.get("email"):
+            contact_data["email"] = contact_data["emails"][0]
+    elif contact_data.get("email"):
+        contact_data["emails"] = [contact_data["email"]]
+
+    # Sync phones array <-> primary phone
+    if contact_data.get("phones"):
+        if not contact_data.get("phone"):
+            contact_data["phone"] = contact_data["phones"][0]
+    elif contact_data.get("phone"):
+        contact_data["phones"] = [contact_data["phone"]]
+
     # Wrap JSONB fields for psycopg2
     if "custom_fields" in contact_data:
         contact_data["custom_fields"] = PgJson(contact_data["custom_fields"])
@@ -638,6 +656,21 @@ async def update_contact(
         if resolved_company_id:
             update_data["company_id"] = resolved_company_id
             update_data["company"] = resolved_company_name
+
+    # Sync emails array <-> primary email
+    if "emails" in update_data:
+        if update_data["emails"]:
+            update_data["email"] = update_data["emails"][0]
+    elif "email" in update_data and update_data["email"]:
+        # email changed but emails not provided — update emails[0]
+        update_data["emails"] = [update_data["email"]]
+
+    # Sync phones array <-> primary phone
+    if "phones" in update_data:
+        if update_data["phones"]:
+            update_data["phone"] = update_data["phones"][0]
+    elif "phone" in update_data and update_data["phone"]:
+        update_data["phones"] = [update_data["phone"]]
 
     # Wrap JSONB fields for psycopg2
     if "custom_fields" in update_data:
@@ -6665,6 +6698,7 @@ async def list_scraped_leads(
     country: Optional[str] = Query(None),
     has_email: Optional[bool] = Query(None),
     has_phone: Optional[bool] = Query(None),
+    has_website: Optional[bool] = Query(None),
     search: Optional[str] = Query(None),
     sort_by: str = Query("match_score"),
     sort_order: str = Query("desc"),
@@ -6700,6 +6734,11 @@ async def list_scraped_leads(
             conditions.append("l.phone IS NOT NULL AND l.phone != ''")
         else:
             conditions.append("(l.phone IS NULL OR l.phone = '')")
+    if has_website is not None:
+        if has_website:
+            conditions.append("l.website IS NOT NULL AND l.website != ''")
+        else:
+            conditions.append("(l.website IS NULL OR l.website = '')")
     if search:
         conditions.append("(l.company_name ILIKE :search OR l.email ILIKE :search OR l.website ILIKE :search)")
         params["search"] = f"%{search}%"
@@ -6776,16 +6815,24 @@ async def bulk_approve_leads(
         if not lead.get("email") and not lead.get("phone") and not lead.get("website"):
             continue
 
+        # Split newline-separated emails/phones into arrays
+        raw_email = lead.get("email") or ""
+        raw_phone = lead.get("phone") or ""
+        emails_list = [e.strip() for e in raw_email.split("\n") if e.strip()] if raw_email else []
+        phones_list = [p.strip() for p in raw_phone.split("\n") if p.strip()] if raw_phone else []
+        primary_email = emails_list[0] if emails_list else None
+        primary_phone = phones_list[0] if phones_list else None
+
         # Create contact
         contact = execute_single(
             """
             INSERT INTO crm_contacts (
-                company, company_id, email, phone, city, state, country,
+                company, company_id, email, phone, emails, phones, city, state, country,
                 source, source_detail, temperature, tags,
                 assigned_rep_id, visibility, notes,
                 first_name, last_name, website
             ) VALUES (
-                :company, :company_id, :email, :phone, :city, :state, :country,
+                :company, :company_id, :email, :phone, :emails, :phones, :city, :state, :country,
                 'scraped', :source_detail, 'cold', :tags,
                 NULL, 'team', :notes,
                 :first_name, :last_name, :website
@@ -6794,8 +6841,10 @@ async def bulk_approve_leads(
             {
                 "company": lead["company_name"],
                 "company_id": resolved_company_id,
-                "email": lead.get("email"),
-                "phone": lead.get("phone"),
+                "email": primary_email,
+                "phone": primary_phone,
+                "emails": emails_list,
+                "phones": phones_list,
                 "city": lead.get("city"),
                 "state": lead.get("state"),
                 "country": lead.get("country") or "US",
@@ -7949,12 +7998,12 @@ async def bulk_import_contacts(
             execute_single(
                 """
                 INSERT INTO crm_contacts (
-                    first_name, last_name, email, phone, company,
+                    first_name, last_name, email, phone, emails, phones, company,
                     job_title, address_line1, city, state, zip, country,
                     source, source_detail, temperature, tags,
                     assigned_rep_id, visibility, notes, website
                 ) VALUES (
-                    :first_name, :last_name, :email, :phone, :company,
+                    :first_name, :last_name, :email, :phone, :emails, :phones, :company,
                     :job_title, :address_line1, :city, :state, :zip, :country,
                     :source, :source_detail, :temperature, :tags,
                     NULL, 'team', :notes, :website
@@ -7965,6 +8014,8 @@ async def bulk_import_contacts(
                     "last_name": last_name,
                     "email": email or None,
                     "phone": phone or None,
+                    "emails": [email] if email else [],
+                    "phones": [phone] if phone else [],
                     "company": company or None,
                     "job_title": contact_title or None,
                     "address_line1": get_val("address_line1") or get_val("address") or None,
@@ -8381,12 +8432,12 @@ async def import_lead_list(
             execute_single(
                 """
                 INSERT INTO crm_contacts (
-                    first_name, last_name, email, phone, company,
+                    first_name, last_name, email, phone, emails, phones, company,
                     job_title, address_line1, city, state, zip, country,
                     source, source_detail, temperature, tags,
                     assigned_rep_id, visibility, notes, website
                 ) VALUES (
-                    :first_name, :last_name, :email, :phone, :company,
+                    :first_name, :last_name, :email, :phone, :emails, :phones, :company,
                     :job_title, :address_line1, :city, :state, :zip, :country,
                     'other', :source_detail, 'cold', :tags,
                     NULL, 'team', :notes, :website
@@ -8397,6 +8448,8 @@ async def import_lead_list(
                     "last_name": last_name,
                     "email": email or None,
                     "phone": phone or None,
+                    "emails": [email] if email else [],
+                    "phones": [phone] if phone else [],
                     "company": company or None,
                     "job_title": contact_title or None,
                     "address_line1": get_val("address_line1") or get_val("address") or None,
@@ -9126,7 +9179,7 @@ async def direct_import_leads(
     imported = execute_query(
         """
         INSERT INTO crm_contacts (
-            company, company_id, email, phone, city, state, country,
+            company, company_id, email, phone, emails, phones, city, state, country,
             source, source_detail, temperature, tags,
             assigned_rep_id, visibility, notes,
             first_name, last_name, website, created_by
@@ -9134,8 +9187,10 @@ async def direct_import_leads(
         SELECT
             NULLIF(TRIM(l.company_name), ''),
             cc.id,
-            l.email,
-            l.phone,
+            NULLIF(SPLIT_PART(l.email, E'\n', 1), ''),
+            NULLIF(SPLIT_PART(l.phone, E'\n', 1), ''),
+            CASE WHEN l.email IS NOT NULL THEN string_to_array(l.email, E'\n') ELSE '{}'::text[] END,
+            CASE WHEN l.phone IS NOT NULL THEN string_to_array(l.phone, E'\n') ELSE '{}'::text[] END,
             l.city,
             l.state,
             COALESCE(l.country, 'US'),
@@ -9218,7 +9273,7 @@ async def direct_import_lead_list(
     imported = execute_query(
         """
         INSERT INTO crm_contacts (
-            company, company_id, email, phone, city, state, country,
+            company, company_id, email, phone, emails, phones, city, state, country,
             source, source_detail, temperature, tags,
             assigned_rep_id, visibility, notes,
             first_name, last_name, website, created_by
@@ -9226,8 +9281,10 @@ async def direct_import_lead_list(
         SELECT
             NULLIF(TRIM(l.company_name), ''),
             cc.id,
-            l.email,
-            l.phone,
+            NULLIF(SPLIT_PART(l.email, E'\n', 1), ''),
+            NULLIF(SPLIT_PART(l.phone, E'\n', 1), ''),
+            CASE WHEN l.email IS NOT NULL THEN string_to_array(l.email, E'\n') ELSE '{}'::text[] END,
+            CASE WHEN l.phone IS NOT NULL THEN string_to_array(l.phone, E'\n') ELSE '{}'::text[] END,
             l.city,
             l.state,
             COALESCE(l.country, 'US'),

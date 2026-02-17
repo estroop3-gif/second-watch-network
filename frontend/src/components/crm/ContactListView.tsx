@@ -72,9 +72,14 @@ const ContactListView = ({ contacts, onEmail, showAdminControls, onAssign }: Con
                 )}
               </TableCell>
               <TableCell className="py-2.5 text-sm" onClick={e => e.stopPropagation()}>
-                {contact.email ? (
+                {(contact.emails?.[0] || contact.email) ? (
                   <div className="flex items-center gap-1.5">
-                    <CopyableEmail email={contact.email} className="text-muted-gray text-xs" />
+                    <CopyableEmail email={contact.emails?.[0] || contact.email} className="text-muted-gray text-xs" />
+                    {(contact.emails?.length > 1) && (
+                      <Badge className="bg-muted-gray/20 text-muted-gray border-muted-gray/30 text-[10px] px-1 py-0 h-4">
+                        +{contact.emails.length - 1}
+                      </Badge>
+                    )}
                     {onEmail && (
                       <button
                         onClick={() => onEmail(contact)}
@@ -90,10 +95,17 @@ const ContactListView = ({ contacts, onEmail, showAdminControls, onAssign }: Con
                 )}
               </TableCell>
               <TableCell className="py-2.5 text-sm text-muted-gray">
-                {contact.phone ? (
-                  <a href={`tel:${contact.phone}`} className="hover:text-accent-yellow transition-colors">
-                    {contact.phone}
-                  </a>
+                {(contact.phones?.[0] || contact.phone) ? (
+                  <div className="flex items-center gap-1.5">
+                    <a href={`tel:${contact.phones?.[0] || contact.phone}`} className="hover:text-accent-yellow transition-colors">
+                      {contact.phones?.[0] || contact.phone}
+                    </a>
+                    {(contact.phones?.length > 1) && (
+                      <Badge className="bg-muted-gray/20 text-muted-gray border-muted-gray/30 text-[10px] px-1 py-0 h-4">
+                        +{contact.phones.length - 1}
+                      </Badge>
+                    )}
+                  </div>
                 ) : (
                   <span className="text-muted-gray/50">—</span>
                 )}

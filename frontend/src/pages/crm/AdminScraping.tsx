@@ -1694,6 +1694,7 @@ function StagedLeadsTab() {
   const [countryFilter, setCountryFilter] = useState('');
   const [hasEmailFilter, setHasEmailFilter] = useState<string>('all');
   const [hasPhoneFilter, setHasPhoneFilter] = useState<string>('all');
+  const [hasWebsiteFilter, setHasWebsiteFilter] = useState<string>('all');
   const [search, setSearch] = useState('');
   const [minScore, setMinScore] = useState('');
   const [sortBy, setSortBy] = useState('match_score');
@@ -1722,6 +1723,7 @@ function StagedLeadsTab() {
     country: countryFilter || undefined,
     has_email: hasEmailFilter === 'all' ? undefined : hasEmailFilter === 'yes',
     has_phone: hasPhoneFilter === 'all' ? undefined : hasPhoneFilter === 'yes',
+    has_website: hasWebsiteFilter === 'all' ? undefined : hasWebsiteFilter === 'yes',
     search: search || undefined,
     sort_by: sortBy,
     sort_order: sortOrder,
@@ -1911,6 +1913,31 @@ function StagedLeadsTab() {
             <SelectItem value="no">No phone</SelectItem>
           </SelectContent>
         </Select>
+        <Select value={hasWebsiteFilter} onValueChange={(v) => { setHasWebsiteFilter(v); setPage(0); }}>
+          <SelectTrigger className="w-[130px]"><SelectValue placeholder="Has website" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Any website</SelectItem>
+            <SelectItem value="yes">Has website</SelectItem>
+            <SelectItem value="no">No website</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button
+          size="sm"
+          variant={hasEmailFilter === 'yes' && hasPhoneFilter === 'yes' && hasWebsiteFilter === 'yes' ? 'default' : 'outline'}
+          className={hasEmailFilter === 'yes' && hasPhoneFilter === 'yes' && hasWebsiteFilter === 'yes'
+            ? 'bg-green-500/20 text-green-400 border-green-500/30 hover:bg-green-500/30'
+            : 'border-green-500/30 text-green-400 hover:bg-green-500/10'}
+          onClick={() => {
+            if (hasEmailFilter === 'yes' && hasPhoneFilter === 'yes' && hasWebsiteFilter === 'yes') {
+              setHasEmailFilter('all'); setHasPhoneFilter('all'); setHasWebsiteFilter('all');
+            } else {
+              setHasEmailFilter('yes'); setHasPhoneFilter('yes'); setHasWebsiteFilter('yes');
+            }
+            setPage(0);
+          }}
+        >
+          Has All 3
+        </Button>
         <Button size="sm" variant="outline" className="border-blue-500/30 text-blue-400 hover:bg-blue-500/10" onClick={() => { setSelectedIds(new Set()); setRescrapeProfileId(''); setRescrapePreset(''); setRescrapeFilters({}); setShowRescrapeDialog(true); }}>
           <RefreshCw className="h-3.5 w-3.5 mr-1" /> Re-scrape Batch
         </Button>

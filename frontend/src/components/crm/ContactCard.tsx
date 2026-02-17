@@ -34,6 +34,15 @@ const formatDomain = (url: string) => {
   }
 };
 
+const extractNameFromEmail = (email: string): string | null => {
+  const local = email.split('@')[0];
+  const parts = local.split(/[._-]/).filter(Boolean);
+  if (parts.length >= 2) {
+    return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(' ');
+  }
+  return null;
+};
+
 const ContactCard = ({ contact, onEmail, showAdminControls, onAssign }: ContactCardProps) => {
   const lastActivity = contact.last_activity_date
     ? formatDate(contact.last_activity_date)
@@ -158,22 +167,41 @@ const ContactCard = ({ contact, onEmail, showAdminControls, onAssign }: ContactC
           </div>
 
           <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-gray">
-            {contact.email && (
-              <span className="flex items-center gap-1" onClick={e => { e.preventDefault(); e.stopPropagation(); }}>
-                <Mail className="h-3 w-3" />
-                <CopyableEmail email={contact.email} className="text-muted-gray" />
-              </span>
-            )}
-            {contact.phone && (
-              <span className="flex items-center gap-1">
-                <Phone className="h-3 w-3" /> {contact.phone}
-              </span>
-            )}
-            {contact.phone_secondary && (
-              <span className="flex items-center gap-1">
-                <Phone className="h-3 w-3" /> {contact.phone_secondary}
-              </span>
-            )}
+            {(() => {
+              const allEmails = contact.emails?.length > 0 ? contact.emails : (contact.email ? [contact.email] : []);
+              return allEmails.length > 0 && (
+                <div className="flex flex-col gap-0.5" onClick={e => { e.preventDefault(); e.stopPropagation(); }}>
+                  {allEmails.slice(0, 2).map((em: string) => {
+                    const name = extractNameFromEmail(em);
+                    return (
+                      <span key={em} className="flex items-center gap-1">
+                        <Mail className="h-3 w-3 flex-shrink-0" />
+                        {name && <span className="text-bone-white/60">{name}:</span>}
+                        <CopyableEmail email={em} className="text-muted-gray" />
+                      </span>
+                    );
+                  })}
+                  {allEmails.length > 2 && (
+                    <span className="text-muted-gray text-[10px] ml-4">+{allEmails.length - 2} more</span>
+                  )}
+                </div>
+              );
+            })()}
+            {(() => {
+              const allPhones = contact.phones?.length > 0 ? contact.phones : (contact.phone ? [contact.phone] : []);
+              return allPhones.length > 0 && (
+                <div className="flex flex-col gap-0.5">
+                  {allPhones.slice(0, 2).map((ph: string) => (
+                    <span key={ph} className="flex items-center gap-1">
+                      <Phone className="h-3 w-3 flex-shrink-0" /> {ph}
+                    </span>
+                  ))}
+                  {allPhones.length > 2 && (
+                    <span className="text-muted-gray text-[10px] ml-4">+{allPhones.length - 2} more</span>
+                  )}
+                </div>
+              );
+            })()}
             {contact.website && (
               <a
                 href={contact.website.startsWith('http') ? contact.website : `https://${contact.website}`}
