@@ -6441,7 +6441,7 @@ async def retry_scrape_job(
     )
     if not original:
         raise HTTPException(404, "Job not found")
-    if original["status"] not in ("failed", "completed"):
+    if original["status"] not in ("failed", "completed", "cancelled"):
         raise HTTPException(400, "Can only retry failed or completed jobs")
 
     sites_without_leads = []

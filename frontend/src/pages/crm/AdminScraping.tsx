@@ -1408,6 +1408,23 @@ function JobsTab() {
                   </Button>
                 </div>
               )}
+
+              {/* Cancelled state */}
+              {job.status === 'cancelled' && (
+                <div className="mt-2 flex items-center gap-2 text-xs text-orange-400">
+                  <StopCircle className="h-3 w-3 flex-shrink-0" />
+                  <span className="truncate flex-1">Cancelled by user</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-2 text-xs text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 flex-shrink-0"
+                    onClick={(e) => { e.stopPropagation(); handleRetryJob(job.id); }}
+                    disabled={retryJob.isPending}
+                  >
+                    <RotateCcw className="h-3 w-3 mr-1" /> Retry
+                  </Button>
+                </div>
+              )}
             </div>
           );
         })}
@@ -1631,8 +1648,8 @@ function JobsTab() {
                   </div>
                 )}
 
-                {/* Retry button for failed/completed jobs */}
-                {(selectedJob.status === 'failed' || selectedJob.status === 'completed') && (
+                {/* Retry button for failed/completed/cancelled jobs */}
+                {(selectedJob.status === 'failed' || selectedJob.status === 'completed' || selectedJob.status === 'cancelled') && (
                   <div className="border-t border-muted-gray/20 pt-3">
                     <Button
                       size="sm"
