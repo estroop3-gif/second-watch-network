@@ -1393,7 +1393,7 @@ function JobsTab() {
 
       {/* Job Detail Dialog */}
       <Dialog open={!!selectedJobId} onOpenChange={(open) => { if (!open) setSelectedJobId(null); }}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Job Details</DialogTitle>
             <DialogDescription>Scrape job information and stats.</DialogDescription>
