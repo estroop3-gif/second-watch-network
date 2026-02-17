@@ -7904,7 +7904,7 @@ async def list_lead_lists(
     """List all lead lists."""
     rows = execute_query(
         """
-        SELECT ll.*, p.first_name || ' ' || p.last_name as created_by_name,
+        SELECT ll.*, p.full_name as created_by_name,
                (SELECT COUNT(*) FROM crm_lead_list_items WHERE list_id = ll.id) as actual_count
         FROM crm_lead_lists ll
         LEFT JOIN profiles p ON p.id = ll.created_by
@@ -7950,7 +7950,7 @@ async def get_lead_list(
     """Get a single lead list with its lead count."""
     ll = execute_single(
         """
-        SELECT ll.*, p.first_name || ' ' || p.last_name as created_by_name,
+        SELECT ll.*, p.full_name as created_by_name,
                (SELECT COUNT(*) FROM crm_lead_list_items WHERE list_id = ll.id) as actual_count
         FROM crm_lead_lists ll
         LEFT JOIN profiles p ON p.id = ll.created_by
