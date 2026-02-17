@@ -9356,3 +9356,263 @@ async def direct_import_lead_list(
     )
 
     return {"imported": imported_count, "skipped": 0, "contact_ids": []}
+
+
+# ============================================================================
+# Backlot Free Trial Lead Capture
+# ============================================================================
+
+class BacklotTrialRequest(BaseModel):
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone: str
+    consent_contact: bool
+    referred_by_rep_id: Optional[str] = None
+
+
+class BacklotTrialRejectRequest(BaseModel):
+    notes: Optional[str] = None
+
+
+class BacklotTrialBulkApproveRequest(BaseModel):
+    ids: List[str]
+
+
+@router.get("/backlot-trials/reps")
+async def list_backlot_trial_reps():
+    """Public endpoint — list sales reps for the referral dropdown. No auth required."""
+    rows = execute_query(
+        """
+        SELECT id, full_name FROM profiles
+        WHERE (is_sales_rep = true OR is_sales_agent = true OR is_sales_admin = true)
+          AND full_name IS NOT NULL
+        ORDER BY full_name ASC
+        """,
+        {},
+    )
+    return {"reps": [{"id": str(r["id"]), "full_name": r["full_name"]} for r in rows]}
+
+
+@router.post("/backlot-trials")
+async def submit_backlot_trial(data: BacklotTrialRequest):
+    """Public endpoint — submit a Backlot free trial request. No auth required."""
+    if not data.consent_contact:
+        raise HTTPException(400, "You must consent to being contacted to request a trial.")
+
+    if not data.phone.strip():
+        raise HTTPException(400, "Phone number is required.")
+
+    if not data.first_name.strip() or not data.last_name.strip():
+        raise HTTPException(400, "First and last name are required.")
+
+    # Check for duplicate email (pending or approved)
+    existing = execute_single(
+        "SELECT id, status FROM backlot_trial_requests WHERE LOWER(email) = LOWER(:email) AND status IN ('pending', 'approved')",
+        {"email": data.email},
+    )
+    if existing:
+        raise HTTPException(
+            409,
+            "A trial request with this email already exists."
+            if existing["status"] == "pending"
+            else "This email has already been approved for a trial.",
+        )
+
+    execute_insert(
+        """
+        INSERT INTO backlot_trial_requests (first_name, last_name, email, phone, consent_contact, referred_by_rep_id)
+        VALUES (:first_name, :last_name, :email, :phone, :consent_contact, :referred_by_rep_id)
+        RETURNING id
+        """,
+        {
+            "first_name": data.first_name.strip(),
+            "last_name": data.last_name.strip(),
+            "email": data.email.strip().lower(),
+            "phone": data.phone.strip(),
+            "consent_contact": data.consent_contact,
+            "referred_by_rep_id": data.referred_by_rep_id,
+        },
+    )
+
+    return {"success": True, "message": "Thank you! A member of our team will be in touch shortly."}
+
+
+@router.get("/backlot-trials/admin")
+async def list_backlot_trials(
+    status: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """Admin — list backlot trial requests with filters."""
+    conditions = []
+    params: Dict[str, Any] = {}
+
+    if status:
+        conditions.append("t.status = :status")
+        params["status"] = status
+
+    if search:
+        conditions.append(
+            "(t.first_name ILIKE :search OR t.last_name ILIKE :search OR t.email ILIKE :search)"
+        )
+        params["search"] = f"%{search}%"
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+
+    count_row = execute_single(
+        f"SELECT COUNT(*) as total FROM backlot_trial_requests t WHERE {where}",
+        params,
+    )
+    total = count_row["total"] if count_row else 0
+
+    rows = execute_query(
+        f"""
+        SELECT t.*, p.full_name as reviewer_name
+        FROM backlot_trial_requests t
+        LEFT JOIN profiles p ON p.id = t.reviewed_by
+        WHERE {where}
+        ORDER BY t.created_at DESC
+        LIMIT :limit OFFSET :offset
+        """,
+        {**params, "limit": limit, "offset": offset},
+    )
+
+    return {"trials": rows, "total": total, "limit": limit, "offset": offset}
+
+
+@router.post("/backlot-trials/{trial_id}/approve")
+async def approve_backlot_trial(
+    trial_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """Admin — approve a trial request and create a CRM contact."""
+    trial = execute_single(
+        "SELECT * FROM backlot_trial_requests WHERE id = :id",
+        {"id": trial_id},
+    )
+    if not trial:
+        raise HTTPException(404, "Trial request not found")
+    if trial["status"] != "pending":
+        raise HTTPException(400, f"Trial is already {trial['status']}")
+
+    # Create CRM contact — assign to referring rep if provided
+    contact = execute_insert(
+        """
+        INSERT INTO crm_contacts (
+            first_name, last_name, email, phone,
+            temperature, source, visibility, tags, created_by, assigned_rep_id
+        ) VALUES (
+            :first_name, :last_name, :email, :phone,
+            'warm', 'backlot_trial', 'team',
+            ARRAY['Backlot Trial']::text[], :created_by, :assigned_rep_id
+        ) RETURNING *
+        """,
+        {
+            "first_name": trial["first_name"],
+            "last_name": trial["last_name"],
+            "email": trial["email"],
+            "phone": trial["phone"],
+            "created_by": profile["id"],
+            "assigned_rep_id": trial.get("referred_by_rep_id"),
+        },
+    )
+
+    # Update trial request
+    execute_single(
+        """
+        UPDATE backlot_trial_requests
+        SET status = 'approved', reviewed_by = :reviewer, reviewed_at = NOW(),
+            converted_contact_id = :contact_id, updated_at = NOW()
+        WHERE id = :id RETURNING id
+        """,
+        {"id": trial_id, "reviewer": profile["id"], "contact_id": contact["id"]},
+    )
+
+    return {"success": True, "contact": contact}
+
+
+@router.post("/backlot-trials/{trial_id}/reject")
+async def reject_backlot_trial(
+    trial_id: str,
+    data: Optional[BacklotTrialRejectRequest] = None,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """Admin — reject a trial request with optional notes."""
+    trial = execute_single(
+        "SELECT * FROM backlot_trial_requests WHERE id = :id",
+        {"id": trial_id},
+    )
+    if not trial:
+        raise HTTPException(404, "Trial request not found")
+    if trial["status"] != "pending":
+        raise HTTPException(400, f"Trial is already {trial['status']}")
+
+    notes = data.notes if data else None
+
+    execute_single(
+        """
+        UPDATE backlot_trial_requests
+        SET status = 'rejected', reviewed_by = :reviewer, reviewed_at = NOW(),
+            notes = :notes, updated_at = NOW()
+        WHERE id = :id RETURNING id
+        """,
+        {"id": trial_id, "reviewer": profile["id"], "notes": notes},
+    )
+
+    return {"success": True}
+
+
+@router.post("/backlot-trials/bulk-approve")
+async def bulk_approve_backlot_trials(
+    data: BacklotTrialBulkApproveRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """Admin — bulk approve trial requests and create CRM contacts."""
+    if not data.ids:
+        raise HTTPException(400, "No trial IDs provided")
+
+    approved_count = 0
+    for trial_id in data.ids:
+        trial = execute_single(
+            "SELECT * FROM backlot_trial_requests WHERE id = :id AND status = 'pending'",
+            {"id": trial_id},
+        )
+        if not trial:
+            continue
+
+        contact = execute_insert(
+            """
+            INSERT INTO crm_contacts (
+                first_name, last_name, email, phone,
+                temperature, source, visibility, tags, created_by, assigned_rep_id
+            ) VALUES (
+                :first_name, :last_name, :email, :phone,
+                'warm', 'backlot_trial', 'team',
+                ARRAY['Backlot Trial']::text[], :created_by, :assigned_rep_id
+            ) RETURNING *
+            """,
+            {
+                "first_name": trial["first_name"],
+                "last_name": trial["last_name"],
+                "email": trial["email"],
+                "phone": trial["phone"],
+                "created_by": profile["id"],
+                "assigned_rep_id": trial.get("referred_by_rep_id"),
+            },
+        )
+
+        execute_single(
+            """
+            UPDATE backlot_trial_requests
+            SET status = 'approved', reviewed_by = :reviewer, reviewed_at = NOW(),
+                converted_contact_id = :contact_id, updated_at = NOW()
+            WHERE id = :id RETURNING id
+            """,
+            {"id": trial_id, "reviewer": profile["id"], "contact_id": contact["id"]},
+        )
+        approved_count += 1
+
+    return {"success": True, "approved": approved_count}

@@ -123,6 +123,10 @@ const AdminDonations = React.lazy(() => import("./pages/admin/Donations"));
 const AlphaTesting = React.lazy(() => import("./pages/admin/AlphaTesting"));
 const EmailLogs = React.lazy(() => import("./pages/admin/EmailLogs"));
 const AdminOrganizations = React.lazy(() => import("./pages/admin/Organizations"));
+const AdminBacklotTrials = React.lazy(() => import("./pages/admin/BacklotTrials"));
+
+// Public Pages
+const BacklotFreeTrial = React.lazy(() => import("./pages/BacklotFreeTrial"));
 
 // Partner Pages
 const PartnerLayout = React.lazy(() => import("./pages/partner/Layout"));
@@ -312,6 +316,7 @@ const App = () => (
                   <Route path="/signin" element={<Login />} />
                   <Route path="/signup" element={<Signup />} />
                   <Route path="/reset-password" element={<ResetPassword />} />
+                  <Route path="/backlot/free-trial" element={<BacklotFreeTrial />} />
                 </Route>
 
                 {/* Public External Review Route (no auth required) */}
@@ -558,6 +563,7 @@ const App = () => (
                         <Route path="availability" element={<AvailabilityManagement />} />
                         <Route path="order" element={<OrderManagement />} />
                         <Route path="backlot" element={<BacklotOversight />} />
+                        <Route path="backlot-trials" element={<AdminBacklotTrials />} />
                         <Route path="billing" element={<BillingManagement />} />
                         <Route path="organizations" element={<AdminOrganizations />} />
                         <Route path="partners" element={<PartnerManagement />} />

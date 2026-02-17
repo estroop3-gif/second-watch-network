@@ -6041,6 +6041,37 @@ class APIClient {
   async getPricingQuoteText(id: string) {
     return this.get<{ text: string }>(`/api/v1/crm/pricing/quotes/${id}/text`)
   }
+
+  // Backlot Free Trial
+  async getSalesRepsPublic() {
+    return this.get<{ reps: { id: string; full_name: string }[] }>('/api/v1/crm/backlot-trials/reps')
+  }
+
+  async submitBacklotTrial(data: { first_name: string; last_name: string; email: string; phone: string; consent_contact: boolean; referred_by_rep_id?: string }) {
+    return this.post<{ success: boolean; message: string }>('/api/v1/crm/backlot-trials', data)
+  }
+
+  async getBacklotTrialRequests(params?: { status?: string; search?: string; limit?: number; offset?: number }) {
+    const query = new URLSearchParams()
+    if (params?.status) query.set('status', params.status)
+    if (params?.search) query.set('search', params.search)
+    if (params?.limit) query.set('limit', String(params.limit))
+    if (params?.offset) query.set('offset', String(params.offset))
+    const qs = query.toString()
+    return this.get<{ trials: any[]; total: number; limit: number; offset: number }>(`/api/v1/crm/backlot-trials/admin${qs ? '?' + qs : ''}`)
+  }
+
+  async approveBacklotTrial(id: string) {
+    return this.post<{ success: boolean; contact: any }>(`/api/v1/crm/backlot-trials/${id}/approve`)
+  }
+
+  async rejectBacklotTrial(id: string, notes?: string) {
+    return this.post<{ success: boolean }>(`/api/v1/crm/backlot-trials/${id}/reject`, notes ? { notes } : undefined)
+  }
+
+  async bulkApproveBacklotTrials(ids: string[]) {
+    return this.post<{ success: boolean; approved: number }>('/api/v1/crm/backlot-trials/bulk-approve', { ids })
+  }
 }
 
 // Export singleton instance

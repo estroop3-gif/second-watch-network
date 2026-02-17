@@ -36,6 +36,7 @@ const AdminLayout = () => {
     // New tabs
     { name: 'Order', href: '/admin/order', icon: Users },
     { name: 'Backlot', href: '/admin/backlot', icon: Clapperboard },
+    { name: 'Backlot Trials', href: '/admin/backlot-trials', icon: UserCog },
     { name: 'Billing', href: '/admin/billing', icon: CreditCard },
     { name: 'Organizations', href: '/admin/organizations', icon: Building2 },
     { name: 'Partners', href: '/admin/partners', icon: Handshake },

@@ -33,6 +33,9 @@ const HeroSection = () => {
           <Button size="lg" asChild className="bg-transparent border-2 border-accent-yellow text-accent-yellow hover:bg-accent-yellow hover:text-charcoal-black font-bold rounded-[4px] uppercase px-10 py-6 text-lg w-full sm:w-auto transform transition-transform hover:scale-105 hover:rotate-1">
             <Link to="/submit">Submit Your Content</Link>
           </Button>
+          <Button size="lg" asChild className="bg-transparent border-2 border-accent-yellow text-accent-yellow hover:bg-accent-yellow hover:text-charcoal-black font-bold rounded-[4px] uppercase px-10 py-6 text-lg w-full sm:w-auto transform transition-transform hover:scale-105 hover:rotate-1">
+            <Link to="/backlot/free-trial">Start Free Trial</Link>
+          </Button>
         </div>
       </motion.div>
     </section>

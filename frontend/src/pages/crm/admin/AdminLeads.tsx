@@ -1,9 +1,9 @@
-import { useState } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Users, ArrowRightLeft, Briefcase } from 'lucide-react';
+import { Users, ArrowRightLeft, Briefcase, Sparkles } from 'lucide-react';
 import LeadQueue from './LeadQueue';
 import LeadManagement from './LeadManagement';
 import DealLeads from './DealLeads';
+import TrialRequests from './TrialRequests';
 
 const AdminLeads = () => {
   return (
@@ -21,6 +21,9 @@ const AdminLeads = () => {
           <TabsTrigger value="deals" className="flex items-center gap-1.5">
             <Briefcase className="h-3.5 w-3.5" /> Deal Leads
           </TabsTrigger>
+          <TabsTrigger value="trials" className="flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5" /> Trial Requests
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="queue" className="mt-4">
@@ -31,6 +34,9 @@ const AdminLeads = () => {
         </TabsContent>
         <TabsContent value="deals" className="mt-4">
           <DealLeads />
+        </TabsContent>
+        <TabsContent value="trials" className="mt-4">
+          <TrialRequests />
         </TabsContent>
       </Tabs>
     </div>
