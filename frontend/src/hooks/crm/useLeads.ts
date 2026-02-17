@@ -4,6 +4,9 @@ import { api } from '@/lib/api';
 export function useUnassignedContacts(params?: {
   search?: string;
   temperature?: string;
+  has_email?: boolean;
+  has_phone?: boolean;
+  has_website?: boolean;
   sort_by?: string;
   sort_order?: string;
   limit?: number;

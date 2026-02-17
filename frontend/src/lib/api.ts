@@ -4628,6 +4628,9 @@ class APIClient {
     assigned_rep_id?: string
     unassigned?: boolean
     scope?: string
+    has_email?: boolean
+    has_phone?: boolean
+    has_website?: boolean
     sort_by?: string
     sort_order?: string
     limit?: number
@@ -4641,6 +4644,9 @@ class APIClient {
     if (params?.assigned_rep_id) query.append('assigned_rep_id', params.assigned_rep_id)
     if (params?.unassigned) query.append('unassigned', 'true')
     if (params?.scope) query.append('scope', params.scope)
+    if (params?.has_email !== undefined) query.append('has_email', params.has_email.toString())
+    if (params?.has_phone !== undefined) query.append('has_phone', params.has_phone.toString())
+    if (params?.has_website !== undefined) query.append('has_website', params.has_website.toString())
     if (params?.sort_by) query.append('sort_by', params.sort_by)
     if (params?.sort_order) query.append('sort_order', params.sort_order)
     if (params?.limit !== undefined) query.append('limit', params.limit.toString())

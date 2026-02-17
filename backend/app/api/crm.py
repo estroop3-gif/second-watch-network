@@ -436,6 +436,9 @@ async def list_contacts(
     scope: Optional[str] = Query(None),
     sort_by: Optional[str] = Query("created_at"),
     sort_order: Optional[str] = Query("desc"),
+    has_email: Optional[bool] = Query(None),
+    has_phone: Optional[bool] = Query(None),
+    has_website: Optional[bool] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_VIEW)),
@@ -486,6 +489,21 @@ async def list_contacts(
     if assigned_rep_id and is_admin:
         conditions.append("c.assigned_rep_id = :assigned_rep_id")
         params["assigned_rep_id"] = assigned_rep_id
+
+    if has_email is True:
+        conditions.append("(c.email IS NOT NULL AND c.email != '')")
+    elif has_email is False:
+        conditions.append("(c.email IS NULL OR c.email = '')")
+
+    if has_phone is True:
+        conditions.append("(c.phone IS NOT NULL AND c.phone != '')")
+    elif has_phone is False:
+        conditions.append("(c.phone IS NULL OR c.phone = '')")
+
+    if has_website is True:
+        conditions.append("(c.website IS NOT NULL AND c.website != '')")
+    elif has_website is False:
+        conditions.append("(c.website IS NULL OR c.website = '')")
 
     where = " AND ".join(conditions) if conditions else "1=1"
 

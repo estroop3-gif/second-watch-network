@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { UserPlus, RefreshCw } from 'lucide-react';
+import { UserPlus, RefreshCw, Mail, Phone, Globe, Filter } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import ContactCard from '@/components/crm/ContactCard';
 import ContactFilters from '@/components/crm/ContactFilters';
 import ContactAssignmentDialog from '@/components/crm/ContactAssignmentDialog';
@@ -17,11 +18,35 @@ const LeadQueue = () => {
   const [assignTarget, setAssignTarget] = useState<any>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false);
+  const [hasEmail, setHasEmail] = useState<string>('any');
+  const [hasPhone, setHasPhone] = useState<string>('any');
+  const [hasWebsite, setHasWebsite] = useState<string>('any');
   const limit = 50;
+
+  const hasAll3 = hasEmail === 'yes' && hasPhone === 'yes' && hasWebsite === 'yes';
+
+  const toggleAll3 = () => {
+    if (hasAll3) {
+      setHasEmail('any');
+      setHasPhone('any');
+      setHasWebsite('any');
+    } else {
+      setHasEmail('yes');
+      setHasPhone('yes');
+      setHasWebsite('yes');
+    }
+    setOffset(0);
+  };
+
+  const toBool = (v: string): boolean | undefined =>
+    v === 'yes' ? true : v === 'no' ? false : undefined;
 
   const { data, isLoading } = useUnassignedContacts({
     search: search || undefined,
     temperature: temperature !== 'all' ? temperature : undefined,
+    has_email: toBool(hasEmail),
+    has_phone: toBool(hasPhone),
+    has_website: toBool(hasWebsite),
     sort_by: sortBy,
     sort_order: sortBy === 'created_at' ? 'desc' : 'asc',
     limit,
@@ -73,6 +98,55 @@ const LeadQueue = () => {
         sortBy={sortBy}
         onSortByChange={v => { setSortBy(v); setOffset(0); }}
       />
+
+      {/* Contact Info Filters */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Filter className="h-4 w-4 text-muted-gray" />
+        <Select value={hasEmail} onValueChange={v => { setHasEmail(v); setOffset(0); }}>
+          <SelectTrigger className="w-[130px] h-8 text-xs bg-charcoal-black border-muted-gray">
+            <Mail className="h-3 w-3 mr-1" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">Any Email</SelectItem>
+            <SelectItem value="yes">Has Email</SelectItem>
+            <SelectItem value="no">No Email</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <Select value={hasPhone} onValueChange={v => { setHasPhone(v); setOffset(0); }}>
+          <SelectTrigger className="w-[130px] h-8 text-xs bg-charcoal-black border-muted-gray">
+            <Phone className="h-3 w-3 mr-1" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">Any Phone</SelectItem>
+            <SelectItem value="yes">Has Phone</SelectItem>
+            <SelectItem value="no">No Phone</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <Select value={hasWebsite} onValueChange={v => { setHasWebsite(v); setOffset(0); }}>
+          <SelectTrigger className="w-[130px] h-8 text-xs bg-charcoal-black border-muted-gray">
+            <Globe className="h-3 w-3 mr-1" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">Any Website</SelectItem>
+            <SelectItem value="yes">Has Website</SelectItem>
+            <SelectItem value="no">No Website</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <Button
+          variant={hasAll3 ? 'default' : 'outline'}
+          size="sm"
+          onClick={toggleAll3}
+          className={`h-8 text-xs ${hasAll3 ? 'bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90' : 'border-muted-gray text-bone-white'}`}
+        >
+          Has All 3
+        </Button>
+      </div>
 
       {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
