@@ -5287,6 +5287,75 @@ class APIClient {
     return this.delete<any>(`/api/v1/admin/crm/email/accounts/${accountId}`)
   }
 
+  // Admin Email — Platform Email Accounts & Inboxes
+
+  async getAdminEmailAccounts() {
+    return this.get<{ accounts: any[] }>('/api/v1/admin/email-accounts')
+  }
+
+  async createAdminEmailAccount(data: { email_address: string; display_name: string; account_type: string; signature_html?: string }) {
+    return this.post<{ account: any }>('/api/v1/admin/email-accounts', data)
+  }
+
+  async updateAdminEmailAccount(id: string, data: { display_name?: string; signature_html?: string; is_active?: boolean }) {
+    return this.put<{ account: any }>(`/api/v1/admin/email-accounts/${id}`, data)
+  }
+
+  async deactivateAdminEmailAccount(id: string) {
+    return this.delete<any>(`/api/v1/admin/email-accounts/${id}`)
+  }
+
+  async getAdminEmailAccountAccess(accountId: string) {
+    return this.get<{ grants: any[] }>(`/api/v1/admin/email-accounts/${accountId}/access`)
+  }
+
+  async grantAdminEmailAccess(accountId: string, data: { profile_id: string; role?: string }) {
+    return this.post<{ grant: any }>(`/api/v1/admin/email-accounts/${accountId}/access`, data)
+  }
+
+  async revokeAdminEmailAccess(accountId: string, profileId: string) {
+    return this.delete<any>(`/api/v1/admin/email-accounts/${accountId}/access/${profileId}`)
+  }
+
+  async getMyAdminEmailAccounts() {
+    return this.get<{ accounts: any[] }>('/api/v1/admin/email/my-accounts')
+  }
+
+  async getAdminEmailInbox(accountId: string, params?: { archived?: boolean; starred_only?: boolean; search?: string; limit?: number; offset?: number }) {
+    const query = new URLSearchParams()
+    if (params?.archived) query.append('archived', 'true')
+    if (params?.starred_only) query.append('starred_only', 'true')
+    if (params?.search) query.append('search', params.search)
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.offset !== undefined) query.append('offset', params.offset.toString())
+    const qs = query.toString()
+    return this.get<{ threads: any[]; total: number }>(`/api/v1/admin/email/inbox/${accountId}${qs ? `?${qs}` : ''}`)
+  }
+
+  async getAdminEmailThread(threadId: string) {
+    return this.get<{ thread: any; messages: any[] }>(`/api/v1/admin/email/threads/${threadId}`)
+  }
+
+  async sendAdminEmail(data: { account_id: string; to_emails: string[]; subject: string; body_html: string; body_text?: string; cc?: string[]; bcc?: string[]; thread_id?: string; attachment_ids?: string[] }) {
+    return this.post<{ message: any; thread_id: string }>('/api/v1/admin/email/send', data)
+  }
+
+  async markAdminEmailThreadRead(threadId: string) {
+    return this.post<any>(`/api/v1/admin/email/threads/${threadId}/mark-read`, {})
+  }
+
+  async archiveAdminEmailThread(threadId: string) {
+    return this.post<any>(`/api/v1/admin/email/threads/${threadId}/archive`, {})
+  }
+
+  async starAdminEmailThread(threadId: string) {
+    return this.post<any>(`/api/v1/admin/email/threads/${threadId}/star`, {})
+  }
+
+  async deleteAdminEmailThread(threadId: string) {
+    return this.delete<any>(`/api/v1/admin/email/threads/${threadId}`)
+  }
+
   // CRM Email — Star / Snooze / Bulk / Link / Assign
 
   async starCRMEmailThread(threadId: string) {

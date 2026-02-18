@@ -36,6 +36,12 @@ interface EmailComposerProps {
   onSent?: (threadId: string) => void;
   onCancel?: () => void;
   compact?: boolean;
+  onSendOverride?: (data: {
+    to_emails: string[]; cc?: string[]; bcc?: string[]; subject: string;
+    body_html: string; body_text?: string; thread_id?: string;
+    attachment_ids?: string[]; scheduled_at?: string;
+  }) => void;
+  isSendPending?: boolean;
 }
 
 function toEmailArray(val?: string | string[]): string[] {
@@ -57,6 +63,7 @@ function formatFileSize(bytes: number): string {
 const EmailComposer = ({
   defaultTo, defaultSubject, defaultBody, defaultCc, defaultBcc, threadId, contactId,
   isDNC, contactData, quotedHtml, quotedLabel, onSent, onCancel, compact,
+  onSendOverride, isSendPending,
 }: EmailComposerProps) => {
   const [toEmails, setToEmails] = useState<string[]>(() => toEmailArray(defaultTo));
   const [ccEmails, setCcEmails] = useState<string[]>(() => toEmailArray(defaultCc));
@@ -147,8 +154,7 @@ const EmailComposer = ({
     bodyText = bodyText.replace(/<[^>]+>/g, '');
     bodyText = bodyText.trim();
 
-    sendEmail.mutate({
-      contact_id: resolvedContactId || contactId,
+    const sendPayload = {
       to_emails: toEmails,
       subject,
       body_html: finalBodyHtml,
@@ -158,6 +164,16 @@ const EmailComposer = ({
       thread_id: threadId,
       attachment_ids: attachments.length > 0 ? attachments.map(a => a.id) : undefined,
       scheduled_at: scheduled && scheduleDate ? new Date(scheduleDate).toISOString() : undefined,
+    };
+
+    if (onSendOverride) {
+      onSendOverride(sendPayload);
+      return;
+    }
+
+    sendEmail.mutate({
+      ...sendPayload,
+      contact_id: resolvedContactId || contactId,
     }, {
       onSuccess: (data) => {
         const title = scheduled ? 'Email scheduled' : data.internal ? 'Message delivered internally' : 'Email sent';
@@ -347,10 +363,10 @@ const EmailComposer = ({
       <div className="flex items-center justify-between">
         <div className="flex gap-2">
           <Button onClick={() => handleSend(false)}
-            disabled={sendEmail.isPending || toEmails.length === 0 || !subject || !bodyHtml || bodyHtml === '<p></p>'}
+            disabled={(isSendPending ?? sendEmail.isPending) || toEmails.length === 0 || !subject || !bodyHtml || bodyHtml === '<p></p>'}
             className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
           >
-            {sendEmail.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Send className="h-4 w-4 mr-2" />}
+            {(isSendPending ?? sendEmail.isPending) ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Send className="h-4 w-4 mr-2" />}
             {threadId ? 'Reply' : 'Send'}
           </Button>
 

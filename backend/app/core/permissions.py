@@ -121,6 +121,12 @@ class Permission(str, Enum):
     CRM_EMAIL_ADMIN = "crm:email_admin" # Manage rep email accounts
 
     # ============================================================================
+    # Admin Email (Platform Email Accounts & Inboxes)
+    # ============================================================================
+    ADMIN_EMAIL_VIEW = "admin_email:view"      # View admin/system email inboxes
+    ADMIN_EMAIL_MANAGE = "admin_email:manage"  # Create/manage admin email accounts & access
+
+    # ============================================================================
     # System Administration
     # ============================================================================
     ADMIN_DASHBOARD = "admin:dashboard"  # Access admin dashboard
@@ -198,6 +204,9 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         Permission.CRM_ADMIN,
         Permission.CRM_REPORTS,
         Permission.CRM_EMAIL_ADMIN,
+        # Admin Email
+        Permission.ADMIN_EMAIL_VIEW,
+        Permission.ADMIN_EMAIL_MANAGE,
         # Admin
         Permission.ADMIN_DASHBOARD,
         Permission.ADMIN_USERS,

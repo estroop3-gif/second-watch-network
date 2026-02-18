@@ -1,12 +1,18 @@
 """
-Admin Email Logs API Routes
-Provides endpoints for viewing and managing email logs from AWS SES
+Admin Email API Routes
+Provides endpoints for:
+- Email delivery logs from AWS SES
+- Admin/system email account management
+- Admin email inbox (send/receive)
+- Access grant management for shared inboxes
 """
-from fastapi import APIRouter, HTTPException, Query, Header
-from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, Header
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from pydantic import BaseModel
-from app.core.database import get_client
+from app.core.database import get_client, execute_query, execute_single, execute_insert
+from app.core.deps import get_user_profile
+from app.core.permissions import Permission, require_permissions
 
 router = APIRouter()
 
@@ -397,3 +403,616 @@ async def get_email_sources(authorization: str = Header(None)):
         return {"sources": sources}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ============================================================================
+# Admin/System Email Account Management
+# ============================================================================
+
+class CreateAdminEmailAccountRequest(BaseModel):
+    email_address: str
+    display_name: str
+    account_type: str = "admin"  # admin or system
+    signature_html: Optional[str] = None
+
+
+class UpdateAdminEmailAccountRequest(BaseModel):
+    display_name: Optional[str] = None
+    signature_html: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class GrantEmailAccessRequest(BaseModel):
+    profile_id: str
+    role: str = "member"
+
+
+def _check_admin_email_access(profile: Dict[str, Any], account_id: str) -> Dict[str, Any]:
+    """Check if user is admin or has explicit access to this admin email account.
+    Returns the account dict or raises 403."""
+    account = execute_single(
+        "SELECT * FROM crm_email_accounts WHERE id = :aid AND account_type != 'rep'",
+        {"aid": account_id},
+    )
+    if not account:
+        raise HTTPException(404, "Admin email account not found")
+
+    # Admins always have access
+    if profile.get("is_admin") or profile.get("is_superadmin"):
+        return account
+
+    # Check junction table
+    access = execute_single(
+        "SELECT id FROM admin_email_access WHERE account_id = :aid AND profile_id = :pid",
+        {"aid": account_id, "pid": profile["id"]},
+    )
+    if not access:
+        raise HTTPException(403, "You do not have access to this email account")
+
+    return account
+
+
+@router.post("/email-accounts")
+async def create_admin_email_account(
+    data: CreateAdminEmailAccountRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.ADMIN_EMAIL_MANAGE)),
+):
+    """Create an admin or system email account."""
+    if data.account_type not in ("admin", "system"):
+        raise HTTPException(400, "account_type must be 'admin' or 'system'")
+
+    # Check for duplicate email
+    existing = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE email_address = :email",
+        {"email": data.email_address},
+    )
+    if existing:
+        raise HTTPException(400, "An account with this email address already exists")
+
+    account = execute_single(
+        """
+        INSERT INTO crm_email_accounts (email_address, display_name, account_type, signature_html, is_active)
+        VALUES (:email, :name, :type, :sig, true)
+        RETURNING *
+        """,
+        {
+            "email": data.email_address,
+            "name": data.display_name,
+            "type": data.account_type,
+            "sig": data.signature_html,
+        },
+    )
+    return {"account": account}
+
+
+@router.get("/email-accounts")
+async def list_admin_email_accounts(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.ADMIN_EMAIL_MANAGE)),
+):
+    """List all admin/system email accounts."""
+    accounts = execute_query(
+        """
+        SELECT a.*,
+               (SELECT COUNT(*) FROM admin_email_access WHERE account_id = a.id) as access_count
+        FROM crm_email_accounts a
+        WHERE a.account_type != 'rep'
+        ORDER BY a.created_at DESC
+        """
+    )
+    return {"accounts": accounts}
+
+
+@router.put("/email-accounts/{account_id}")
+async def update_admin_email_account(
+    account_id: str,
+    data: UpdateAdminEmailAccountRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.ADMIN_EMAIL_MANAGE)),
+):
+    """Update an admin/system email account."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE id = :aid AND account_type != 'rep'",
+        {"aid": account_id},
+    )
+    if not account:
+        raise HTTPException(404, "Admin email account not found")
+
+    updates = {}
+    if data.display_name is not None:
+        updates["display_name"] = data.display_name
+    if data.signature_html is not None:
+        updates["signature_html"] = data.signature_html
+    if data.is_active is not None:
+        updates["is_active"] = data.is_active
+
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+
+    set_clauses = ", ".join(f"{k} = :{k}" for k in updates)
+    updates["aid"] = account_id
+    updated = execute_single(
+        f"UPDATE crm_email_accounts SET {set_clauses} WHERE id = :aid RETURNING *",
+        updates,
+    )
+    return {"account": updated}
+
+
+@router.delete("/email-accounts/{account_id}")
+async def deactivate_admin_email_account(
+    account_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.ADMIN_EMAIL_MANAGE)),
+):
+    """Soft-deactivate an admin/system email account."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE id = :aid AND account_type != 'rep'",
+        {"aid": account_id},
+    )
+    if not account:
+        raise HTTPException(404, "Admin email account not found")
+
+    execute_single(
+        "UPDATE crm_email_accounts SET is_active = false WHERE id = :aid RETURNING id",
+        {"aid": account_id},
+    )
+    return {"success": True}
+
+
+# ============================================================================
+# Access Grants
+# ============================================================================
+
+@router.get("/email-accounts/{account_id}/access")
+async def list_email_account_access(
+    account_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.ADMIN_EMAIL_MANAGE)),
+):
+    """List users with access to an admin email account."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE id = :aid AND account_type != 'rep'",
+        {"aid": account_id},
+    )
+    if not account:
+        raise HTTPException(404, "Admin email account not found")
+
+    grants = execute_query(
+        """
+        SELECT a.id, a.role, a.created_at,
+               p.id as profile_id, p.full_name, p.email, p.avatar_url
+        FROM admin_email_access a
+        JOIN profiles p ON p.id = a.profile_id
+        WHERE a.account_id = :aid
+        ORDER BY a.created_at ASC
+        """,
+        {"aid": account_id},
+    )
+    return {"grants": grants}
+
+
+@router.post("/email-accounts/{account_id}/access")
+async def grant_email_account_access(
+    account_id: str,
+    data: GrantEmailAccessRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.ADMIN_EMAIL_MANAGE)),
+):
+    """Grant a user access to an admin email account."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE id = :aid AND account_type != 'rep'",
+        {"aid": account_id},
+    )
+    if not account:
+        raise HTTPException(404, "Admin email account not found")
+
+    # Verify profile exists
+    target = execute_single(
+        "SELECT id, full_name FROM profiles WHERE id = :pid",
+        {"pid": data.profile_id},
+    )
+    if not target:
+        raise HTTPException(404, "Profile not found")
+
+    # Check not already granted
+    existing = execute_single(
+        "SELECT id FROM admin_email_access WHERE account_id = :aid AND profile_id = :pid",
+        {"aid": account_id, "pid": data.profile_id},
+    )
+    if existing:
+        raise HTTPException(400, "User already has access to this account")
+
+    grant = execute_single(
+        """
+        INSERT INTO admin_email_access (account_id, profile_id, role, granted_by)
+        VALUES (:aid, :pid, :role, :gby)
+        RETURNING *
+        """,
+        {
+            "aid": account_id,
+            "pid": data.profile_id,
+            "role": data.role,
+            "gby": profile["id"],
+        },
+    )
+    return {"grant": grant}
+
+
+@router.delete("/email-accounts/{account_id}/access/{target_profile_id}")
+async def revoke_email_account_access(
+    account_id: str,
+    target_profile_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.ADMIN_EMAIL_MANAGE)),
+):
+    """Revoke a user's access to an admin email account."""
+    deleted = execute_single(
+        "DELETE FROM admin_email_access WHERE account_id = :aid AND profile_id = :pid RETURNING id",
+        {"aid": account_id, "pid": target_profile_id},
+    )
+    if not deleted:
+        raise HTTPException(404, "Access grant not found")
+    return {"success": True}
+
+
+# ============================================================================
+# Admin Email Inbox — Current User's Accessible Accounts
+# ============================================================================
+
+@router.get("/email/my-accounts")
+async def get_my_admin_email_accounts(
+    profile: Dict[str, Any] = Depends(get_user_profile),
+):
+    """List admin/system email accounts the current user can access."""
+    is_admin = profile.get("is_admin") or profile.get("is_superadmin")
+
+    if is_admin:
+        # Admins see all admin/system accounts
+        accounts = execute_query(
+            """
+            SELECT * FROM crm_email_accounts
+            WHERE account_type != 'rep' AND is_active = true
+            ORDER BY display_name ASC
+            """
+        )
+    else:
+        # Non-admins see only granted accounts
+        accounts = execute_query(
+            """
+            SELECT a.* FROM crm_email_accounts a
+            JOIN admin_email_access ae ON ae.account_id = a.id
+            WHERE ae.profile_id = :pid AND a.account_type != 'rep' AND a.is_active = true
+            ORDER BY a.display_name ASC
+            """,
+            {"pid": profile["id"]},
+        )
+
+    return {"accounts": accounts}
+
+
+@router.get("/email/inbox/{account_id}")
+async def get_admin_email_inbox(
+    account_id: str,
+    archived: bool = Query(False),
+    starred_only: bool = Query(False),
+    search: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    profile: Dict[str, Any] = Depends(get_user_profile),
+):
+    """Get threads for an admin email account's inbox."""
+    account = _check_admin_email_access(profile, account_id)
+
+    conditions = ["t.account_id = :aid"]
+    params: Dict[str, Any] = {"aid": account_id, "lim": limit, "off": offset}
+
+    if archived:
+        conditions.append("t.is_archived = true")
+    else:
+        conditions.append("(t.is_archived = false OR t.is_archived IS NULL)")
+
+    if starred_only:
+        conditions.append("t.is_starred = true")
+
+    if search:
+        conditions.append("(t.subject ILIKE :search OR t.contact_email ILIKE :search)")
+        params["search"] = f"%{search}%"
+
+    where = " AND ".join(conditions)
+
+    threads = execute_query(
+        f"""
+        SELECT t.*,
+               (SELECT COUNT(*) FROM crm_email_messages m WHERE m.thread_id = t.id) as message_count,
+               (SELECT COUNT(*) FROM crm_email_messages m WHERE m.thread_id = t.id AND m.is_read = false AND m.direction = 'inbound') as unread_count
+        FROM crm_email_threads t
+        WHERE {where}
+        ORDER BY t.last_message_at DESC NULLS LAST
+        LIMIT :lim OFFSET :off
+        """,
+        params,
+    )
+
+    # Get total count
+    count_row = execute_single(
+        f"SELECT COUNT(*) as total FROM crm_email_threads t WHERE {where}",
+        {k: v for k, v in params.items() if k not in ("lim", "off")},
+    )
+    total = count_row["total"] if count_row else 0
+
+    return {"threads": threads, "total": total}
+
+
+@router.get("/email/threads/{thread_id}")
+async def get_admin_email_thread(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(get_user_profile),
+):
+    """Get a thread with all messages for an admin email account."""
+    thread = execute_single(
+        "SELECT * FROM crm_email_threads WHERE id = :tid",
+        {"tid": thread_id},
+    )
+    if not thread:
+        raise HTTPException(404, "Thread not found")
+
+    # Verify access
+    _check_admin_email_access(profile, thread["account_id"])
+
+    messages = execute_query(
+        """
+        SELECT m.*,
+               COALESCE(
+                   (SELECT json_agg(json_build_object('id', a.id, 'filename', a.filename, 'content_type', a.content_type, 'size_bytes', a.size_bytes))
+                    FROM crm_email_attachments a WHERE a.message_id = m.id),
+                   '[]'::json
+               ) as attachments
+        FROM crm_email_messages m
+        WHERE m.thread_id = :tid
+        ORDER BY m.created_at ASC
+        """,
+        {"tid": thread_id},
+    )
+
+    return {"thread": thread, "messages": messages}
+
+
+class AdminSendEmailRequest(BaseModel):
+    account_id: str
+    to_emails: List[str]
+    subject: str
+    body_html: str
+    body_text: Optional[str] = None
+    cc: Optional[List[str]] = None
+    bcc: Optional[List[str]] = None
+    thread_id: Optional[str] = None
+    attachment_ids: Optional[List[str]] = None
+
+
+@router.post("/email/send")
+async def send_admin_email(
+    data: AdminSendEmailRequest,
+    profile: Dict[str, Any] = Depends(get_user_profile),
+):
+    """Send an email from an admin/system email account."""
+    import re
+
+    account = _check_admin_email_access(profile, data.account_id)
+
+    if not account.get("is_active"):
+        raise HTTPException(400, "This email account is deactivated")
+
+    # Determine or create thread
+    thread_id = data.thread_id
+    if thread_id:
+        thread = execute_single(
+            "SELECT id FROM crm_email_threads WHERE id = :tid AND account_id = :aid",
+            {"tid": thread_id, "aid": account["id"]},
+        )
+        if not thread:
+            raise HTTPException(404, "Thread not found")
+    else:
+        thread = execute_single(
+            """
+            INSERT INTO crm_email_threads (account_id, contact_email, subject)
+            VALUES (:aid, :email, :subj) RETURNING *
+            """,
+            {
+                "aid": account["id"],
+                "email": data.to_emails[0],
+                "subj": data.subject,
+            },
+        )
+        thread_id = thread["id"]
+
+    # Append signature
+    body_html = data.body_html
+    if account.get("signature_html"):
+        body_html += f'<div style="margin-top: 20px; padding-top: 12px; border-top: 1px solid #ddd;">{account["signature_html"]}</div>'
+
+    # Plain text fallback
+    plain_text = data.body_text
+    if not plain_text:
+        plain_text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', body_html)
+        plain_text = re.sub(r'<br\s*/?>', '\n', plain_text)
+        plain_text = re.sub(r'</(div|h[1-6]|li|tr)>', '\n', plain_text)
+        plain_text = re.sub(r'<[^>]+>', '', plain_text)
+        plain_text = plain_text.strip()
+
+    # Insert message
+    message = execute_single(
+        """
+        INSERT INTO crm_email_messages
+            (thread_id, direction, from_address, to_addresses, cc_addresses, bcc_addresses,
+             subject, body_html, body_text, status)
+        VALUES (:tid, 'outbound', :from_addr, :to_addrs, :cc_addrs, :bcc_addrs,
+                :subj, :html, :text, 'sending')
+        RETURNING *
+        """,
+        {
+            "tid": thread_id,
+            "from_addr": account["email_address"],
+            "to_addrs": data.to_emails,
+            "cc_addrs": data.cc or [],
+            "bcc_addrs": data.bcc or [],
+            "subj": data.subject,
+            "html": body_html,
+            "text": plain_text,
+        },
+    )
+
+    # Link attachments
+    resend_attachments = []
+    if data.attachment_ids:
+        import boto3
+        from app.core.config import settings
+        s3 = boto3.client("s3", region_name="us-east-1")
+        for att_id in data.attachment_ids:
+            try:
+                att = execute_insert(
+                    "UPDATE crm_email_attachments SET message_id = :mid WHERE id = :aid AND message_id IS NULL RETURNING *",
+                    {"mid": message["id"], "aid": att_id},
+                )
+                if att and att.get("s3_key"):
+                    bucket = att.get("s3_bucket", settings.AWS_S3_BACKLOT_FILES_BUCKET)
+                    s3_obj = s3.get_object(Bucket=bucket, Key=att["s3_key"])
+                    file_bytes = s3_obj["Body"].read()
+                    resend_attachments.append({
+                        "filename": att["filename"],
+                        "content": list(file_bytes),
+                    })
+            except Exception:
+                pass
+
+    # Send via Resend
+    try:
+        import resend as resend_sdk
+        from app.core.config import settings
+
+        resend_sdk.api_key = settings.RESEND_API_KEY
+
+        reply_to_address = f"reply+{thread_id}@theswn.com"
+        from_header = f'"{account["display_name"]}" <{account["email_address"]}>'
+
+        send_params = {
+            "from": from_header,
+            "to": data.to_emails,
+            "subject": data.subject,
+            "html": body_html,
+            "text": plain_text,
+            "reply_to": [account["email_address"], reply_to_address],
+        }
+        if data.cc:
+            send_params["cc"] = data.cc
+        if data.bcc:
+            send_params["bcc"] = data.bcc
+        if resend_attachments:
+            send_params["attachments"] = resend_attachments
+
+        result = resend_sdk.Emails.send(send_params)
+        resend_message_id = result.get("id")
+
+        # Update message status
+        execute_single(
+            "UPDATE crm_email_messages SET status = 'sent', resend_message_id = :rmid WHERE id = :mid RETURNING id",
+            {"rmid": resend_message_id, "mid": message["id"]},
+        )
+
+        # Update thread last_message_at
+        execute_single(
+            "UPDATE crm_email_threads SET last_message_at = NOW() WHERE id = :tid RETURNING id",
+            {"tid": thread_id},
+        )
+
+    except Exception as e:
+        execute_single(
+            "UPDATE crm_email_messages SET status = 'failed' WHERE id = :mid RETURNING id",
+            {"mid": message["id"]},
+        )
+        raise HTTPException(500, f"Failed to send email: {str(e)}")
+
+    return {"message": message, "thread_id": thread_id}
+
+
+@router.post("/email/threads/{thread_id}/mark-read")
+async def mark_admin_thread_read(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(get_user_profile),
+):
+    """Mark all inbound messages in a thread as read."""
+    thread = execute_single(
+        "SELECT account_id FROM crm_email_threads WHERE id = :tid",
+        {"tid": thread_id},
+    )
+    if not thread:
+        raise HTTPException(404, "Thread not found")
+
+    _check_admin_email_access(profile, thread["account_id"])
+
+    execute_query(
+        "UPDATE crm_email_messages SET is_read = true WHERE thread_id = :tid AND direction = 'inbound' AND is_read = false",
+        {"tid": thread_id},
+    )
+    return {"success": True}
+
+
+@router.post("/email/threads/{thread_id}/archive")
+async def archive_admin_thread(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(get_user_profile),
+):
+    """Toggle archive status on a thread."""
+    thread = execute_single(
+        "SELECT account_id, is_archived FROM crm_email_threads WHERE id = :tid",
+        {"tid": thread_id},
+    )
+    if not thread:
+        raise HTTPException(404, "Thread not found")
+
+    _check_admin_email_access(profile, thread["account_id"])
+
+    new_archived = not thread.get("is_archived", False)
+    execute_single(
+        "UPDATE crm_email_threads SET is_archived = :val WHERE id = :tid RETURNING id",
+        {"val": new_archived, "tid": thread_id},
+    )
+    return {"success": True, "is_archived": new_archived}
+
+
+@router.post("/email/threads/{thread_id}/star")
+async def star_admin_thread(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(get_user_profile),
+):
+    """Toggle star status on a thread."""
+    thread = execute_single(
+        "SELECT account_id, is_starred FROM crm_email_threads WHERE id = :tid",
+        {"tid": thread_id},
+    )
+    if not thread:
+        raise HTTPException(404, "Thread not found")
+
+    _check_admin_email_access(profile, thread["account_id"])
+
+    new_starred = not thread.get("is_starred", False)
+    execute_single(
+        "UPDATE crm_email_threads SET is_starred = :val WHERE id = :tid RETURNING id",
+        {"val": new_starred, "tid": thread_id},
+    )
+    return {"success": True, "is_starred": new_starred}
+
+
+@router.delete("/email/threads/{thread_id}")
+async def delete_admin_thread(
+    thread_id: str,
+    profile: Dict[str, Any] = Depends(get_user_profile),
+):
+    """Soft-delete a thread (mark as deleted)."""
+    thread = execute_single(
+        "SELECT account_id FROM crm_email_threads WHERE id = :tid",
+        {"tid": thread_id},
+    )
+    if not thread:
+        raise HTTPException(404, "Thread not found")
+
+    _check_admin_email_access(profile, thread["account_id"])
+
+    execute_single(
+        "UPDATE crm_email_threads SET is_deleted = true WHERE id = :tid RETURNING id",
+        {"tid": thread_id},
+    )
+    return {"success": True}

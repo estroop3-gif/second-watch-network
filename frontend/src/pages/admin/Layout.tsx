@@ -46,7 +46,7 @@ const AdminLayout = () => {
     { name: 'Audit Log', href: '/admin/audit-log', icon: Shield },
     { name: 'Donations', href: '/admin/donations', icon: Heart },
     { name: 'Alpha Testing', href: '/admin/alpha-testing', icon: FlaskConical },
-    { name: 'Email Logs', href: '/admin/email-logs', icon: Mail },
+    { name: 'Email', href: '/admin/email', icon: Mail },
     { name: 'Site Settings', href: '/admin/settings', icon: Settings },
   ];
 

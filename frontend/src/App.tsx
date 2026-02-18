@@ -122,6 +122,7 @@ const AuditLog = React.lazy(() => import("./pages/admin/AuditLog"));
 const AdminDonations = React.lazy(() => import("./pages/admin/Donations"));
 const AlphaTesting = React.lazy(() => import("./pages/admin/AlphaTesting"));
 const EmailLogs = React.lazy(() => import("./pages/admin/EmailLogs"));
+const AdminEmailPage = React.lazy(() => import("./pages/admin/AdminEmail"));
 const AdminOrganizations = React.lazy(() => import("./pages/admin/Organizations"));
 const AdminBacklotTrials = React.lazy(() => import("./pages/admin/BacklotTrials"));
 
@@ -573,7 +574,8 @@ const App = () => (
                         <Route path="audit-log" element={<AuditLog />} />
                         <Route path="donations" element={<AdminDonations />} />
                         <Route path="alpha-testing" element={<AlphaTesting />} />
-                        <Route path="email-logs" element={<EmailLogs />} />
+                        <Route path="email" element={<AdminEmailPage />} />
+                        <Route path="email-logs" element={<Navigate to="/admin/email" replace />} />
                         <Route path="settings" element={<SiteSettings />} />
                       </Route>
                     </Route>
