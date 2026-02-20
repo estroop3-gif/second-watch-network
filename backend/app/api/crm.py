@@ -2750,6 +2750,7 @@ def _route_email_internally(
     body_text: str,
     to_addresses: List[str],
     cc_addresses: List[str],
+    attachment_ids: List[str] = None,
 ):
     """Route an email internally between org members. Skips Resend API."""
     # Find or create thread on recipient's account (sender is the "contact")
@@ -2783,7 +2784,7 @@ def _route_email_internally(
         recipient_thread_id = new_thread["id"]
 
     # Insert inbound message on recipient's thread (tagged internal for reporting exclusion)
-    execute_single(
+    recipient_msg = execute_single(
         """
         INSERT INTO crm_email_messages
             (thread_id, direction, from_address, to_addresses, cc_addresses,
@@ -2802,6 +2803,38 @@ def _route_email_internally(
             "text": body_text,
         },
     )
+
+    # Copy attachment records for recipient's message (share same S3 objects)
+    if attachment_ids and recipient_msg:
+        import uuid
+        import logging
+        _log = logging.getLogger(__name__)
+        for att_id in attachment_ids:
+            try:
+                src_att = execute_single(
+                    "SELECT * FROM crm_email_attachments WHERE id = :aid",
+                    {"aid": att_id},
+                )
+                if src_att:
+                    new_att_id = str(uuid.uuid4())
+                    execute_insert(
+                        """INSERT INTO crm_email_attachments
+                               (id, message_id, filename, content_type, size_bytes, s3_key, s3_bucket)
+                           VALUES (:id, :mid, :filename, :ct, :size, :key, :bucket)
+                           RETURNING id""",
+                        {
+                            "id": new_att_id,
+                            "mid": recipient_msg["id"],
+                            "filename": src_att["filename"],
+                            "ct": src_att["content_type"],
+                            "size": src_att["size_bytes"],
+                            "key": src_att["s3_key"],
+                            "bucket": src_att["s3_bucket"],
+                        },
+                    )
+                    _log.info(f"Copied attachment {att_id} → {new_att_id} for internal recipient message {recipient_msg['id']}")
+            except Exception as e:
+                _log.warning(f"Failed to copy attachment {att_id} for internal routing: {e}")
 
     # Bump recipient thread unread count and last_message_at
     execute_single(
@@ -3057,6 +3090,7 @@ async def send_crm_email(
             body_text=plain_text or "",
             to_addresses=data.to_emails,
             cc_addresses=data.cc or [],
+            attachment_ids=data.attachment_ids,
         )
 
     if not external_recipients:
@@ -3392,7 +3426,8 @@ def _deliver_inbound_to_account(
         _log.info(f"Dedup (ON CONFLICT): email {resend_received_id} already exists in thread {thread_id}")
         return None
 
-    # Store inbound attachments (download from Resend CDN → S3)
+    # Store inbound attachments (use pre-downloaded bytes or fall back to CDN download → S3)
+    cid_to_att_id = {}  # Track content_id → attachment_id for inline image rewriting
     if attachments and message:
         import uuid
         import boto3
@@ -3402,10 +3437,19 @@ def _deliver_inbound_to_account(
         bucket = _settings.AWS_S3_BACKLOT_FILES_BUCKET
         for att in attachments:
             try:
-                att_resp = _httpx.get(att["download_url"], timeout=30)
-                if att_resp.status_code != 200:
-                    continue
-                file_bytes = att_resp.content
+                # Use pre-downloaded bytes if available (from _process_inbound_email)
+                file_bytes = att.get("_file_bytes")
+                if not file_bytes:
+                    # Fall back to downloading from URL (single-recipient case or legacy)
+                    dl_url = att.get("download_url")
+                    if not dl_url:
+                        _log.warning(f"No download_url or pre-downloaded bytes for attachment {att.get('filename')}")
+                        continue
+                    att_resp = _httpx.get(dl_url, timeout=30)
+                    if att_resp.status_code != 200:
+                        _log.warning(f"Failed to download attachment {att.get('filename')}: HTTP {att_resp.status_code}")
+                        continue
+                    file_bytes = att_resp.content
 
                 att_id = str(uuid.uuid4())
                 filename = att.get("filename", "attachment")
@@ -3423,8 +3467,33 @@ def _deliver_inbound_to_account(
                      "ct": att.get("content_type"), "size": att.get("size", len(file_bytes)),
                      "key": s3_key, "bucket": bucket},
                 )
+
+                # Track CID mapping for inline image rewriting
+                content_id = att.get("content_id") or att.get("contentId")
+                if content_id:
+                    # Strip angle brackets if present (e.g. "<ii_abc123>" → "ii_abc123")
+                    cid_key = content_id.strip("<>")
+                    cid_to_att_id[cid_key] = att_id
             except Exception as e:
                 _log.warning(f"Failed to store inbound attachment {att.get('filename')}: {e}")
+
+    # Rewrite CID references in HTML body to our inline-image endpoint
+    if cid_to_att_id and message and message.get("body_html"):
+        import re as _cid_re
+        updated_html = message["body_html"]
+        for cid_val, att_id in cid_to_att_id.items():
+            # Match cid:xxx in src attributes (with or without quotes)
+            updated_html = _cid_re.sub(
+                r'cid:' + _cid_re.escape(cid_val),
+                f'/api/v1/crm/email/inline-image/{att_id}',
+                updated_html,
+            )
+        if updated_html != message["body_html"]:
+            execute_single(
+                "UPDATE crm_email_messages SET body_html = :html WHERE id = :mid RETURNING id",
+                {"html": updated_html, "mid": message["id"]},
+            )
+            _log.info(f"Rewrote {len(cid_to_att_id)} CID references in message {message['id']}")
 
     # Parse ICS calendar invites from attachments
     if attachments and message:
@@ -3688,6 +3757,24 @@ async def _process_inbound_email(body: dict, _log, settings, httpx):
                 attachments_list = att_data.get("data", [])
         except Exception as e:
             _log.error(f"Failed to fetch inbound attachments: {e}")
+
+    # Pre-download attachment files once so all recipients share the same bytes
+    # (Resend CDN URLs may be single-use or expire quickly)
+    if attachments_list:
+        import httpx as _httpx_dl
+        for att in attachments_list:
+            dl_url = att.get("download_url")
+            if not dl_url:
+                continue
+            try:
+                att_resp = _httpx_dl.get(dl_url, timeout=30)
+                if att_resp.status_code == 200:
+                    att["_file_bytes"] = att_resp.content
+                    _log.info(f"Pre-downloaded attachment {att.get('filename')} ({len(att_resp.content)} bytes)")
+                else:
+                    _log.warning(f"Failed to pre-download attachment {att.get('filename')}: HTTP {att_resp.status_code}")
+            except Exception as e:
+                _log.warning(f"Failed to pre-download attachment {att.get('filename')}: {e}")
 
     # Merge and deduplicate CC addresses from webhook payload + API response
     all_cc_raw = cc_addresses_raw + cc_from_api
