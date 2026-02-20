@@ -21,7 +21,8 @@ import RichTextEditor from '@/components/crm/RichTextEditor';
 const CATEGORIES = ['general', 'follow-up', 'introduction', 'proposal', 'closing', 'support'];
 const PLACEHOLDERS = [
   '{{first_name}}', '{{last_name}}', '{{company}}', '{{email}}', '{{deal_name}}',
-  '{{rep_name}}', '{{rep_email}}', '{{rep_phone}}', '{{rep_title}}', '{{company_name}}',
+  '{{rep_name}}', '{{rep_first_name}}', '{{rep_last_name}}',
+  '{{rep_email}}', '{{rep_phone}}', '{{rep_title}}', '{{company_name}}',
 ];
 
 const EmailTemplates = () => {

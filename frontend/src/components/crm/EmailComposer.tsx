@@ -94,16 +94,20 @@ const EmailComposer = ({
     const template = templates.find((t: any) => t.id === templateId);
     if (!template) return;
 
+    const fullName = profile?.full_name || '';
+    const nameParts = fullName.split(' ');
     const vars: Record<string, string | undefined> = {
       first_name: contactData?.first_name,
       last_name: contactData?.last_name,
       company: contactData?.company,
       email: contactData?.email || toEmails[0] || '',
       deal_name: contactData?.deal_name,
-      rep_name: profile?.full_name,
+      rep_name: fullName,
+      rep_first_name: nameParts[0] || '',
+      rep_last_name: nameParts.slice(1).join(' ') || '',
       rep_email: profile?.email,
       rep_phone: profile?.phone || '',
-      rep_title: 'Sales Representative',
+      rep_title: profile?.job_title || 'Sales Representative',
       company_name: 'Second Watch Network',
     };
 
