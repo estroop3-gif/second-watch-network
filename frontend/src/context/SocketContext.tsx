@@ -379,6 +379,9 @@ const AWSWebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [send, dispatchEvent]);
 
   // Connect/disconnect based on auth state
+  // NOTE: Only depend on user?.id, NOT token. Token refreshes should not
+  // tear down the WebSocket — the token is only used at connection time and
+  // is already captured via tokenRef.current inside connect().
   useEffect(() => {
     if (!user || !token) {
       // Cleanup on logout
@@ -418,7 +421,8 @@ const AWSWebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         socketRef.current.close(1000, 'Component unmounting');
       }
     };
-  }, [user?.id, token, connect]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, connect]);
 
   // Channel management
   const joinChannel = useCallback(

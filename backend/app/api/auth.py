@@ -536,7 +536,7 @@ async def refresh_token(request: RefreshTokenRequest):
     try:
         from app.core.cognito import CognitoAuth
 
-        result = CognitoAuth.refresh_tokens(refresh_token=request.refresh_token)
+        result = CognitoAuth.refresh_token(refresh_token=request.refresh_token)
 
         if result.get("error"):
             raise HTTPException(status_code=401, detail=result["error"]["message"])
