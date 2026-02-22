@@ -59,6 +59,9 @@ Parameters:
     Type: String
     NoEcho: true
     Default: ""
+  StripePublishableKey:
+    Type: String
+    Default: ""
   StripeWebhookSecret:
     Type: String
     NoEcho: true
@@ -273,6 +276,7 @@ Resources:
           FRONTEND_URL: !Ref FrontendUrl
           # Stripe
           STRIPE_SECRET_KEY: !Ref StripeSecretKey
+          STRIPE_PUBLISHABLE_KEY: !Ref StripePublishableKey
           STRIPE_WEBHOOK_SECRET: !Ref StripeWebhookSecret
           STRIPE_PREMIUM_PRICE_ID: !Ref StripePremiumPriceId
           STRIPE_PREMIUM_YEARLY_PRICE_ID: !Ref StripePremiumYearlyPriceId

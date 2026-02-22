@@ -25,11 +25,8 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Separator } from '@/components/ui/separator';
 
 import { useRentalPayments } from '@/hooks/gear/useGearMarketplace';
-import { loadStripe, Stripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
-
-const STRIPE_KEY = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY;
-const stripePromise = STRIPE_KEY ? loadStripe(STRIPE_KEY) : null;
+import { getStripePromise } from '@/lib/stripe';
 
 interface DepositPaymentDialogProps {
   quoteId: string;
@@ -141,6 +138,14 @@ export function DepositPaymentDialog({
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [paymentIntentId, setPaymentIntentId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [stripeReady, setStripeReady] = useState(false);
+
+  const stripePromise = getStripePromise();
+
+  // Check if Stripe loaded
+  useEffect(() => {
+    stripePromise.then((s) => setStripeReady(!!s));
+  }, []);
 
   const { createPaymentIntent, confirmPayment } = useRentalPayments(quoteId);
 
@@ -181,7 +186,7 @@ export function DepositPaymentDialog({
     onClose();
   };
 
-  const stripeConfigured = !!stripePromise;
+  const stripeConfigured = stripeReady;
 
   return (
     <Dialog open={isOpen} onOpenChange={handleClose}>

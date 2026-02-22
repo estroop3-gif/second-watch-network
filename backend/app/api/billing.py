@@ -35,6 +35,12 @@ def get_stripe():
     return stripe
 
 
+@router.get("/config")
+async def get_billing_config():
+    """Return public Stripe config for frontend. Publishable key is safe to expose."""
+    return {"publishable_key": settings.STRIPE_PUBLISHABLE_KEY}
+
+
 @router.post("/checkout-session")
 async def create_checkout_session(
     request: CheckoutSessionRequest,
