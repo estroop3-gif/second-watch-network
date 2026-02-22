@@ -807,6 +807,36 @@ export interface MemberStatusUpdateRequest {
   reason?: string;
 }
 
+// ============ Dues Types ============
+
+export interface MembershipUpgradeRequest {
+  target_tier: MembershipTier;
+  return_url?: string;
+}
+
+export interface MembershipUpgradeResponse {
+  checkout_url: string;
+  session_id: string;
+}
+
+export interface DuesPayment {
+  id: number;
+  user_id: string;
+  amount_cents: number;
+  tier: MembershipTier;
+  stripe_payment_intent_id?: string;
+  stripe_invoice_id?: string;
+  status: string;
+  period_start?: string;
+  period_end?: string;
+  created_at: string;
+}
+
+export interface DuesPaymentListResponse {
+  payments: DuesPayment[];
+  total: number;
+}
+
 // ============ Response Types ============
 
 export interface PaginatedResponse<T> {
@@ -1354,6 +1384,27 @@ export class OrderAPI {
    */
   async getMyMembershipStatus(): Promise<MembershipStatus> {
     return api.get(`${this.baseURL}/membership/me`);
+  }
+
+  /**
+   * Create a Stripe checkout session for Order dues
+   */
+  async createDuesCheckout(request: MembershipUpgradeRequest): Promise<MembershipUpgradeResponse> {
+    return api.post(`${this.baseURL}/membership/checkout`, request);
+  }
+
+  /**
+   * Get dues payment history
+   */
+  async getMyDuesPayments(): Promise<DuesPaymentListResponse> {
+    return api.get(`${this.baseURL}/membership/dues`);
+  }
+
+  /**
+   * Create Stripe billing portal session for managing dues
+   */
+  async createDuesPortalSession(): Promise<{ url: string }> {
+    return api.post(`${this.baseURL}/membership/portal`);
   }
 
   /**

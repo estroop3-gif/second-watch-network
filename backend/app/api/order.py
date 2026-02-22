@@ -579,8 +579,32 @@ async def admin_update_member(
 
     result = client.table("order_member_profiles").update(update_data).eq("user_id", user_id).execute()
 
-    # TODO: Send notification email about status change
-    # TODO: Handle Stripe subscription cancellation if expelled
+    # Handle Stripe subscription cancellation if expelled or suspended
+    if update.status.value in ("expelled", "suspended"):
+        try:
+            from app.core.config import settings
+            import stripe
+            stripe.api_key = settings.STRIPE_SECRET_KEY
+
+            user_profile = client.table("profiles").select("stripe_customer_id").eq("id", user_id).single().execute()
+            customer_id = user_profile.data.get("stripe_customer_id") if user_profile.data else None
+
+            if customer_id and stripe.api_key:
+                # Find active subscriptions with order_dues metadata
+                subscriptions = stripe.Subscription.list(
+                    customer=customer_id,
+                    status="active",
+                    limit=10,
+                )
+                for sub in subscriptions.auto_paging_iter():
+                    if sub.metadata.get("product") == "order_dues":
+                        stripe.Subscription.cancel(sub.id)
+                        break
+
+                # Clear Order membership flag
+                client.table("profiles").update({"is_order_member": False}).eq("id", user_id).execute()
+        except Exception as e:
+            print(f"Warning: Failed to cancel Stripe dues subscription for expelled member {user_id}: {e}")
 
     return OrderMemberProfileResponse(**result.data[0])
 

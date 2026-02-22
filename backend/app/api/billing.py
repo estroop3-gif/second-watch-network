@@ -370,6 +370,14 @@ async def stripe_webhook(request: Request):
             if donation_id:
                 await _process_donation_success(donation_id, payment_intent_id)
 
+        # Handle greenroom ticket purchases
+        elif metadata.get("type") == "greenroom_tickets":
+            await _process_greenroom_ticket_success(metadata)
+
+        # Handle featured post payments
+        elif metadata.get("type") == "featured_post":
+            await _process_featured_post_success(metadata)
+
     return {"received": True}
 
 
@@ -585,3 +593,60 @@ async def _process_donation_success(donation_id: str, payment_intent_id: str):
             }).execute()
 
     print(f"Donation {donation_id} processed successfully")
+
+
+async def _process_greenroom_ticket_success(metadata: dict):
+    """Process a successful greenroom ticket purchase."""
+    from app.core.database import get_client
+
+    ticket_id = metadata.get("ticket_id")
+    user_id = metadata.get("user_id")
+    cycle_id = metadata.get("cycle_id")
+
+    if not ticket_id:
+        print(f"Warning: greenroom ticket payment missing ticket_id in metadata")
+        return
+
+    client = get_client()
+
+    # Update ticket payment status to completed
+    result = client.table("greenroom_voting_tickets").update({
+        "payment_status": "completed",
+    }).eq("id", int(ticket_id)).execute()
+
+    if result.data:
+        print(f"Greenroom ticket {ticket_id} marked as completed for user {user_id}")
+    else:
+        print(f"Warning: Could not update greenroom ticket {ticket_id}")
+
+
+async def _process_featured_post_success(metadata: dict):
+    """Process a successful featured post payment."""
+    from app.core.database import get_client
+    from datetime import datetime
+
+    post_type = metadata.get("post_type")  # 'role_application' or 'collab_application'
+    post_id = metadata.get("post_id")
+    user_id = metadata.get("user_id")
+
+    if not post_id or not post_type:
+        print(f"Warning: featured post payment missing post_id or post_type")
+        return
+
+    client = get_client()
+    now = datetime.utcnow().isoformat()
+
+    if post_type == "role_application":
+        client.table("backlot_project_role_applications").update({
+            "is_promoted": True,
+            "promoted_at": now,
+            "updated_at": now,
+        }).eq("id", post_id).execute()
+    elif post_type == "collab_application":
+        client.table("community_collab_applications").update({
+            "is_promoted": True,
+            "promoted_at": now,
+            "updated_at": now,
+        }).eq("id", post_id).execute()
+
+    print(f"Featured post {post_type}/{post_id} promoted for user {user_id}")

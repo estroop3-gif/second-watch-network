@@ -7,7 +7,7 @@ import logging
 import random
 from datetime import datetime, timedelta
 
-from app.core.database import execute_query, execute_single, execute_insert
+from app.core.database import execute_query, execute_single, execute_insert, execute_update
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -1198,9 +1198,88 @@ async def process_billing_grace_periods():
                 execute_insert("""
                     INSERT INTO backlot_billing_events
                         (organization_id, subscription_config_id, event_type, old_status, new_status, metadata)
-                    VALUES (:org_id, :cid, 'grace_period_expired', 'past_due', 'past_due', '{}')
+                    VALUES (:org_id, :cid, 'grace_period_expired', 'past_due', 'canceled', '{}')
                     RETURNING id
                 """, {"org_id": org_id, "cid": str(config["id"])})
+
+                # Cancel the Stripe subscription
+                stripe_sub_id = config.get("stripe_subscription_id") if hasattr(config, 'get') else None
+                if not stripe_sub_id:
+                    sub_config = execute_single("""
+                        SELECT stripe_subscription_id FROM backlot_subscription_configs WHERE id = :cid
+                    """, {"cid": str(config["id"])})
+                    stripe_sub_id = sub_config.get("stripe_subscription_id") if sub_config else None
+
+                if stripe_sub_id:
+                    try:
+                        import stripe
+                        from app.core.config import settings
+                        stripe.api_key = settings.STRIPE_SECRET_KEY
+                        stripe.Subscription.cancel(stripe_sub_id)
+                        logger.info(f"process_billing_grace_periods: canceled Stripe subscription {stripe_sub_id} for org {org_id}")
+                    except Exception as stripe_err:
+                        logger.warning(f"process_billing_grace_periods: failed to cancel Stripe sub {stripe_sub_id}: {stripe_err}")
+
+                # Downgrade org to free tier
+                try:
+                    # Find the org owner profile for free tier activation
+                    owner = execute_single("""
+                        SELECT om.profile_id FROM organization_members om
+                        WHERE om.organization_id = :org_id AND om.role = 'owner'
+                        LIMIT 1
+                    """, {"org_id": org_id})
+                    owner_profile_id = str(owner["profile_id"]) if owner else None
+
+                    from app.services.subscription_service import activate_free_tier
+
+                    # Mark config as canceled
+                    execute_update("""
+                        UPDATE backlot_subscription_configs
+                        SET status = 'canceled', updated_at = NOW()
+                        WHERE id = :cid
+                    """, {"cid": str(config["id"])})
+
+                    # Deactivate modules
+                    execute_update("""
+                        UPDATE backlot_subscription_modules
+                        SET status = 'canceled', canceled_at = NOW(), updated_at = NOW()
+                        WHERE organization_id = :oid AND status = 'active'
+                    """, {"oid": org_id})
+
+                    if owner_profile_id:
+                        activate_free_tier(org_id, owner_profile_id)
+
+                    logger.info(f"process_billing_grace_periods: downgraded org {org_id} to free tier")
+                except Exception as downgrade_err:
+                    logger.error(f"process_billing_grace_periods: downgrade failed for org {org_id}: {downgrade_err}")
+
+                # Send cancellation email to org owner
+                try:
+                    if owner:
+                        owner_email = execute_single("""
+                            SELECT email, display_name FROM profiles WHERE id = :pid
+                        """, {"pid": str(owner["profile_id"])})
+                        if owner_email and owner_email.get("email"):
+                            from app.services.email_templates import base_template, cta_button, info_card
+                            from app.services.email_service import send_email
+
+                            name = owner_email.get("display_name", "there")
+                            html = base_template(
+                                f"Hi {name},",
+                                info_card(
+                                    "Subscription Canceled",
+                                    "Your Backlot subscription has been canceled due to non-payment after the 7-day grace period. "
+                                    "Your organization has been downgraded to the free tier. You can resubscribe at any time to restore access."
+                                )
+                                + cta_button("Resubscribe Now", f"{settings.FRONTEND_URL}/backlot/settings/billing")
+                            )
+                            await send_email(
+                                to_email=owner_email["email"],
+                                subject="Your Backlot subscription has been canceled",
+                                html_content=html,
+                            )
+                except Exception as email_err:
+                    logger.warning(f"process_billing_grace_periods: email failed for org {org_id}: {email_err}")
 
                 logger.info(f"process_billing_grace_periods: grace expired for org {org_id}")
             except Exception as e:

@@ -17,9 +17,11 @@ import {
   OrderJob,
   OrderApplication,
   OrderEvent,
+  MembershipStatus,
   PRIMARY_TRACKS,
   CraftHouseMembership,
 } from '@/lib/api/order';
+import OrderDuesCard from '@/components/order/OrderDuesCard';
 import { BadgeDisplay } from '@/components/UserBadge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -100,6 +102,7 @@ export default function OrderDashboard() {
   const [jobApplications, setJobApplications] = useState<OrderJobApplication[]>([]);
   const [jobsForYou, setJobsForYou] = useState<OrderJob[]>([]);
   const [events, setEvents] = useState<OrderEvent[]>([]);
+  const [membershipStatus, setMembershipStatus] = useState<MembershipStatus | null>(null);
 
   useEffect(() => {
     if (!user) {
@@ -120,12 +123,13 @@ export default function OrderDashboard() {
 
       if (dashboardData.is_order_member) {
         // Member - load full data
-        const [profileData, bookingsData, applicationsData, jobsData, eventsData] = await Promise.all([
+        const [profileData, bookingsData, applicationsData, jobsData, eventsData, membershipData] = await Promise.all([
           orderAPI.getMyProfile(),
           orderAPI.getMyBookingRequests().catch(() => []),
           orderAPI.getMyJobApplications().catch(() => ({ applications: [] })),
           orderAPI.listJobs({ active_only: true, limit: 5 }).catch(() => ({ jobs: [] })),
           orderAPI.listEvents({ upcoming_only: true, limit: 5 }).catch(() => ({ events: [] })),
+          orderAPI.getMyMembershipStatus().catch(() => null),
         ]);
 
         setProfile(profileData);
@@ -133,6 +137,7 @@ export default function OrderDashboard() {
         setJobApplications(applicationsData.applications || []);
         setJobsForYou(jobsData.jobs || []);
         setEvents(eventsData.events || []);
+        setMembershipStatus(membershipData);
       } else {
         // Not a member - check for application
         const appData = await orderAPI.getMyApplication().catch(() => null);
@@ -395,7 +400,18 @@ export default function OrderDashboard() {
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Dues Setup Required</AlertTitle>
           <AlertDescription>
-            Please set up your membership dues to maintain your Order membership.
+            Please set up your membership dues below to maintain your Order membership.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Past Due Notice */}
+      {dashboard.dues_status === 'past_due' && (
+        <Alert className="mb-6" variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Dues Past Due</AlertTitle>
+          <AlertDescription>
+            Your membership dues payment has failed. Please update your payment method to avoid losing your membership.
           </AlertDescription>
         </Alert>
       )}
@@ -603,6 +619,15 @@ export default function OrderDashboard() {
               </Card>
             </motion.div>
           )}
+
+          {/* Membership Dues Card */}
+          <motion.div
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: 0.28 }}
+          >
+            <OrderDuesCard membershipStatus={membershipStatus || undefined} />
+          </motion.div>
 
           {/* Upcoming Events Card */}
           <motion.div

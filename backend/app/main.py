@@ -26,7 +26,7 @@ from app.api import (
     auth, users, content, filmmakers, messages, forum,
     profiles, submissions, notifications, connections,
     admin, admin_community, admin_content, admin_backlot, admin_profiles,
-    admin_roles, admin_storage, admin_users, admin_emails, admin_organizations, ses_webhook,
+    admin_roles, admin_storage, admin_users, admin_emails, admin_organizations, admin_billing, ses_webhook,
     organization_usage, message_settings, admin_messages,
     availability, credits, community, greenroom, order, backlot,
     scene_view, day_view, person_view, timecards, project_access, directory,
@@ -266,6 +266,7 @@ app.include_router(admin_users.router, prefix=f"{settings.API_V1_PREFIX}/admin/u
 app.include_router(admin_emails.router, prefix=f"{settings.API_V1_PREFIX}/admin", tags=["Admin Emails"])
 app.include_router(admin_messages.router, prefix=f"{settings.API_V1_PREFIX}/admin/messages", tags=["Admin Messages"])
 app.include_router(admin_organizations.router, prefix=f"{settings.API_V1_PREFIX}/admin/organizations", tags=["Admin Organizations"])
+app.include_router(admin_billing.router, prefix=f"{settings.API_V1_PREFIX}/admin", tags=["Admin Billing"])
 app.include_router(organization_usage.router, prefix=f"{settings.API_V1_PREFIX}/organizations", tags=["Organization Usage"])
 app.include_router(ses_webhook.router, prefix=f"{settings.API_V1_PREFIX}", tags=["SES Webhook"])
 app.include_router(availability.router, prefix=f"{settings.API_V1_PREFIX}/availability", tags=["Availability"])

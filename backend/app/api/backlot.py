@@ -20684,9 +20684,56 @@ async def promote_role_application(
 
         is_order_member = profile.data.get("is_order_member", False) if profile.data else False
 
-        # TODO: If not order member, process payment here
-        # For now, we'll allow the promotion
+        if not is_order_member:
+            # Non-Order members must pay $9.99 to promote
+            from app.core.config import settings
+            import stripe
+            stripe.api_key = settings.STRIPE_SECRET_KEY
 
+            if not stripe.api_key:
+                raise HTTPException(status_code=500, detail="Stripe not configured")
+
+            # Get or create Stripe customer
+            customer_id = profile.data.get("stripe_customer_id") if profile.data else None
+            if not customer_id:
+                customer = stripe.Customer.create(metadata={"user_id": user_id})
+                customer_id = customer.id
+                client.table("profiles").update({"stripe_customer_id": customer_id}).eq("id", user_id).execute()
+
+            base_url = settings.FRONTEND_URL
+            session = stripe.checkout.Session.create(
+                customer=customer_id,
+                payment_method_types=["card"],
+                line_items=[{
+                    "price_data": {
+                        "currency": "usd",
+                        "product_data": {
+                            "name": "Featured Role Application",
+                            "description": "7-day featured placement for your role application",
+                        },
+                        "unit_amount": 999,
+                    },
+                    "quantity": 1,
+                }],
+                mode="payment",
+                success_url=f"{base_url}/backlot?promotion=success",
+                cancel_url=f"{base_url}/backlot?promotion=cancelled",
+                metadata={
+                    "type": "featured_post",
+                    "post_type": "role_application",
+                    "post_id": application_id,
+                    "user_id": user_id,
+                },
+            )
+
+            return {
+                "success": True,
+                "requires_payment": True,
+                "checkout_url": session.url,
+                "message": "Redirecting to payment",
+            }
+
+        # Order members get free promotion
         result = client.table("backlot_project_role_applications").update({
             "is_promoted": True,
             "promoted_at": datetime.utcnow().isoformat(),
@@ -20695,8 +20742,8 @@ async def promote_role_application(
 
         return {
             "success": True,
-            "is_free": is_order_member,
-            "message": "Application promoted successfully" + (" (free for Order members)" if is_order_member else ""),
+            "is_free": True,
+            "message": "Application promoted successfully (free for Order members)",
             "application": result.data[0] if result.data else None
         }
 

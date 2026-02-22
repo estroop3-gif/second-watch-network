@@ -25,6 +25,11 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Separator } from '@/components/ui/separator';
 
 import { useRentalPayments } from '@/hooks/gear/useGearMarketplace';
+import { loadStripe, Stripe } from '@stripe/stripe-js';
+import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
+
+const STRIPE_KEY = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY;
+const stripePromise = STRIPE_KEY ? loadStripe(STRIPE_KEY) : null;
 
 interface DepositPaymentDialogProps {
   quoteId: string;
@@ -37,6 +42,91 @@ interface DepositPaymentDialogProps {
 }
 
 type PaymentStep = 'loading' | 'ready' | 'processing' | 'success' | 'error';
+
+// Inner form component that uses Stripe hooks (must be inside Elements provider)
+function PaymentForm({
+  depositAmount,
+  paymentIntentId,
+  onSuccess,
+  onError,
+  onProcessing,
+  step,
+  confirmPaymentMutation,
+}: {
+  depositAmount: number;
+  paymentIntentId: string;
+  onSuccess: () => void;
+  onError: (msg: string) => void;
+  onProcessing: () => void;
+  step: PaymentStep;
+  confirmPaymentMutation: any;
+}) {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [ready, setReady] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!stripe || !elements) return;
+
+    onProcessing();
+
+    const { error, paymentIntent } = await stripe.confirmPayment({
+      elements,
+      redirect: 'if_required',
+      confirmParams: {
+        return_url: window.location.href,
+      },
+    });
+
+    if (error) {
+      onError(error.message || 'Payment failed');
+    } else if (paymentIntent && paymentIntent.status === 'succeeded') {
+      // Record the successful payment in our backend
+      try {
+        await confirmPaymentMutation.mutateAsync(paymentIntentId);
+        onSuccess();
+      } catch (err: any) {
+        onError(err.message || 'Payment succeeded but failed to record. Contact support.');
+      }
+    } else if (paymentIntent && paymentIntent.status === 'requires_action') {
+      // 3D Secure or other action — Stripe handles this automatically
+      onError('Additional verification required. Please try again.');
+    } else {
+      onError('Unexpected payment status. Please try again.');
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-white/20 bg-white/5 p-4">
+        <PaymentElement
+          onReady={() => setReady(true)}
+          options={{
+            layout: 'tabs',
+          }}
+        />
+      </div>
+
+      <div className="flex items-center gap-2 text-xs text-muted-gray">
+        <Lock className="h-3 w-3" />
+        <span>Secured by Stripe. Your card details are encrypted.</span>
+      </div>
+
+      {step === 'ready' && (
+        <div className="flex gap-2 pt-2">
+          <Button
+            onClick={handleSubmit}
+            className="flex-1 gap-2"
+            disabled={!stripe || !elements || !ready}
+          >
+            <DollarSign className="h-4 w-4" />
+            Pay ${depositAmount.toLocaleString()}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function DepositPaymentDialog({
   quoteId,
@@ -84,37 +174,14 @@ export function DepositPaymentDialog({
     }
   }, [isOpen]);
 
-  const handlePayment = async () => {
-    if (!clientSecret || !paymentIntentId) return;
-
-    setStep('processing');
-
-    // In a real implementation, you would use Stripe Elements here
-    // For now, we'll simulate the payment flow
-    // The actual Stripe integration would use:
-    // const stripe = await loadStripe(STRIPE_PUBLISHABLE_KEY);
-    // const { error, paymentIntent } = await stripe.confirmPayment({
-    //   elements,
-    //   confirmParams: { return_url: window.location.href },
-    // });
-
-    // Simulate payment processing
-    try {
-      // In production, this would be called after Stripe confirms the payment
-      await confirmPayment.mutateAsync(paymentIntentId);
-      setStep('success');
-    } catch (error: any) {
-      setErrorMessage(error.message || 'Payment failed');
-      setStep('error');
-    }
-  };
-
   const handleClose = () => {
     if (step === 'success') {
       onPaymentComplete();
     }
     onClose();
   };
+
+  const stripeConfigured = !!stripePromise;
 
   return (
     <Dialog open={isOpen} onOpenChange={handleClose}>
@@ -160,39 +227,47 @@ export function DepositPaymentDialog({
             </div>
           )}
 
-          {/* Ready State - Card Input */}
-          {step === 'ready' && (
-            <div className="space-y-4">
-              {/* Placeholder for Stripe Elements */}
-              <div className="rounded-lg border border-white/20 bg-white/5 p-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <CreditCard className="h-4 w-4 text-muted-gray" />
-                  <span className="text-sm text-bone-white">Card Details</span>
-                </div>
-                {/* In production, Stripe Elements would render here */}
-                <div className="space-y-3">
-                  <div className="h-10 rounded bg-white/10 flex items-center px-3">
-                    <span className="text-sm text-muted-gray">**** **** **** ****</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="h-10 rounded bg-white/10 flex items-center px-3">
-                      <span className="text-sm text-muted-gray">MM/YY</span>
-                    </div>
-                    <div className="h-10 rounded bg-white/10 flex items-center px-3">
-                      <span className="text-sm text-muted-gray">CVC</span>
-                    </div>
-                  </div>
-                </div>
-                <p className="text-xs text-muted-gray mt-3 text-center">
-                  Stripe Elements integration required for production
-                </p>
-              </div>
+          {/* Stripe not configured warning */}
+          {step === 'ready' && !stripeConfigured && (
+            <Alert className="border-yellow-500/30 bg-yellow-500/10">
+              <AlertCircle className="h-4 w-4 text-yellow-400" />
+              <AlertDescription className="text-yellow-200">
+                Stripe is not configured. Set VITE_STRIPE_PUBLISHABLE_KEY in your environment.
+              </AlertDescription>
+            </Alert>
+          )}
 
-              <div className="flex items-center gap-2 text-xs text-muted-gray">
-                <Lock className="h-3 w-3" />
-                <span>Secured by Stripe. Your card details are encrypted.</span>
-              </div>
-            </div>
+          {/* Ready State - Stripe Payment Element */}
+          {step === 'ready' && clientSecret && stripeConfigured && paymentIntentId && (
+            <Elements
+              stripe={stripePromise}
+              options={{
+                clientSecret,
+                appearance: {
+                  theme: 'night',
+                  variables: {
+                    colorPrimary: '#FCDC58',
+                    colorBackground: '#1a1a1a',
+                    colorText: '#F9F5EF',
+                    colorDanger: '#FF3C3C',
+                    borderRadius: '8px',
+                  },
+                },
+              }}
+            >
+              <PaymentForm
+                depositAmount={depositAmount}
+                paymentIntentId={paymentIntentId}
+                step={step}
+                confirmPaymentMutation={confirmPayment}
+                onSuccess={() => setStep('success')}
+                onError={(msg) => {
+                  setErrorMessage(msg);
+                  setStep('error');
+                }}
+                onProcessing={() => setStep('processing')}
+              />
+            </Elements>
           )}
 
           {/* Processing State */}
@@ -232,16 +307,10 @@ export function DepositPaymentDialog({
         </div>
 
         <DialogFooter className="gap-2">
-          {step === 'ready' && (
-            <>
-              <Button variant="outline" onClick={handleClose}>
-                Cancel
-              </Button>
-              <Button onClick={handlePayment} className="gap-2">
-                <DollarSign className="h-4 w-4" />
-                Pay ${depositAmount.toLocaleString()}
-              </Button>
-            </>
+          {step === 'ready' && !stripeConfigured && (
+            <Button variant="outline" onClick={handleClose}>
+              Close
+            </Button>
           )}
           {step === 'success' && (
             <Button onClick={handleClose} className="gap-2">

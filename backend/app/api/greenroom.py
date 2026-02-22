@@ -296,9 +296,26 @@ async def purchase_tickets(
     # Calculate amount
     ticket_price = cycle.get("ticket_price", 1.0)
     amount = request.ticket_count * ticket_price
+    amount_cents = int(amount * 100)
 
-    # TODO: Create Stripe checkout session
-    # For now, return placeholder
+    # Get or create Stripe customer
+    from app.core.config import settings
+    import stripe
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+
+    if not stripe.api_key:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+
+    profile = client.table("profiles").select("id, stripe_customer_id").eq("id", user_id).single().execute()
+    customer_id = profile.data.get("stripe_customer_id") if profile.data else None
+
+    if not customer_id:
+        # Get email from user object
+        email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
+        customer = stripe.Customer.create(email=email, metadata={"user_id": user_id})
+        customer_id = customer.id
+        if profile.data:
+            client.table("profiles").update({"stripe_customer_id": customer_id}).eq("id", user_id).execute()
 
     # Create pending ticket record
     ticket_data = {
@@ -310,11 +327,44 @@ async def purchase_tickets(
         "amount_paid": amount,
     }
 
-    client.table("greenroom_voting_tickets").insert(ticket_data).execute()
+    ticket_result = client.table("greenroom_voting_tickets").insert(ticket_data).execute()
+    ticket_id = ticket_result.data[0]["id"] if ticket_result.data else None
+
+    # Build URLs
+    base_url = settings.FRONTEND_URL
+    success_url = f"{base_url}/greenroom?purchase=success"
+    cancel_url = f"{base_url}/greenroom?purchase=cancelled"
+
+    # Create Stripe checkout session for one-time payment
+    session = stripe.checkout.Session.create(
+        customer=customer_id,
+        payment_method_types=["card"],
+        line_items=[{
+            "price_data": {
+                "currency": "usd",
+                "product_data": {
+                    "name": f"Green Room Voting Tickets ({request.ticket_count}x)",
+                    "description": f"{request.ticket_count} voting tickets for {cycle.get('name', 'cycle')}",
+                },
+                "unit_amount": amount_cents,
+            },
+            "quantity": 1,
+        }],
+        mode="payment",
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={
+            "type": "greenroom_tickets",
+            "user_id": user_id,
+            "cycle_id": str(request.cycle_id),
+            "ticket_count": str(request.ticket_count),
+            "ticket_id": str(ticket_id) if ticket_id else "",
+        },
+    )
 
     return TicketPurchaseResponse(
-        checkout_session_id="cs_test_placeholder",
-        checkout_url="https://checkout.stripe.com/placeholder",
+        checkout_session_id=session.id,
+        checkout_url=session.url,
         amount=amount,
         ticket_count=request.ticket_count
     )
