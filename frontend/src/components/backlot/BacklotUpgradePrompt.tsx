@@ -47,10 +47,10 @@ const BACKLOT_FEATURES = [
 
 const BACKLOT_TIERS = [
   { key: 'free', name: 'Free', price: '$0', tagline: 'Students & hobbyists', icon: Star, highlight: '1 project, 5 GB' },
-  { key: 'indie', name: 'Indie', price: '$69', tagline: 'Solo filmmakers', icon: Rocket, highlight: '5 projects, 150 GB' },
-  { key: 'pro', name: 'Pro', price: '$149', tagline: 'Small teams', icon: Zap, highlight: '15 projects, 1 TB', popular: true },
-  { key: 'business', name: 'Business', price: '$349', tagline: 'Production companies', icon: Building2, highlight: '50 projects, 5 TB' },
-  { key: 'enterprise', name: 'Enterprise', price: '$799', tagline: 'Studios & networks', icon: Crown, highlight: 'Unlimited projects' },
+  { key: 'indie', name: 'Indie', price: '$129', tagline: 'Solo filmmakers', icon: Rocket, highlight: '5 projects, 150 GB' },
+  { key: 'pro', name: 'Pro', price: '$299', tagline: 'Small teams', icon: Zap, highlight: '15 projects, 1 TB', popular: true },
+  { key: 'business', name: 'Business', price: '$599', tagline: 'Production companies', icon: Building2, highlight: '50 projects, 5 TB' },
+  { key: 'enterprise', name: 'Enterprise', price: '$1,299', tagline: 'Studios & networks', icon: Crown, highlight: 'Unlimited everything' },
 ];
 
 interface BacklotUpgradePromptProps {

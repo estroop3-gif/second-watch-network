@@ -17,7 +17,7 @@ const TIERS: Record<string, TierDef> = {
     bandwidth_gb: 10,
   },
   indie: {
-    base_price: 69,
+    base_price: 129,
     org_seats: { owner: 1, collaborative: 5 },
     active_projects: 5,
     project_seats: { non_collaborative: 5, view_only: 10 },
@@ -25,7 +25,7 @@ const TIERS: Record<string, TierDef> = {
     bandwidth_gb: 500,
   },
   pro: {
-    base_price: 149,
+    base_price: 299,
     org_seats: { owner: 2, collaborative: 15 },
     active_projects: 15,
     project_seats: { non_collaborative: 10, view_only: 15 },
@@ -33,20 +33,20 @@ const TIERS: Record<string, TierDef> = {
     bandwidth_gb: 3000,
   },
   business: {
-    base_price: 349,
-    org_seats: { owner: 3, collaborative: 50 },
+    base_price: 599,
+    org_seats: { owner: 3, collaborative: 25 },
     active_projects: 50,
     project_seats: { non_collaborative: 15, view_only: 50 },
     storage: { active_gb: 5120, archive_gb: 10240 },
     bandwidth_gb: 10000,
   },
   enterprise: {
-    base_price: 799,
-    org_seats: { owner: 10, collaborative: -1 },
+    base_price: 1299,
+    org_seats: { owner: -1, collaborative: -1 },
     active_projects: -1,
-    project_seats: { non_collaborative: 30, view_only: -1 },
-    storage: { active_gb: 25600, archive_gb: 51200 },
-    bandwidth_gb: 50000,
+    project_seats: { non_collaborative: -1, view_only: -1 },
+    storage: { active_gb: -1, archive_gb: -1 },
+    bandwidth_gb: -1,
   },
 };
 
