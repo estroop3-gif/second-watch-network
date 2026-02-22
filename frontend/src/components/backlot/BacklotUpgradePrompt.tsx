@@ -1,19 +1,20 @@
-import { useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { api } from '@/lib/api';
-import { toast } from 'sonner';
 import {
   Film,
   Users,
   FileText,
   Calendar,
   DollarSign,
-  CheckCircle,
-  Loader2,
   Lock,
+  Zap,
+  Star,
+  Rocket,
+  Building2,
+  Crown,
+  ArrowRight,
 } from 'lucide-react';
 
 const BACKLOT_FEATURES = [
@@ -44,25 +45,19 @@ const BACKLOT_FEATURES = [
   },
 ];
 
+const BACKLOT_TIERS = [
+  { key: 'free', name: 'Free', price: '$0', tagline: 'Students & hobbyists', icon: Star, highlight: '1 project, 5 GB' },
+  { key: 'indie', name: 'Indie', price: '$69', tagline: 'Solo filmmakers', icon: Rocket, highlight: '5 projects, 150 GB' },
+  { key: 'pro', name: 'Pro', price: '$149', tagline: 'Small teams', icon: Zap, highlight: '15 projects, 1 TB', popular: true },
+  { key: 'business', name: 'Business', price: '$349', tagline: 'Production companies', icon: Building2, highlight: '50 projects, 5 TB' },
+  { key: 'enterprise', name: 'Enterprise', price: '$799', tagline: 'Studios & networks', icon: Crown, highlight: 'Unlimited projects' },
+];
+
 interface BacklotUpgradePromptProps {
   className?: string;
 }
 
 const BacklotUpgradePrompt = ({ className }: BacklotUpgradePromptProps) => {
-  const [selectedPlan, setSelectedPlan] = useState<'monthly' | 'yearly'>('monthly');
-
-  const checkoutMutation = useMutation({
-    mutationFn: () => api.createCheckoutSession(selectedPlan, 'backlot', 'backlot_upgrade', '/backlot'),
-    onSuccess: (data) => {
-      if (data.url) {
-        window.location.href = data.url;
-      }
-    },
-    onError: (error: Error) => {
-      toast.error(error.message || 'Failed to start checkout');
-    },
-  });
-
   return (
     <div className={`min-h-[80vh] flex items-center justify-center p-6 ${className}`}>
       <div className="max-w-4xl w-full">
@@ -70,11 +65,11 @@ const BacklotUpgradePrompt = ({ className }: BacklotUpgradePromptProps) => {
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-2 mb-4">
             <Lock className="h-8 w-8 text-accent-yellow" />
-            <h1 className="text-4xl font-heading text-bone-white">Backlot Pro</h1>
+            <h1 className="text-4xl font-heading text-bone-white">Backlot Production Tools</h1>
           </div>
           <p className="text-lg text-muted-gray max-w-2xl mx-auto">
-            Unlock the full power of production management. Get access to all Backlot tools
-            and features to run your film productions professionally.
+            Professional production management for every stage of your filmmaking journey.
+            Start free and scale as you grow.
           </p>
         </div>
 
@@ -97,93 +92,57 @@ const BacklotUpgradePrompt = ({ className }: BacklotUpgradePromptProps) => {
           ))}
         </div>
 
-        {/* Pricing Cards */}
-        <div className="grid md:grid-cols-2 gap-6 max-w-2xl mx-auto mb-8">
-          {/* Monthly Plan */}
-          <Card
-            className={`cursor-pointer transition-all ${
-              selectedPlan === 'monthly'
-                ? 'border-accent-yellow ring-2 ring-accent-yellow/20'
-                : 'border-muted-gray/30 hover:border-muted-gray/50'
-            }`}
-            onClick={() => setSelectedPlan('monthly')}
-          >
-            <CardHeader className="pb-2">
-              <CardTitle className="flex items-center justify-between">
-                <span>Monthly</span>
-                {selectedPlan === 'monthly' && (
-                  <CheckCircle className="h-5 w-5 text-accent-yellow" />
-                )}
-              </CardTitle>
-              <CardDescription>Pay as you go</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-baseline gap-1">
-                <span className="text-3xl font-bold text-bone-white">$14.99</span>
-                <span className="text-muted-gray">/month</span>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Yearly Plan */}
-          <Card
-            className={`cursor-pointer transition-all relative ${
-              selectedPlan === 'yearly'
-                ? 'border-accent-yellow ring-2 ring-accent-yellow/20'
-                : 'border-muted-gray/30 hover:border-muted-gray/50'
-            }`}
-            onClick={() => setSelectedPlan('yearly')}
-          >
-            <Badge
-              className="absolute -top-3 left-1/2 -translate-x-1/2 bg-green-500 text-white"
+        {/* Tier Overview */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-8">
+          {BACKLOT_TIERS.map((tier) => (
+            <div
+              key={tier.key}
+              className={`relative rounded-lg border p-4 text-center ${
+                tier.popular
+                  ? 'border-accent-yellow bg-accent-yellow/5'
+                  : 'border-muted-gray/30 bg-charcoal-black/50'
+              }`}
             >
-              Save 17%
-            </Badge>
-            <CardHeader className="pb-2">
-              <CardTitle className="flex items-center justify-between">
-                <span>Yearly</span>
-                {selectedPlan === 'yearly' && (
-                  <CheckCircle className="h-5 w-5 text-accent-yellow" />
-                )}
-              </CardTitle>
-              <CardDescription>Best value</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-baseline gap-1">
-                <span className="text-3xl font-bold text-bone-white">$149.99</span>
-                <span className="text-muted-gray">/year</span>
-              </div>
-              <p className="text-xs text-muted-gray mt-1">
-                That's $12.50/month
-              </p>
-            </CardContent>
-          </Card>
+              {tier.popular && (
+                <Badge className="absolute -top-2.5 left-1/2 -translate-x-1/2 bg-accent-yellow text-charcoal-black text-[10px]">
+                  Popular
+                </Badge>
+              )}
+              <tier.icon className={`h-5 w-5 mx-auto mb-2 ${tier.popular ? 'text-accent-yellow' : 'text-muted-gray'}`} />
+              <div className="text-sm font-semibold text-bone-white">{tier.name}</div>
+              <div className="text-lg font-bold text-accent-yellow">{tier.price}<span className="text-xs text-muted-gray font-normal">/mo</span></div>
+              <div className="text-xs text-muted-gray mt-1">{tier.highlight}</div>
+            </div>
+          ))}
         </div>
 
-        {/* CTA */}
-        <div className="text-center">
+        {/* CTAs */}
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
           <Button
+            asChild
             size="lg"
             className="bg-accent-yellow text-charcoal-black hover:bg-yellow-500 px-8"
-            onClick={() => checkoutMutation.mutate()}
-            disabled={checkoutMutation.isPending}
           >
-            {checkoutMutation.isPending ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Processing...
-              </>
-            ) : (
-              <>
-                <Lock className="h-4 w-4 mr-2" />
-                Unlock Backlot Pro
-              </>
-            )}
+            <Link to="/backlot/free-trial">
+              <Star className="h-4 w-4 mr-2" />
+              Start Free
+            </Link>
           </Button>
-          <p className="text-sm text-muted-gray mt-4">
-            Cancel anytime. No questions asked.
-          </p>
+          <Button
+            asChild
+            size="lg"
+            variant="outline"
+            className="border-muted-gray/50 text-bone-white hover:bg-muted-gray/20 px-8"
+          >
+            <Link to="/pricing">
+              View All Plans
+              <ArrowRight className="h-4 w-4 ml-2" />
+            </Link>
+          </Button>
         </div>
+        <p className="text-sm text-muted-gray mt-4 text-center">
+          No credit card required for the free plan.
+        </p>
       </div>
     </div>
   );

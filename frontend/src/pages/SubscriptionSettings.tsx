@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { usePermissions } from "@/hooks/usePermissions";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { CreditCard, Calendar, RefreshCw, XCircle, CheckCircle } from "lucide-react";
+import { CreditCard, Calendar, RefreshCw, XCircle, CheckCircle, Building2, Film, ArrowRight } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { SubscriptionActivityLog } from "@/components/subscriptions/SubscriptionActivityLog";
 import { api, safeStorage } from "@/lib/api";
 import { track } from "@/utils/telemetry";
+import { useMyBacklotOrganizations } from "@/hooks/useOrganizations";
 
 const SubscriptionSettingsPage = () => {
   const { hasRole } = usePermissions();
@@ -20,6 +21,7 @@ const SubscriptionSettingsPage = () => {
   const [modalContent, setModalContent] = useState({ title: '', description: '', onConfirm: () => {} });
   const location = useLocation();
   const navigate = useNavigate();
+  const { data: backlotOrgs, isLoading: backlotOrgsLoading } = useMyBacklotOrganizations();
 
   useEffect(() => {
     try { track("billing_open"); } catch {}
@@ -54,8 +56,6 @@ const SubscriptionSettingsPage = () => {
   // Placeholder data - will be replaced with real data
   const isPremium = hasRole('premium');
   const currentPlan = isPremium ? 'Premium' : 'Free';
-  const nextBillingDate = isPremium ? 'July 30, 2024' : 'N/A';
-  const paymentMethod = isPremium ? 'Visa ending in 4242' : 'N/A';
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>(isPremium ? 'monthly' : 'monthly');
 
   const handleCancelSubscription = () => {
@@ -112,8 +112,8 @@ const SubscriptionSettingsPage = () => {
           {/* Current Plan Card */}
           <Card className="bg-muted-gray/20 border-muted-gray">
             <CardHeader>
-              <CardTitle>Current Plan</CardTitle>
-              <CardDescription>This is your active subscription plan.</CardDescription>
+              <CardTitle>SWN Watch Membership</CardTitle>
+              <CardDescription>Your platform viewing subscription.</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="flex items-center justify-between">
@@ -143,20 +143,25 @@ const SubscriptionSettingsPage = () => {
                     <CreditCard className="h-5 w-5" />
                     <span>Payment Method</span>
                   </div>
-                  <span className="text-white">{paymentMethod}</span>
+                  <Button variant="link" className="text-accent-yellow p-0 h-auto" onClick={openBillingPortal}>
+                    Manage in Stripe
+                  </Button>
                 </div>
                 <Separator className="bg-muted-gray" />
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3 text-muted-foreground">
                     <Calendar className="h-5 w-5" />
-                    <span>Next Billing Date</span>
+                    <span>Billing History</span>
                   </div>
-                  <span className="text-white">{nextBillingDate}</span>
+                  <Button variant="link" className="text-accent-yellow p-0 h-auto" onClick={openBillingPortal}>
+                    View Invoices
+                  </Button>
                 </div>
               </CardContent>
-              <CardFooter className="flex justify-between">
-                <Button variant="outline" onClick={openBillingPortal}>Update Payment Method</Button>
-                <Button variant="ghost" onClick={openBillingPortal}>Billing History</Button>
+              <CardFooter>
+                <Button variant="outline" onClick={openBillingPortal}>
+                  Open Billing Portal
+                </Button>
               </CardFooter>
             </Card>
           )}
@@ -219,6 +224,74 @@ const SubscriptionSettingsPage = () => {
               </CardFooter>
             </Card>
           )}
+
+          {/* Backlot Production Subscriptions */}
+          <Card className="bg-muted-gray/20 border-muted-gray">
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Film className="h-5 w-5 text-accent-yellow" />
+                <CardTitle>Backlot Production Plans</CardTitle>
+              </div>
+              <CardDescription>Your production management subscriptions.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {backlotOrgsLoading ? (
+                <div className="text-sm text-muted-foreground py-4 text-center">Loading organizations...</div>
+              ) : backlotOrgs && backlotOrgs.length > 0 ? (
+                <div className="space-y-3">
+                  {backlotOrgs.map((org) => (
+                    <div
+                      key={org.id}
+                      className="flex items-center justify-between p-3 rounded-lg border border-muted-gray/30 bg-charcoal-black/30"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 rounded-lg bg-accent-yellow/10">
+                          <Building2 className="h-4 w-4 text-accent-yellow" />
+                        </div>
+                        <div>
+                          <div className="text-sm font-medium text-bone-white">{org.name}</div>
+                          <div className="text-xs text-muted-gray">
+                            {org.backlot_billing_status === 'active' || org.backlot_billing_status === 'trialing'
+                              ? 'Active'
+                              : org.backlot_billing_status === 'free'
+                              ? 'Free Plan'
+                              : org.backlot_billing_status?.charAt(0).toUpperCase() + org.backlot_billing_status?.slice(1)}
+                            {' '}&middot;{' '}
+                            {org.role?.charAt(0).toUpperCase() + org.role?.slice(1)}
+                            {' '}&middot;{' '}
+                            {org.seats_used}/{org.backlot_seat_limit === -1 ? '∞' : org.backlot_seat_limit} seats
+                            {' '}&middot;{' '}
+                            {org.projects_count} project{org.projects_count !== 1 ? 's' : ''}
+                          </div>
+                        </div>
+                      </div>
+                      <Button asChild variant="outline" size="sm">
+                        <Link to={`/organizations?org=${org.id}&tab=billing`}>
+                          Manage
+                          <ArrowRight className="h-3 w-3 ml-1" />
+                        </Link>
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-6">
+                  <Film className="h-10 w-10 text-muted-gray/50 mx-auto mb-3" />
+                  <p className="text-sm text-muted-foreground mb-4">
+                    You don't have any Backlot organizations yet. Start with a free trial to explore production tools.
+                  </p>
+                  <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+                    <Button asChild className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90">
+                      <Link to="/backlot/free-trial">Start Free Trial</Link>
+                    </Button>
+                    <Button asChild variant="outline">
+                      <Link to="/pricing">View Plans</Link>
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Subscription Activity Log */}
           <SubscriptionActivityLog />

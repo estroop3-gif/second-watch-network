@@ -19,6 +19,68 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { track } from '@/utils/telemetry';
+import { Card, CardContent } from '@/components/ui/card';
+import { CheckCircle, Star, Rocket, Zap, Building2, Crown, ArrowRight, Film } from 'lucide-react';
+
+const BACKLOT_TIERS = [
+  {
+    key: 'free',
+    name: 'Free',
+    price: '$0',
+    period: '/mo',
+    tagline: 'For students & hobbyists',
+    icon: Star,
+    highlights: ['1 active project', '1 owner seat', '5 GB storage'],
+    cta: 'Start Free',
+    ctaLink: '/backlot/free-trial',
+    ctaPrimary: true,
+  },
+  {
+    key: 'indie',
+    name: 'Indie',
+    price: '$69',
+    period: '/mo',
+    tagline: 'For solo filmmakers',
+    icon: Rocket,
+    highlights: ['5 active projects', '6 seats', '150 GB storage'],
+    cta: 'View Plan',
+    ctaLink: '/pricing',
+  },
+  {
+    key: 'pro',
+    name: 'Pro',
+    price: '$149',
+    period: '/mo',
+    tagline: 'For small teams',
+    icon: Zap,
+    highlights: ['15 active projects', '17 seats', '1 TB storage'],
+    popular: true,
+    cta: 'View Plan',
+    ctaLink: '/pricing',
+  },
+  {
+    key: 'business',
+    name: 'Business',
+    price: '$349',
+    period: '/mo',
+    tagline: 'For production companies',
+    icon: Building2,
+    highlights: ['50 active projects', '53 seats', '5 TB storage'],
+    cta: 'View Plan',
+    ctaLink: '/pricing',
+  },
+  {
+    key: 'enterprise',
+    name: 'Enterprise',
+    price: '$799',
+    period: '/mo',
+    tagline: 'For studios & networks',
+    icon: Crown,
+    highlights: ['Unlimited projects', 'Unlimited seats', '25 TB storage'],
+    cta: 'View Plan',
+    ctaLink: '/pricing',
+  },
+];
 
 const SubscriptionsAndRolesPage = () => {
   const { session } = useAuth();
@@ -238,6 +300,82 @@ const SubscriptionsAndRolesPage = () => {
           <CarouselPrevious className="absolute left-0 top-1/2 -translate-y-1/2 bg-muted-gray/50 hover:bg-muted-gray/80 border-muted-gray text-white" />
           <CarouselNext className="absolute right-0 top-1/2 -translate-y-1/2 bg-muted-gray/50 hover:bg-muted-gray/80 border-muted-gray text-white" />
         </Carousel>
+      </div>
+
+      {/* Backlot Production Plans */}
+      <div className="mt-16 max-w-6xl mx-auto">
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center gap-2 mb-2">
+            <Film className="h-6 w-6 text-accent-yellow" />
+            <h2 className="text-3xl font-bold text-white">Backlot Production Plans</h2>
+          </div>
+          <p className="text-muted-foreground max-w-2xl mx-auto">
+            Professional production management tools. Start free and scale as your productions grow.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          {BACKLOT_TIERS.map((tier) => (
+            <Card
+              key={tier.key}
+              className={`relative flex flex-col ${
+                tier.popular
+                  ? 'border-accent-yellow bg-accent-yellow/5'
+                  : 'bg-muted-gray/20 border-muted-gray'
+              }`}
+            >
+              {tier.popular && (
+                <Badge className="absolute -top-2.5 left-1/2 -translate-x-1/2 bg-accent-yellow text-charcoal-black text-[10px]">
+                  Popular
+                </Badge>
+              )}
+              <CardContent className="p-4 flex flex-col flex-grow">
+                <div className="text-center mb-3">
+                  <tier.icon className={`h-6 w-6 mx-auto mb-2 ${tier.popular ? 'text-accent-yellow' : 'text-muted-gray'}`} />
+                  <div className="text-lg font-bold text-bone-white">{tier.name}</div>
+                  <div className="text-2xl font-bold text-accent-yellow">
+                    {tier.price}
+                    <span className="text-xs text-muted-gray font-normal">{tier.period}</span>
+                  </div>
+                  <div className="text-xs text-muted-gray mt-1">{tier.tagline}</div>
+                </div>
+                <ul className="space-y-1.5 mb-4 flex-grow">
+                  {tier.highlights.map((h, i) => (
+                    <li key={i} className="flex items-start gap-1.5 text-xs text-bone-white">
+                      <CheckCircle className="h-3.5 w-3.5 text-accent-yellow mt-0.5 flex-shrink-0" />
+                      <span>{h}</span>
+                    </li>
+                  ))}
+                </ul>
+                <Button
+                  asChild
+                  size="sm"
+                  className={`w-full ${
+                    tier.ctaPrimary
+                      ? 'bg-accent-yellow text-charcoal-black hover:bg-yellow-500'
+                      : tier.popular
+                      ? 'bg-accent-yellow text-charcoal-black hover:bg-yellow-500'
+                      : 'bg-muted-gray/30 text-bone-white hover:bg-muted-gray/50'
+                  }`}
+                >
+                  <Link to={tier.ctaLink}>
+                    {tier.cta}
+                    {!tier.ctaPrimary && <ArrowRight className="h-3 w-3 ml-1" />}
+                  </Link>
+                </Button>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+
+        <div className="text-center mt-6">
+          <Button asChild variant="outline" className="border-muted-gray/50 text-bone-white hover:bg-muted-gray/20">
+            <Link to="/pricing">
+              Compare All Plans & Features
+              <ArrowRight className="h-4 w-4 ml-2" />
+            </Link>
+          </Button>
+        </div>
       </div>
 
       {isLoggedIn && (
