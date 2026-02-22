@@ -146,13 +146,13 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
         <Clapperboard className="mr-3 h-5 w-5" />
         <span>Green Room</span>
       </MenuItem>
-      <MenuItem to="/media/requests" onClick={onLinkClick}>
-        <Megaphone className="mr-3 h-5 w-5" />
-        <span>Media Hub</span>
-      </MenuItem>
       <MenuItem to="/order" onClick={onLinkClick}>
         <Crown className="mr-3 h-5 w-5" />
         <span>The Order</span>
+      </MenuItem>
+      <MenuItem to="/media/requests" onClick={onLinkClick}>
+        <Megaphone className="mr-3 h-5 w-5" />
+        <span>Media Hub</span>
       </MenuItem>
       {canSubmitAndManageSubmissions && (
         <MenuItem to="/submit-project" onClick={onLinkClick}>

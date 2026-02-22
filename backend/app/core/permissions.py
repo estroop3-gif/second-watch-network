@@ -508,14 +508,6 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         Permission.MEDIA_VIEW,
         Permission.MEDIA_CREATE,
     },
-        Permission.USER_VIEW,
-        Permission.USER_EDIT,
-        Permission.CONTENT_VIEW,
-        Permission.WORLD_VIEW,
-        Permission.GREENROOM_VIEW,
-        Permission.FORUM_VIEW,
-        Permission.EVENT_VIEW,
-    },
 }
 
 
