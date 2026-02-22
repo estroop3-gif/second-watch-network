@@ -11,6 +11,7 @@ export type Role =
   | 'sales_agent'
   | 'sales_admin'
   | 'sales_rep'
+  | 'media_team'
   // legacy/compat
   | 'filmmaker';
 
@@ -47,7 +48,7 @@ export type PermKey =
 type PermToRoles = Record<PermKey, Role[]>;
 
 // All roles for convenience
-const ALL_ROLES: Role[] = ['free', 'premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator', 'order_member', 'lodge_officer', 'filmmaker', 'sales_agent', 'sales_admin', 'sales_rep'];
+const ALL_ROLES: Role[] = ['free', 'premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator', 'order_member', 'lodge_officer', 'filmmaker', 'sales_agent', 'sales_admin', 'sales_rep', 'media_team'];
 const STAFF_ROLES: Role[] = ['admin', 'superadmin', 'moderator'];
 const ADMIN_ROLES: Role[] = ['admin', 'superadmin'];
 

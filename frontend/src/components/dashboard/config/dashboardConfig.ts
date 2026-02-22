@@ -7,6 +7,7 @@ import type { RoleType } from '@/lib/badges/userBadges';
 
 // All possible dashboard section identifiers
 export type DashboardSectionId =
+  | 'media-overview'
   | 'hero'
   | 'for-you'
   | 'continue-watching'
@@ -40,7 +41,7 @@ export type DashboardSectionId =
   | 'admin-pending';
 
 // Section categories for grouping
-export type SectionCategory = 'streaming' | 'creator' | 'community' | 'order' | 'crm' | 'admin';
+export type SectionCategory = 'streaming' | 'creator' | 'community' | 'order' | 'crm' | 'media' | 'admin';
 
 // Configuration for each dashboard section
 export interface DashboardSectionConfig {
@@ -67,12 +68,12 @@ export interface QuickAction {
 // Role groups for easier configuration
 const ALL_ROLES: RoleType[] = [
   'superadmin', 'admin', 'moderator', 'sales_admin', 'lodge_officer',
-  'order_member', 'sales_agent', 'sales_rep', 'partner', 'filmmaker', 'premium', 'free'
+  'order_member', 'sales_agent', 'sales_rep', 'media_team', 'partner', 'filmmaker', 'premium', 'free'
 ];
 
 const AUTHENTICATED_ROLES: RoleType[] = [
   'superadmin', 'admin', 'moderator', 'sales_admin', 'lodge_officer',
-  'order_member', 'sales_agent', 'sales_rep', 'partner', 'filmmaker', 'premium'
+  'order_member', 'sales_agent', 'sales_rep', 'media_team', 'partner', 'filmmaker', 'premium'
 ];
 
 const CRM_ROLES: RoleType[] = ['superadmin', 'admin', 'sales_admin', 'sales_agent', 'sales_rep'];
@@ -80,6 +81,8 @@ const CRM_ROLES: RoleType[] = ['superadmin', 'admin', 'sales_admin', 'sales_agen
 const STAFF_ROLES: RoleType[] = ['superadmin', 'admin', 'moderator'];
 
 const ORDER_ROLES: RoleType[] = ['superadmin', 'admin', 'moderator', 'lodge_officer', 'order_member', 'sales_rep'];
+
+const MEDIA_ROLES: RoleType[] = ['superadmin', 'admin', 'media_team'];
 
 const CREATOR_ROLES: RoleType[] = ['superadmin', 'admin', 'moderator', 'filmmaker', 'partner', 'sales_rep'];
 
@@ -394,6 +397,18 @@ export const DASHBOARD_SECTIONS: DashboardSectionConfig[] = [
     description: "Today's interaction counts and upcoming follow-ups",
   },
 
+  // MEDIA SECTION (media team)
+  {
+    id: 'media-overview',
+    title: 'Media Hub',
+    priority: 9,
+    requiresAuth: true,
+    requiresData: false,
+    roles: MEDIA_ROLES,
+    category: 'media',
+    description: 'Pending content requests and upcoming scheduled posts',
+  },
+
   // ADMIN SECTIONS (widgets only, full admin at /admin)
   {
     id: 'admin-stats',
@@ -519,6 +534,16 @@ export const QUICK_ACTIONS: QuickAction[] = [
     variant: 'outline',
   },
 
+  // Media team
+  {
+    id: 'media-hub',
+    label: 'Media Hub',
+    icon: 'Video',
+    href: '/media',
+    roles: MEDIA_ROLES,
+    variant: 'outline',
+  },
+
   // Staff
   {
     id: 'admin-panel',
@@ -568,10 +593,11 @@ export function getHighestRole(roles: RoleType[]): RoleType {
     order_member: 6,
     sales_agent: 7,
     sales_rep: 8,
-    partner: 9,
-    filmmaker: 10,
-    premium: 11,
-    free: 12,
+    media_team: 9,
+    partner: 10,
+    filmmaker: 11,
+    premium: 12,
+    free: 13,
   };
 
   return roles.reduce((highest, current) => {

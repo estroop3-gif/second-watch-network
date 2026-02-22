@@ -28,6 +28,7 @@ export const usePermissions = () => {
     if (enrichedProfile.isSalesAdmin) userRolesSet.add('sales_admin');
     if (enrichedProfile.isSalesAgent) userRolesSet.add('sales_agent');
     if (enrichedProfile.isSalesRep) userRolesSet.add('sales_rep');
+    if (enrichedProfile.isMediaTeam) userRolesSet.add('media_team');
   }
 
   const roles = Array.from(userRolesSet);

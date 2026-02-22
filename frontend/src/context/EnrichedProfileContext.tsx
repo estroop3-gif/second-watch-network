@@ -47,6 +47,7 @@ interface EnrichedProfileContextValue {
   isSalesAdmin: boolean;
   isSalesAgent: boolean;
   isSalesRep: boolean;
+  isMediaTeam: boolean;
 
   // Profile existence checks
   hasFilmmakerProfile: boolean;
@@ -66,7 +67,7 @@ const EnrichedProfileContext = createContext<EnrichedProfileContextValue | null>
 const ROLE_CACHE_FIELDS = [
   'is_superadmin', 'is_admin', 'is_moderator', 'is_filmmaker', 'is_partner',
   'is_premium', 'is_order_member', 'is_lodge_officer', 'is_sales_admin',
-  'is_sales_agent', 'is_sales_rep',
+  'is_sales_agent', 'is_sales_rep', 'is_media_team',
 ] as const;
 
 function getCachedRoles(userId: string | undefined): Record<string, boolean> | null {
@@ -175,6 +176,7 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
       is_sales_admin: base.is_sales_admin || authRoles.has('sales_admin') || !!cache.is_sales_admin,
       is_sales_agent: base.is_sales_agent || authRoles.has('sales_agent') || !!cache.is_sales_agent,
       is_sales_rep: base.is_sales_rep || authRoles.has('sales_rep') || !!cache.is_sales_rep,
+      is_media_team: base.is_media_team || authRoles.has('media_team') || !!cache.is_media_team,
     };
   }, [baseProfile, user, authRoles, hasFilmmakerProfile, hasPartnerProfile, orderData, cachedRoles]);
 
@@ -205,6 +207,7 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
   const isLodgeOfficer = hasRole(enrichedProfile, 'lodge_officer');
   const isSalesAgent = hasRole(enrichedProfile, 'sales_agent');
   const isSalesRep = hasRole(enrichedProfile, 'sales_rep');
+  const isMediaTeam = hasRole(enrichedProfile, 'media_team');
 
   // Only block on profile loading - the enrichment queries (filmmaker, order) can
   // complete in the background. We have enough data from base profile to render.
@@ -230,6 +233,7 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
     isLodgeOfficer,
     isSalesAgent,
     isSalesRep,
+    isMediaTeam,
     hasFilmmakerProfile: hasFilmmakerProfile || false,
     hasPartnerProfile: hasPartnerProfile || false,
     hasOrderProfile: orderData?.hasProfile || false,
@@ -273,6 +277,7 @@ export function useEnrichedProfileSafe() {
       isLodgeOfficer: false,
       isSalesAgent: false,
       isSalesRep: false,
+      isMediaTeam: false,
       hasFilmmakerProfile: false,
       hasPartnerProfile: false,
       hasOrderProfile: false,

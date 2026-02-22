@@ -73,6 +73,7 @@ from app.api.set_house import router as set_house_router  # Set House - Space/lo
 from app.api import org_messages  # Organization messaging
 from app.api import organization_backlot  # Organization Backlot seat management
 from app.api import crm, crm_admin  # CRM - Sales & Customer Relationship Management
+from app.api import media_hub  # Media/Marketing Hub
 
 # Configure structured logging
 setup_logging(level="INFO")
@@ -403,6 +404,7 @@ app.include_router(org_messages.router, prefix=settings.API_V1_PREFIX, tags=["Or
 # CRM - Sales & Customer Relationship Management
 app.include_router(crm.router, prefix=f"{settings.API_V1_PREFIX}/crm", tags=["CRM"])
 app.include_router(crm_admin.router, prefix=f"{settings.API_V1_PREFIX}/admin/crm", tags=["CRM Admin"])
+app.include_router(media_hub.router, prefix=f"{settings.API_V1_PREFIX}/media-hub", tags=["Media Hub"])
 
 # Mount Socket.IO for real-time communications
 try:

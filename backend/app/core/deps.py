@@ -266,6 +266,21 @@ async def require_sales_rep(profile: Dict[str, Any] = Depends(get_user_profile))
     return profile
 
 
+async def require_media_team(profile: Dict[str, Any] = Depends(get_user_profile)) -> Dict[str, Any]:
+    """
+    Require media team, admin, or superadmin role for media hub management.
+
+    Raises:
+        HTTPException: If user is not a media team member or higher
+    """
+    if not has_any_role(profile, [RoleType.MEDIA_TEAM, RoleType.ADMIN, RoleType.SUPERADMIN]):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Media team access required"
+        )
+    return profile
+
+
 async def require_partner(profile: Dict[str, Any] = Depends(get_user_profile)) -> Dict[str, Any]:
     """
     Require partner role for access.

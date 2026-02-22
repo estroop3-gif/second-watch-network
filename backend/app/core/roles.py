@@ -33,6 +33,7 @@ class RoleType(str, Enum):
     ORDER_MEMBER = "order_member"
     SALES_AGENT = "sales_agent"
     SALES_REP = "sales_rep"
+    MEDIA_TEAM = "media_team"
     PARTNER = "partner"
     FILMMAKER = "filmmaker"
     PREMIUM = "premium"
@@ -49,6 +50,7 @@ ROLE_HIERARCHY: List[RoleType] = [
     RoleType.ORDER_MEMBER,
     RoleType.SALES_AGENT,
     RoleType.SALES_REP,
+    RoleType.MEDIA_TEAM,
     RoleType.PARTNER,
     RoleType.FILMMAKER,
     RoleType.PREMIUM,
@@ -67,6 +69,7 @@ PROFILE_ROLE_FIELDS = {
     "is_order_member": RoleType.ORDER_MEMBER,
     "is_sales_agent": RoleType.SALES_AGENT,
     "is_sales_rep": RoleType.SALES_REP,
+    "is_media_team": RoleType.MEDIA_TEAM,
     "is_partner": RoleType.PARTNER,
     "is_filmmaker": RoleType.FILMMAKER,
     "is_premium": RoleType.PREMIUM,

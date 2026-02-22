@@ -6141,6 +6141,277 @@ class APIClient {
   async bulkApproveBacklotTrials(ids: string[]) {
     return this.post<{ success: boolean; approved: number }>('/api/v1/crm/backlot-trials/bulk-approve', { ids })
   }
+
+  // =========================================================================
+  // Media Hub — Content Requests
+  // =========================================================================
+
+  async createMediaRequest(data: any) {
+    return this.post<{ request: any }>('/api/v1/media-hub/requests', data)
+  }
+
+  async getMediaRequests(params?: { status?: string; content_type?: string; priority?: string; assigned_to?: string; scope?: string; search?: string; limit?: number; offset?: number }) {
+    const sp = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') sp.set(k, String(v))
+      })
+    }
+    const qs = sp.toString()
+    return this.get<{ requests: any[]; total: number }>(`/api/v1/media-hub/requests${qs ? `?${qs}` : ''}`)
+  }
+
+  async getMediaRequest(id: string) {
+    return this.get<{ request: any }>(`/api/v1/media-hub/requests/${id}`)
+  }
+
+  async updateMediaRequest(id: string, data: any) {
+    return this.put<{ request: any }>(`/api/v1/media-hub/requests/${id}`, data)
+  }
+
+  async deleteMediaRequest(id: string) {
+    return this.delete<{ success: boolean }>(`/api/v1/media-hub/requests/${id}`)
+  }
+
+  async updateMediaRequestStatus(id: string, data: { status: string; notes?: string }) {
+    return this.put<{ request: any }>(`/api/v1/media-hub/requests/${id}/status`, data)
+  }
+
+  async assignMediaRequest(id: string, data: { assigned_to: string | null }) {
+    return this.put<{ request: any }>(`/api/v1/media-hub/requests/${id}/assign`, data)
+  }
+
+  async getMediaRequestComments(id: string) {
+    return this.get<{ comments: any[] }>(`/api/v1/media-hub/requests/${id}/comments`)
+  }
+
+  async createMediaRequestComment(id: string, data: { body: string; is_internal?: boolean }) {
+    return this.post<{ comment: any }>(`/api/v1/media-hub/requests/${id}/comments`, data)
+  }
+
+  async getMediaRequestHistory(id: string) {
+    return this.get<{ history: any[] }>(`/api/v1/media-hub/requests/${id}/history`)
+  }
+
+  // =========================================================================
+  // Media Hub — Calendar
+  // =========================================================================
+
+  async getMediaCalendar(params?: { start?: string; end?: string; platform_id?: string; status?: string }) {
+    const sp = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') sp.set(k, String(v))
+      })
+    }
+    const qs = sp.toString()
+    return this.get<{ entries: any[]; scheduled_requests: any[] }>(`/api/v1/media-hub/calendar${qs ? `?${qs}` : ''}`)
+  }
+
+  async createMediaCalendarEntry(data: any) {
+    return this.post<{ entry: any }>('/api/v1/media-hub/calendar', data)
+  }
+
+  async updateMediaCalendarEntry(id: string, data: any) {
+    return this.put<{ entry: any }>(`/api/v1/media-hub/calendar/${id}`, data)
+  }
+
+  async deleteMediaCalendarEntry(id: string) {
+    return this.delete<{ success: boolean }>(`/api/v1/media-hub/calendar/${id}`)
+  }
+
+  // =========================================================================
+  // Media Hub — Dashboard
+  // =========================================================================
+
+  async getMediaDashboard() {
+    return this.get<{ status_counts: Record<string, number>; pending_requests: any[]; upcoming_posts: any[]; my_assigned: any[]; totals: any }>('/api/v1/media-hub/dashboard')
+  }
+
+  async getMediaAnalytics(params?: { date_from?: string; date_to?: string }) {
+    const sp = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') sp.set(k, String(v))
+      })
+    }
+    const qs = sp.toString()
+    return this.get<any>(`/api/v1/media-hub/analytics${qs ? `?${qs}` : ''}`)
+  }
+
+  // =========================================================================
+  // Media Hub — Platforms
+  // =========================================================================
+
+  async getMediaPlatforms(includeInactive = false) {
+    return this.get<{ platforms: any[] }>(`/api/v1/media-hub/platforms${includeInactive ? '?include_inactive=true' : ''}`)
+  }
+
+  async createMediaPlatform(data: any) {
+    return this.post<{ platform: any }>('/api/v1/media-hub/platforms', data)
+  }
+
+  async updateMediaPlatform(id: string, data: any) {
+    return this.put<{ platform: any }>(`/api/v1/media-hub/platforms/${id}`, data)
+  }
+
+  async deleteMediaPlatform(id: string) {
+    return this.delete<{ success: boolean }>(`/api/v1/media-hub/platforms/${id}`)
+  }
+
+  async reorderMediaPlatforms(platformIds: string[]) {
+    return this.put<{ platforms: any[] }>('/api/v1/media-hub/platforms/reorder', { platform_ids: platformIds })
+  }
+
+  // =========================================================================
+  // Media Hub — Events
+  // =========================================================================
+
+  async createMediaEvent(data: any) {
+    return this.post<{ event: any }>('/api/v1/media-hub/events', data)
+  }
+
+  async getMediaEvents(params?: { event_type?: string; status?: string; start?: string; end?: string; search?: string; limit?: number; offset?: number }) {
+    const sp = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') sp.set(k, String(v))
+      })
+    }
+    const qs = sp.toString()
+    return this.get<{ events: any[]; total: number }>(`/api/v1/media-hub/events${qs ? `?${qs}` : ''}`)
+  }
+
+  async getMediaEvent(id: string) {
+    return this.get<{ event: any }>(`/api/v1/media-hub/events/${id}`)
+  }
+
+  async updateMediaEvent(id: string, data: any) {
+    return this.put<{ event: any }>(`/api/v1/media-hub/events/${id}`, data)
+  }
+
+  async deleteMediaEvent(id: string) {
+    return this.delete<{ success: boolean }>(`/api/v1/media-hub/events/${id}`)
+  }
+
+  async updateMediaEventStatus(id: string, data: { status: string }) {
+    return this.put<{ event: any }>(`/api/v1/media-hub/events/${id}/status`, data)
+  }
+
+  async addMediaEventAttendee(eventId: string, data: { profile_id: string; rsvp_status?: string; role?: string; notes?: string }) {
+    return this.post<{ attendee: any }>(`/api/v1/media-hub/events/${eventId}/attendees`, data)
+  }
+
+  async updateMediaEventAttendee(eventId: string, profileId: string, data: { rsvp_status?: string; role?: string; notes?: string }) {
+    return this.put<{ attendee: any }>(`/api/v1/media-hub/events/${eventId}/attendees/${profileId}`, data)
+  }
+
+  async removeMediaEventAttendee(eventId: string, profileId: string) {
+    return this.delete<{ success: boolean }>(`/api/v1/media-hub/events/${eventId}/attendees/${profileId}`)
+  }
+
+  async rsvpMediaEvent(eventId: string, data: { rsvp_status: string }) {
+    return this.put<{ success: boolean; rsvp_status: string }>(`/api/v1/media-hub/events/${eventId}/rsvp`, data)
+  }
+
+  async addMediaEventChecklistItem(eventId: string, data: { label: string; assigned_to?: string; sort_order?: number }) {
+    return this.post<{ item: any }>(`/api/v1/media-hub/events/${eventId}/checklist`, data)
+  }
+
+  async updateMediaEventChecklistItem(eventId: string, itemId: string, data: any) {
+    return this.put<{ item: any }>(`/api/v1/media-hub/events/${eventId}/checklist/${itemId}`, data)
+  }
+
+  async deleteMediaEventChecklistItem(eventId: string, itemId: string) {
+    return this.delete<{ success: boolean }>(`/api/v1/media-hub/events/${eventId}/checklist/${itemId}`)
+  }
+
+  async addMediaEventAgendaItem(eventId: string, data: any) {
+    return this.post<{ item: any }>(`/api/v1/media-hub/events/${eventId}/agenda`, data)
+  }
+
+  async updateMediaEventAgendaItem(eventId: string, itemId: string, data: any) {
+    return this.put<{ item: any }>(`/api/v1/media-hub/events/${eventId}/agenda/${itemId}`, data)
+  }
+
+  async deleteMediaEventAgendaItem(eventId: string, itemId: string) {
+    return this.delete<{ success: boolean }>(`/api/v1/media-hub/events/${eventId}/agenda/${itemId}`)
+  }
+
+  // =========================================================================
+  // Media Hub — Discussions
+  // =========================================================================
+
+  async getMediaDiscussionCategories() {
+    return this.get<{ categories: any[] }>('/api/v1/media-hub/discussions/categories')
+  }
+
+  async createMediaDiscussionCategory(data: { name: string; description?: string; slug: string; icon?: string; sort_order?: number }) {
+    return this.post<{ category: any }>('/api/v1/media-hub/discussions/categories', data)
+  }
+
+  async updateMediaDiscussionCategory(id: string, data: any) {
+    return this.put<{ category: any }>(`/api/v1/media-hub/discussions/categories/${id}`, data)
+  }
+
+  async deleteMediaDiscussionCategory(id: string) {
+    return this.delete<{ success: boolean }>(`/api/v1/media-hub/discussions/categories/${id}`)
+  }
+
+  async getMediaDiscussionThreads(params?: { category_slug?: string; search?: string; sort?: string; limit?: number; offset?: number }) {
+    const sp = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') sp.set(k, String(v))
+      })
+    }
+    const qs = sp.toString()
+    return this.get<{ threads: any[]; total: number }>(`/api/v1/media-hub/discussions/threads${qs ? `?${qs}` : ''}`)
+  }
+
+  async getMediaDiscussionThread(id: string) {
+    return this.get<{ thread: any }>(`/api/v1/media-hub/discussions/threads/${id}`)
+  }
+
+  async createMediaDiscussionThread(data: { category_id: string; title: string; content: string }) {
+    return this.post<{ thread: any }>('/api/v1/media-hub/discussions/threads', data)
+  }
+
+  async updateMediaDiscussionThread(id: string, data: { title?: string; content?: string }) {
+    return this.put<{ thread: any }>(`/api/v1/media-hub/discussions/threads/${id}`, data)
+  }
+
+  async deleteMediaDiscussionThread(id: string) {
+    return this.delete<{ success: boolean }>(`/api/v1/media-hub/discussions/threads/${id}`)
+  }
+
+  async pinMediaDiscussionThread(id: string) {
+    return this.post<{ success: boolean; is_pinned: boolean }>(`/api/v1/media-hub/discussions/threads/${id}/pin`, {})
+  }
+
+  async resolveMediaDiscussionThread(id: string) {
+    return this.post<{ success: boolean; is_resolved: boolean }>(`/api/v1/media-hub/discussions/threads/${id}/resolve`, {})
+  }
+
+  async lockMediaDiscussionThread(id: string) {
+    return this.post<{ success: boolean; is_locked: boolean }>(`/api/v1/media-hub/discussions/threads/${id}/lock`, {})
+  }
+
+  async getMediaDiscussionReplies(threadId: string) {
+    return this.get<{ replies: any[] }>(`/api/v1/media-hub/discussions/threads/${threadId}/replies`)
+  }
+
+  async createMediaDiscussionReply(data: { thread_id: string; content: string; parent_reply_id?: string }) {
+    return this.post<{ reply: any }>('/api/v1/media-hub/discussions/replies', data)
+  }
+
+  async updateMediaDiscussionReply(id: string, data: { content: string }) {
+    return this.put<{ reply: any }>(`/api/v1/media-hub/discussions/replies/${id}`, data)
+  }
+
+  async deleteMediaDiscussionReply(id: string) {
+    return this.delete<{ success: boolean }>(`/api/v1/media-hub/discussions/replies/${id}`)
+  }
 }
 
 // Export singleton instance

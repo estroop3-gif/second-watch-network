@@ -23,6 +23,7 @@ export type RoleType =
   | 'order_member'
   | 'sales_agent'
   | 'sales_rep'
+  | 'media_team'
   | 'partner'
   | 'filmmaker'
   | 'premium'
@@ -104,12 +105,20 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     priority: 8,
     description: 'Sales representative with platform access',
   },
+  media_team: {
+    role: 'media_team',
+    label: 'Media Team',
+    shortLabel: 'MEDIA',
+    cssClass: 'bg-gradient-to-r from-pink-500 to-orange-400 text-white font-bold',
+    priority: 9,
+    description: 'Media and marketing team member',
+  },
   partner: {
     role: 'partner',
     label: 'Partner',
     shortLabel: 'PARTNER',
     cssClass: 'bg-sky-500 text-white font-bold',
-    priority: 9,
+    priority: 10,
     description: 'Business partner or sponsor',
   },
   filmmaker: {
@@ -117,7 +126,7 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     label: 'Filmmaker',
     shortLabel: 'FILMMAKER',
     cssClass: 'bg-rose-500 text-white font-bold',
-    priority: 10,
+    priority: 11,
     description: 'Verified content creator',
   },
   premium: {
@@ -125,7 +134,7 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     label: 'Premium',
     shortLabel: 'PREMIUM',
     cssClass: 'bg-gradient-to-r from-indigo-500 to-purple-500 text-white font-bold',
-    priority: 11,
+    priority: 12,
     description: 'Premium subscriber',
   },
   free: {
@@ -133,7 +142,7 @@ export const BADGE_CONFIGS: Record<RoleType, BadgeConfig> = {
     label: 'Free',
     shortLabel: 'FREE',
     cssClass: 'bg-slate-600 text-slate-200',
-    priority: 12,
+    priority: 13,
     description: 'Free tier member',
   },
 };
@@ -148,6 +157,7 @@ export const ROLE_HIERARCHY: RoleType[] = [
   'order_member',
   'sales_agent',
   'sales_rep',
+  'media_team',
   'partner',
   'filmmaker',
   'premium',
@@ -164,6 +174,7 @@ export const PROFILE_ROLE_FIELDS: Record<string, RoleType> = {
   is_order_member: 'order_member',
   is_sales_agent: 'sales_agent',
   is_sales_rep: 'sales_rep',
+  is_media_team: 'media_team',
   is_partner: 'partner',
   is_filmmaker: 'filmmaker',
   is_premium: 'premium',
@@ -186,6 +197,7 @@ export interface ProfileWithRoles {
   is_lodge_officer?: boolean;
   is_sales_agent?: boolean;
   is_sales_rep?: boolean;
+  is_media_team?: boolean;
   is_partner?: boolean;
   is_filmmaker?: boolean;
   is_premium?: boolean;

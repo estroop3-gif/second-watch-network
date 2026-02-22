@@ -173,6 +173,22 @@ const EmailComposeProvider = React.lazy(() =>
   import("./context/EmailComposeContext").then(m => ({ default: m.EmailComposeProvider }))
 );
 
+// Media Hub Pages
+const MediaLayout = React.lazy(() => import("./pages/media/Layout"));
+const MediaDashboard = React.lazy(() => import("./pages/media/Dashboard"));
+const MediaContentRequests = React.lazy(() => import("./pages/media/ContentRequests"));
+const MediaNewRequest = React.lazy(() => import("./pages/media/NewRequest"));
+const MediaRequestDetail = React.lazy(() => import("./pages/media/RequestDetail"));
+const MediaCalendar = React.lazy(() => import("./pages/media/Calendar"));
+const MediaPlatforms = React.lazy(() => import("./pages/media/Platforms"));
+const MediaEmail = React.lazy(() => import("./pages/media/Email"));
+const MediaEvents = React.lazy(() => import("./pages/media/Events"));
+const MediaNewEvent = React.lazy(() => import("./pages/media/NewEvent"));
+const MediaEventDetail = React.lazy(() => import("./pages/media/EventDetail"));
+const MediaDiscussions = React.lazy(() => import("./pages/media/Discussions"));
+const MediaDiscussionThread = React.lazy(() => import("./pages/media/DiscussionThread"));
+const MediaAnalytics = React.lazy(() => import("./pages/media/Analytics"));
+
 // Backlot Production Hub Pages
 const BacklotHome = React.lazy(() => import("./pages/backlot/BacklotHome"));
 const ProjectWorkspace = React.lazy(() => import("./pages/backlot/ProjectWorkspace"));
@@ -495,6 +511,24 @@ const App = () => (
                         <Route path="analytics" element={<Analytics />} />
                         <Route path="promotions" element={<PartnerPromotions />} />
                       </Route>
+                    </Route>
+
+                    {/* Media Hub Routes — accessible to ALL authenticated users */}
+                    <Route path="/media" element={<MediaLayout />}>
+                      <Route index element={<Navigate to="requests" replace />} />
+                      <Route path="requests" element={<MediaContentRequests />} />
+                      <Route path="requests/new" element={<MediaNewRequest />} />
+                      <Route path="requests/:id" element={<MediaRequestDetail />} />
+                      <Route path="dashboard" element={<MediaDashboard />} />
+                      <Route path="calendar" element={<MediaCalendar />} />
+                      <Route path="platforms" element={<MediaPlatforms />} />
+                      <Route path="email" element={<MediaEmail />} />
+                      <Route path="events" element={<MediaEvents />} />
+                      <Route path="events/new" element={<MediaNewEvent />} />
+                      <Route path="events/:id" element={<MediaEventDetail />} />
+                      <Route path="discussions" element={<MediaDiscussions />} />
+                      <Route path="discussions/:threadId" element={<MediaDiscussionThread />} />
+                      <Route path="analytics" element={<MediaAnalytics />} />
                     </Route>
 
                     {/* CRM Routes (sales agents and admin) */}

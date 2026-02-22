@@ -121,6 +121,14 @@ class Permission(str, Enum):
     CRM_EMAIL_ADMIN = "crm:email_admin" # Manage rep email accounts
 
     # ============================================================================
+    # Media Hub (Content Requests, Calendar, Platforms)
+    # ============================================================================
+    MEDIA_VIEW = "media:view"              # View content requests and calendar
+    MEDIA_CREATE = "media:create"          # Submit content requests
+    MEDIA_MANAGE = "media:manage"          # Manage requests, calendar, assign work
+    MEDIA_ADMIN = "media:admin"            # Administer platforms, full media hub config
+
+    # ============================================================================
     # Admin Email (Platform Email Accounts & Inboxes)
     # ============================================================================
     ADMIN_EMAIL_VIEW = "admin_email:view"      # View admin/system email inboxes
@@ -207,6 +215,11 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         # Admin Email
         Permission.ADMIN_EMAIL_VIEW,
         Permission.ADMIN_EMAIL_MANAGE,
+        # Media Hub
+        Permission.MEDIA_VIEW,
+        Permission.MEDIA_CREATE,
+        Permission.MEDIA_MANAGE,
+        Permission.MEDIA_ADMIN,
         # Admin
         Permission.ADMIN_DASHBOARD,
         Permission.ADMIN_USERS,
@@ -249,6 +262,9 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         Permission.CRM_ADMIN,
         Permission.CRM_REPORTS,
         Permission.CRM_EMAIL_ADMIN,
+        # Media Hub (submit)
+        Permission.MEDIA_VIEW,
+        Permission.MEDIA_CREATE,
     },
 
     RoleType.MODERATOR: {
@@ -272,6 +288,9 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         Permission.CONNECTION_MANAGE,
         Permission.EVENT_VIEW,
         Permission.ADMIN_DASHBOARD,
+        # Media Hub (submit)
+        Permission.MEDIA_VIEW,
+        Permission.MEDIA_CREATE,
     },
 
     RoleType.LODGE_OFFICER: {
@@ -298,6 +317,9 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         Permission.EVENT_VIEW,
         Permission.EVENT_CREATE,
         Permission.EVENT_HOST,
+        # Media Hub (submit)
+        Permission.MEDIA_VIEW,
+        Permission.MEDIA_CREATE,
     },
 
     RoleType.ORDER_MEMBER: {
@@ -317,6 +339,9 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         Permission.MESSAGE_SEND,
         Permission.CONNECTION_MANAGE,
         Permission.EVENT_VIEW,
+        # Media Hub (submit)
+        Permission.MEDIA_VIEW,
+        Permission.MEDIA_CREATE,
     },
 
     RoleType.SALES_AGENT: {
@@ -331,6 +356,9 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         Permission.EVENT_VIEW,
         Permission.CRM_VIEW,
         Permission.CRM_CREATE,
+        # Media Hub (submit)
+        Permission.MEDIA_VIEW,
+        Permission.MEDIA_CREATE,
     },
 
     RoleType.SALES_REP: {
@@ -364,6 +392,9 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         # CRM (no MANAGE/ADMIN/REPORTS/EMAIL_ADMIN)
         Permission.CRM_VIEW,
         Permission.CRM_CREATE,
+        # Media Hub (submit)
+        Permission.MEDIA_VIEW,
+        Permission.MEDIA_CREATE,
     },
 
     RoleType.PARTNER: {
@@ -383,6 +414,9 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         Permission.CONNECTION_MANAGE,
         Permission.EVENT_VIEW,
         Permission.EVENT_CREATE,
+        # Media Hub (submit)
+        Permission.MEDIA_VIEW,
+        Permission.MEDIA_CREATE,
     },
 
     RoleType.FILMMAKER: {
@@ -414,6 +448,33 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         Permission.EVENT_VIEW,
         Permission.EVENT_CREATE,
         Permission.EVENT_HOST,
+        # Media Hub (submit)
+        Permission.MEDIA_VIEW,
+        Permission.MEDIA_CREATE,
+    },
+
+    RoleType.MEDIA_TEAM: {
+        # User
+        Permission.USER_VIEW,
+        Permission.USER_EDIT,
+        # Content
+        Permission.CONTENT_VIEW,
+        Permission.CONTENT_CREATE,
+        Permission.CONTENT_EDIT,
+        # World
+        Permission.WORLD_VIEW,
+        # Community
+        Permission.FORUM_VIEW,
+        Permission.FORUM_POST,
+        Permission.MESSAGE_SEND,
+        Permission.CONNECTION_MANAGE,
+        # Events
+        Permission.EVENT_VIEW,
+        # Media Hub (full)
+        Permission.MEDIA_VIEW,
+        Permission.MEDIA_CREATE,
+        Permission.MEDIA_MANAGE,
+        Permission.MEDIA_ADMIN,
     },
 
     RoleType.PREMIUM: {
@@ -430,9 +491,23 @@ ROLE_PERMISSIONS: Dict[RoleType, Set[Permission]] = {
         Permission.MESSAGE_SEND,
         Permission.CONNECTION_MANAGE,
         Permission.EVENT_VIEW,
+        # Media Hub (submit)
+        Permission.MEDIA_VIEW,
+        Permission.MEDIA_CREATE,
     },
 
     RoleType.FREE: {
+        Permission.USER_VIEW,
+        Permission.USER_EDIT,
+        Permission.CONTENT_VIEW,
+        Permission.WORLD_VIEW,
+        Permission.GREENROOM_VIEW,
+        Permission.FORUM_VIEW,
+        Permission.EVENT_VIEW,
+        # Media Hub (submit)
+        Permission.MEDIA_VIEW,
+        Permission.MEDIA_CREATE,
+    },
         Permission.USER_VIEW,
         Permission.USER_EDIT,
         Permission.CONTENT_VIEW,
