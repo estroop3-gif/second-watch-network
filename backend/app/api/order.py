@@ -351,7 +351,7 @@ async def approve_application(
         client.table("order_member_profiles").insert(profile_data).execute()
 
     # TODO: Send notification email to applicant
-    # TODO: Initiate Stripe subscription for dues
+    # Note: Dues checkout is initiated by the member via POST /membership/checkout after approval
 
     return OrderApplicationResponse(**update_result.data[0])
 
@@ -815,7 +815,7 @@ async def join_lodge(
     response_data["lodge_name"] = lodge["name"]
     response_data["lodge_city"] = lodge["city"]
 
-    # TODO: Initiate Stripe subscription for lodge dues
+    # Note: Lodge dues are included in main Order membership dues (POST /membership/checkout)
 
     return LodgeMembershipResponse(**response_data)
 
@@ -3843,3 +3843,130 @@ async def get_event_rsvps(event_id: int, user = Depends(get_current_user)):
         ))
 
     return rsvps
+
+
+# ============ Dues Payment Endpoints ============
+
+ORDER_TIER_PRICE_MAP = {
+    MembershipTier.BASE: "STRIPE_ORDER_BASE_PRICE_ID",
+    MembershipTier.STEWARD: "STRIPE_ORDER_STEWARD_PRICE_ID",
+    MembershipTier.PATRON: "STRIPE_ORDER_PATRON_PRICE_ID",
+}
+
+
+@router.post("/membership/checkout", response_model=MembershipUpgradeResponse)
+async def create_dues_checkout(
+    request: MembershipUpgradeRequest,
+    user=Depends(get_current_user),
+):
+    """Create a Stripe Checkout session for Order membership dues."""
+    from app.core.config import settings
+    import stripe
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+
+    if not stripe.api_key:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+
+    user_id = get_user_id(user)
+    email = get_user_email(user)
+    client = get_client()
+
+    # Must be an approved Order member
+    profile = await get_order_member_profile(user_id)
+    if not profile:
+        raise HTTPException(status_code=403, detail="You must be an Order member to pay dues")
+
+    if profile.get("status") not in (
+        OrderMemberStatus.PROBATIONARY.value,
+        OrderMemberStatus.ACTIVE.value,
+    ):
+        raise HTTPException(status_code=400, detail="Your membership status does not allow dues payment")
+
+    # Resolve Stripe price ID for the requested tier
+    price_attr = ORDER_TIER_PRICE_MAP.get(request.target_tier)
+    if not price_attr:
+        raise HTTPException(status_code=400, detail="Invalid membership tier")
+
+    price_id = getattr(settings, price_attr, "")
+    if not price_id:
+        raise HTTPException(status_code=500, detail=f"Stripe price not configured for Order {request.target_tier.value} tier")
+
+    # Get or create Stripe customer on the user's personal profile
+    user_profile = client.table("profiles").select("id, stripe_customer_id").eq("id", user_id).single().execute()
+    customer_id = user_profile.data.get("stripe_customer_id") if user_profile.data else None
+
+    if not customer_id:
+        customer = stripe.Customer.create(email=email, metadata={"user_id": user_id})
+        customer_id = customer.id
+        if user_profile.data:
+            client.table("profiles").update({"stripe_customer_id": customer_id}).eq("id", user_id).execute()
+
+    # Build URLs
+    base_url = settings.FRONTEND_URL
+    return_path = request.return_url or "/order"
+    success_url = f"{base_url}{return_path}?dues=success"
+    cancel_url = f"{base_url}{return_path}?dues=cancelled"
+
+    session = stripe.checkout.Session.create(
+        customer=customer_id,
+        payment_method_types=["card"],
+        line_items=[{"price": price_id, "quantity": 1}],
+        mode="subscription",
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={
+            "user_id": user_id,
+            "product": "order_dues",
+            "tier": request.target_tier.value,
+        },
+        subscription_data={
+            "metadata": {
+                "user_id": user_id,
+                "product": "order_dues",
+                "tier": request.target_tier.value,
+            },
+        },
+    )
+
+    return MembershipUpgradeResponse(checkout_url=session.url, session_id=session.id)
+
+
+@router.get("/membership/dues", response_model=DuesPaymentListResponse)
+async def get_my_dues_payments(user=Depends(get_current_user)):
+    """Get current user's dues payment history."""
+    user_id = get_user_id(user)
+    client = get_client()
+
+    result = client.table("order_dues_payments").select("*").eq(
+        "user_id", user_id
+    ).order("created_at", desc=True).execute()
+
+    payments = [DuesPaymentResponse(**p) for p in (result.data or [])]
+    return DuesPaymentListResponse(payments=payments, total=len(payments))
+
+
+@router.post("/membership/portal")
+async def create_dues_portal_session(user=Depends(get_current_user)):
+    """Create a Stripe billing portal session for managing Order dues subscription."""
+    from app.core.config import settings
+    import stripe
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+
+    if not stripe.api_key:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+
+    user_id = get_user_id(user)
+    client = get_client()
+
+    user_profile = client.table("profiles").select("stripe_customer_id").eq("id", user_id).single().execute()
+    customer_id = user_profile.data.get("stripe_customer_id") if user_profile.data else None
+
+    if not customer_id:
+        raise HTTPException(status_code=400, detail="No billing account found")
+
+    session = stripe.billing_portal.Session.create(
+        customer=customer_id,
+        return_url=f"{settings.FRONTEND_URL}/order",
+    )
+
+    return {"url": session.url}

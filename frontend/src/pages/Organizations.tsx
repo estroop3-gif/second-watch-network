@@ -3,8 +3,8 @@
  * Manage organization Backlot seats and project access
  */
 
-import { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useCallback, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Building2, Users, FolderKanban, Plus, Settings, ChevronRight, Crown, Shield, UserCheck, CreditCard } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -688,6 +688,21 @@ function AddSeatForm({ organizationId, onSuccess }: { organizationId: string; on
 
 export default function OrganizationsPage() {
   const { data: organizations, isLoading } = useMyBacklotOrganizations();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('checkout') === 'success') {
+      toast({ title: 'Subscription activated!', description: 'Your Backlot plan is now active.' });
+      // Clean query params but preserve org/tab if present
+      params.delete('checkout');
+      params.delete('config_id');
+      const remaining = params.toString();
+      navigate(`/organizations${remaining ? `?${remaining}` : ''}`, { replace: true });
+    }
+  }, [location.search, navigate, toast]);
 
   if (isLoading) {
     return (

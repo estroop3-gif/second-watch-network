@@ -464,6 +464,9 @@ async def list_mileage(
     authorization: str = Header(None)
 ):
     """List mileage entries for a project"""
+    from app.services.feature_gates import enforce_project_feature
+    enforce_project_feature(project_id, "EXPENSES")
+
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -2660,6 +2663,9 @@ async def get_expense_summary(
     authorization: str = Header(None)
 ):
     """Get expense summary for a project"""
+    from app.services.feature_gates import enforce_project_feature
+    enforce_project_feature(project_id, "EXPENSES")
+
     user = await get_current_user_from_token(authorization)
     client = get_client()
 

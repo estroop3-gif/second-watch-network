@@ -290,6 +290,8 @@ async def stripe_webhook(request: Request):
             if config_id:
                 from app.services.subscription_service import handle_subscription_activated
                 handle_subscription_activated(subscription, config_id, event.get("id"))
+        elif product == "order_dues":
+            await _handle_order_dues_event(subscription, is_active=True)
         else:
             await _update_subscription_status(customer_id, subscription, product, is_active=True)
 
@@ -316,6 +318,9 @@ async def stripe_webhook(request: Request):
                     handle_payment_failed(subscription, org_id, event.get("id"))
                 elif status == "canceled":
                     handle_subscription_canceled(subscription, org_id, event.get("id"))
+        elif product == "order_dues":
+            is_active = status in ["active", "trialing"]
+            await _handle_order_dues_event(subscription, is_active=is_active)
         else:
             is_active = status in ["active", "trialing"]
             await _update_subscription_status(customer_id, subscription, product, is_active=is_active)
@@ -330,6 +335,8 @@ async def stripe_webhook(request: Request):
             if org_id:
                 from app.services.subscription_service import handle_subscription_canceled
                 handle_subscription_canceled(subscription, org_id, event.get("id"))
+        elif product == "order_dues":
+            await _handle_order_dues_event(subscription, is_active=False)
         else:
             await _update_subscription_status(customer_id, subscription, product, is_active=False)
 
@@ -434,6 +441,88 @@ async def _update_subscription_status(
             "role": new_role,
             "tier": tier,
             "status": status,
+            "period_end": period_end_dt,
+        })
+
+
+async def _handle_order_dues_event(subscription: dict, is_active: bool):
+    """Handle Order membership dues subscription events.
+
+    Updates the member's dues status and tier on the order_member_profiles table,
+    records a payment entry, and sets the is_order_member flag on profiles.
+    """
+    from datetime import datetime
+
+    metadata = subscription.get("metadata", {})
+    user_id = metadata.get("user_id")
+    tier = metadata.get("tier", "base")
+
+    if not user_id:
+        # Try to resolve from Stripe customer
+        customer_id = subscription.get("customer")
+        profile = execute_single(
+            "SELECT id FROM profiles WHERE stripe_customer_id = :cid",
+            {"customer_id": customer_id},
+        ) if customer_id else None
+        if profile:
+            user_id = str(profile["id"])
+        else:
+            return
+
+    status = subscription.get("status", "")
+    period_end = subscription.get("current_period_end")
+    period_start = subscription.get("current_period_start")
+
+    period_start_dt = datetime.fromtimestamp(period_start).isoformat() if period_start else None
+    period_end_dt = datetime.fromtimestamp(period_end).isoformat() if period_end else None
+
+    dues_status = "active" if is_active else "canceled"
+
+    # Update order_member_profiles
+    execute_update("""
+        UPDATE order_member_profiles
+        SET dues_status = :dues_status,
+            membership_tier = :tier,
+            status = CASE
+                WHEN :is_active AND status = 'probationary' THEN 'active'
+                ELSE status
+            END,
+            updated_at = NOW()
+        WHERE user_id = :user_id
+    """, {
+        "dues_status": dues_status,
+        "tier": tier,
+        "is_active": is_active,
+        "user_id": user_id,
+    })
+
+    # Set is_order_member on profiles
+    if is_active:
+        execute_update("""
+            UPDATE profiles SET is_order_member = TRUE WHERE id = :user_id
+        """, {"user_id": user_id})
+    elif status == "canceled":
+        execute_update("""
+            UPDATE profiles SET is_order_member = FALSE WHERE id = :user_id
+        """, {"user_id": user_id})
+
+    # Record dues payment when subscription becomes active
+    if is_active and status in ("active", "trialing"):
+        from app.core.database import execute_insert
+
+        # Get amount from subscription items
+        items = subscription.get("items", {}).get("data", [])
+        amount_cents = items[0]["price"]["unit_amount"] if items else 0
+
+        execute_insert("""
+            INSERT INTO order_dues_payments (user_id, amount_cents, tier, stripe_invoice_id, status, period_start, period_end, created_at)
+            VALUES (:user_id, :amount_cents, :tier, :invoice_id, 'succeeded', :period_start, :period_end, NOW())
+        """, {
+            "user_id": user_id,
+            "amount_cents": amount_cents,
+            "tier": tier,
+            "invoice_id": subscription.get("latest_invoice"),
+            "period_start": period_start_dt,
             "period_end": period_end_dt,
         })
 

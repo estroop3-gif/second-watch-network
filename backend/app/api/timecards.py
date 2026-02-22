@@ -418,6 +418,9 @@ async def list_my_timecards(
     """
     List current user's timecards for a project
     """
+    from app.services.feature_gates import enforce_project_feature
+    enforce_project_feature(project_id, "TIMECARDS")
+
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -521,6 +524,9 @@ async def get_timecard_summary(
     """
     Get summary statistics for project timecards
     """
+    from app.services.feature_gates import enforce_project_feature
+    enforce_project_feature(project_id, "TIMECARDS")
+
     user = await get_current_user_from_token(authorization)
     client = get_client()
 

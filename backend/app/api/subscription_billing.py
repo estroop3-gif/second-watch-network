@@ -489,3 +489,27 @@ async def create_portal_session(org_id: str, request: PortalRequest, user=Depend
     )
 
     return {"url": session.url}
+
+
+@router.get("/organizations/{org_id}/features")
+async def get_org_feature_map(org_id: str, user=Depends(get_current_user)):
+    """Get the feature access map for an organization.
+
+    Returns a dict of feature names to booleans indicating access.
+    Used by the frontend to show locked/unlocked states on module tabs.
+    """
+    profile_id = await get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    # Verify user is a member of the org
+    member = execute_single("""
+        SELECT role FROM organization_members
+        WHERE organization_id = :oid AND user_id = :uid AND status = 'active'
+    """, {"oid": org_id, "uid": profile_id})
+
+    if not member:
+        raise HTTPException(status_code=403, detail="Not a member of this organization")
+
+    from app.services.feature_gates import get_org_feature_access
+    return get_org_feature_access(org_id)

@@ -59,7 +59,16 @@ jobs:
               "ResendApiKey=${{ secrets.RESEND_API_KEY }}" \
               "ResendWebhookSigningSecret=${{ secrets.RESEND_WEBHOOK_SIGNING_SECRET }}" \
               "EmailFromAddress=noreply@theswn.com" \
-              "EmailFromName=Second Watch Network"
+              "EmailFromName=Second Watch Network" \
+              "StripeSecretKey=${{ secrets.STRIPE_SECRET_KEY }}" \
+              "StripeWebhookSecret=${{ secrets.STRIPE_WEBHOOK_SECRET }}" \
+              "StripePremiumPriceId=${{ secrets.STRIPE_PREMIUM_PRICE_ID }}" \
+              "StripePremiumYearlyPriceId=${{ secrets.STRIPE_PREMIUM_YEARLY_PRICE_ID }}" \
+              "StripeBacklotMonthlyPriceId=${{ secrets.STRIPE_BACKLOT_MONTHLY_PRICE_ID }}" \
+              "StripeBacklotYearlyPriceId=${{ secrets.STRIPE_BACKLOT_YEARLY_PRICE_ID }}" \
+              "StripeOrderBasePriceId=${{ secrets.STRIPE_ORDER_BASE_PRICE_ID }}" \
+              "StripeOrderStewardPriceId=${{ secrets.STRIPE_ORDER_STEWARD_PRICE_ID }}" \
+              "StripeOrderPatronPriceId=${{ secrets.STRIPE_ORDER_PATRON_PRICE_ID }}"
 
   deploy-frontend:
     name: Deploy Frontend (S3/CloudFront)

@@ -79,6 +79,18 @@ Parameters:
     Type: String
     Description: Stripe price ID for Backlot yearly subscription
     Default: ""
+  StripeOrderBasePriceId:
+    Type: String
+    Description: Stripe price ID for Order BASE tier ($50/mo)
+    Default: ""
+  StripeOrderStewardPriceId:
+    Type: String
+    Description: Stripe price ID for Order STEWARD tier ($100/mo)
+    Default: ""
+  StripeOrderPatronPriceId:
+    Type: String
+    Description: Stripe price ID for Order PATRON tier ($250/mo)
+    Default: ""
   AnthropicApiKey:
     Type: String
     NoEcho: true
@@ -266,6 +278,9 @@ Resources:
           STRIPE_PREMIUM_YEARLY_PRICE_ID: !Ref StripePremiumYearlyPriceId
           STRIPE_BACKLOT_MONTHLY_PRICE_ID: !Ref StripeBacklotMonthlyPriceId
           STRIPE_BACKLOT_YEARLY_PRICE_ID: !Ref StripeBacklotYearlyPriceId
+          STRIPE_ORDER_BASE_PRICE_ID: !Ref StripeOrderBasePriceId
+          STRIPE_ORDER_STEWARD_PRICE_ID: !Ref StripeOrderStewardPriceId
+          STRIPE_ORDER_PATRON_PRICE_ID: !Ref StripeOrderPatronPriceId
           # AI
           ANTHROPIC_API_KEY: !Ref AnthropicApiKey
           OPENAI_API_KEY: !Ref OpenAiApiKey

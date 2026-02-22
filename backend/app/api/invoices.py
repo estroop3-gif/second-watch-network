@@ -428,6 +428,9 @@ async def get_my_invoices(
     authorization: str = Header(None)
 ):
     """Get current user's invoices for a project."""
+    from app.services.feature_gates import enforce_project_feature
+    enforce_project_feature(project_id, "PO_INVOICING")
+
     current_user = await get_current_user_from_token(authorization)
     user_id = get_profile_id_from_cognito_id(current_user["id"])
     if not user_id:
@@ -518,6 +521,9 @@ async def get_invoice_summary(
     authorization: str = Header(None)
 ):
     """Get invoice statistics for current user."""
+    from app.services.feature_gates import enforce_project_feature
+    enforce_project_feature(project_id, "PO_INVOICING")
+
     current_user = await get_current_user_from_token(authorization)
     user_id = get_profile_id_from_cognito_id(current_user["id"])
     if not user_id:

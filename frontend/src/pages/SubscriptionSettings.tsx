@@ -56,31 +56,27 @@ const SubscriptionSettingsPage = () => {
   // Placeholder data - will be replaced with real data
   const isPremium = hasRole('premium');
   const currentPlan = isPremium ? 'Premium' : 'Free';
-  const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>(isPremium ? 'monthly' : 'monthly');
+  const [billingCycle] = useState<'monthly' | 'yearly'>(isPremium ? 'monthly' : 'monthly');
 
   const handleCancelSubscription = () => {
     setModalContent({
-      title: 'Confirm Cancellation',
-      description: 'Are you sure you want to cancel your subscription? Your plan will remain active until the end of the current billing period.',
-      onConfirm: () => {
-        console.log("Subscription cancellation confirmed.");
-        toast.success("Your subscription has been cancelled.");
+      title: 'Cancel Subscription',
+      description: 'You\'ll be redirected to the Stripe billing portal where you can cancel your subscription. Your plan will remain active until the end of the current billing period.',
+      onConfirm: async () => {
         setIsModalOpen(false);
+        await openBillingPortal();
       },
     });
     setIsModalOpen(true);
   };
 
-  const handleSwitchBillingCycle = (isYearly: boolean) => {
-    const newCycle = isYearly ? 'Yearly' : 'Monthly';
+  const handleSwitchBillingCycle = (_isYearly: boolean) => {
     setModalContent({
-      title: `Confirm Switch to ${newCycle} Billing`,
-      description: `Are you sure you want to switch to a ${newCycle.toLowerCase()} billing cycle?`,
-      onConfirm: () => {
-        setBillingCycle(isYearly ? 'yearly' : 'monthly');
-        console.log(`Switched to ${newCycle} billing.`);
-        toast.success(`Successfully switched to ${newCycle} billing.`);
+      title: 'Change Billing Cycle',
+      description: 'You\'ll be redirected to the Stripe billing portal where you can update your billing cycle.',
+      onConfirm: async () => {
         setIsModalOpen(false);
+        await openBillingPortal();
       },
     });
     setIsModalOpen(true);

@@ -4869,6 +4869,9 @@ async def get_project_budget(
     authorization: str = Header(None)
 ):
     """Get the main budget for a project"""
+    from app.services.feature_gates import enforce_project_feature
+    enforce_project_feature(project_id, "BUDGETING")
+
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
@@ -17839,6 +17842,9 @@ async def list_continuity_exports(
     authorization: Optional[str] = Header(None)
 ):
     """List all continuity PDF exports for a project (version history)"""
+    from app.services.feature_gates import enforce_project_feature
+    enforce_project_feature(project_id, "CONTINUITY")
+
     try:
         # Get current user
         current_user = await get_user_from_token(authorization)
@@ -31635,6 +31641,9 @@ async def get_dailies_days(
     authorization: str = Header(None)
 ):
     """Get all dailies days for a project with aggregate stats"""
+    from app.services.feature_gates import enforce_project_feature
+    enforce_project_feature(project_id, "DAILIES")
+
     user = await get_current_user_from_token(authorization)
     client = get_client()
 

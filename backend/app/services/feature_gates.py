@@ -243,3 +243,62 @@ def require_module(feature_name: str):
         return profile_id
 
     return _check
+
+
+def require_project_module(feature_name: str):
+    """
+    FastAPI dependency that checks feature access via a project's organization.
+
+    Usage:
+        @router.get("/projects/{project_id}/budget")
+        async def get_budget(project_id: str, _gate=Depends(require_project_module("BUDGETING"))):
+            ...
+
+    Resolves organization_id from backlot_projects. Individual projects (no org)
+    are not gated and pass through.
+    """
+    from app.core.auth import get_current_user
+
+    async def _check(project_id: str, user=Depends(get_current_user)):
+        enforce_project_feature(project_id, feature_name)
+        return None
+
+    return _check
+
+
+def enforce_project_feature(project_id: str, feature_name: str):
+    """
+    Check feature access for a project's organization. Raises HTTPException if denied.
+
+    Call directly inside route handlers that don't use Depends():
+        enforce_project_feature(project_id, "BUDGETING")
+
+    Individual projects (no org) are not module-gated and pass through.
+    """
+    project = execute_single(
+        "SELECT organization_id FROM backlot_projects WHERE id = :pid",
+        {"pid": project_id},
+    )
+
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    org_id = project.get("organization_id")
+
+    # Individual projects (no org) are not module-gated
+    if not org_id:
+        return
+
+    access = check_feature_access(str(org_id), feature_name)
+    if not access["has_access"]:
+        prompt = access.get("upgrade_prompt", {})
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "feature_locked",
+                "feature": feature_name,
+                "message": prompt.get("message", "This feature requires a plan upgrade."),
+                "min_tier": prompt.get("min_tier"),
+                "module": prompt.get("module"),
+            },
+        )
