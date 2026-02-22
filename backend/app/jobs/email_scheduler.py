@@ -1111,6 +1111,149 @@ async def process_recurring_goals():
         logger.error(f"process_recurring_goals error: {e}")
 
 
+async def process_trial_expirations():
+    """Expire Backlot trials that have passed their end date. Runs daily."""
+    try:
+        from app.core.database import execute_query, execute_single, execute_insert
+
+        # Find active/extended trials that have expired
+        expired_trials = execute_query(
+            """
+            SELECT t.id, t.provisioned_org_id, t.converted_contact_id, t.provisioned_profile_id,
+                   t.status, t.trial_ends_at, t.extension_ends_at
+            FROM backlot_trial_requests t
+            WHERE t.status IN ('active', 'extended')
+              AND COALESCE(t.extension_ends_at, t.trial_ends_at) < NOW()
+            """,
+            {},
+        )
+
+        if not expired_trials:
+            return
+
+        for trial in expired_trials:
+            try:
+                # Update trial status to expired
+                execute_single(
+                    "UPDATE backlot_trial_requests SET status = 'expired', updated_at = NOW() WHERE id = :id RETURNING id",
+                    {"id": trial["id"]},
+                )
+
+                # Update org billing status to expired
+                if trial.get("provisioned_org_id"):
+                    execute_single(
+                        "UPDATE organizations SET backlot_billing_status = 'expired' WHERE id = :oid RETURNING id",
+                        {"oid": trial["provisioned_org_id"]},
+                    )
+
+                # Create CRM activity
+                if trial.get("converted_contact_id") and trial.get("provisioned_profile_id"):
+                    try:
+                        execute_insert(
+                            """
+                            INSERT INTO crm_activities (contact_id, activity_type, subject, details, created_by)
+                            VALUES (:cid, 'note', 'Backlot trial expired', 'Follow up to discuss subscription options.', :uid)
+                            RETURNING id
+                            """,
+                            {
+                                "cid": trial["converted_contact_id"],
+                                "uid": trial["provisioned_profile_id"],
+                            },
+                        )
+                    except Exception:
+                        pass
+
+                logger.info(f"process_trial_expirations: expired trial {trial['id']}")
+            except Exception as e:
+                logger.error(f"process_trial_expirations: error expiring trial {trial['id']}: {e}")
+
+        logger.info(f"process_trial_expirations: processed {len(expired_trials)} expired trials")
+
+    except Exception as e:
+        logger.error(f"process_trial_expirations error: {e}")
+
+
+async def process_billing_grace_periods():
+    """
+    Daily job: Check for subscriptions that have exceeded the 7-day grace period.
+    Logs billing events for grace_period_expired.
+    """
+    try:
+        from datetime import datetime, timedelta
+
+        grace_cutoff = datetime.utcnow() - timedelta(days=7)
+
+        expired_configs = execute_query("""
+            SELECT sc.id, sc.organization_id, sc.status, sc.past_due_since
+            FROM backlot_subscription_configs sc
+            WHERE sc.status = 'past_due'
+              AND sc.past_due_since IS NOT NULL
+              AND sc.past_due_since < :cutoff
+        """, {"cutoff": grace_cutoff})
+
+        for config in expired_configs:
+            org_id = str(config["organization_id"])
+            try:
+                # Log the event
+                execute_insert("""
+                    INSERT INTO backlot_billing_events
+                        (organization_id, subscription_config_id, event_type, old_status, new_status, metadata)
+                    VALUES (:org_id, :cid, 'grace_period_expired', 'past_due', 'past_due', '{}')
+                    RETURNING id
+                """, {"org_id": org_id, "cid": str(config["id"])})
+
+                logger.info(f"process_billing_grace_periods: grace expired for org {org_id}")
+            except Exception as e:
+                logger.error(f"process_billing_grace_periods: error for org {org_id}: {e}")
+
+        if expired_configs:
+            logger.info(f"process_billing_grace_periods: processed {len(expired_configs)} expired grace periods")
+
+    except Exception as e:
+        logger.error(f"process_billing_grace_periods error: {e}")
+
+
+async def process_billing_reminders():
+    """
+    Daily job: Send escalating email reminders for past-due subscriptions.
+    Day 1: Payment failed notification (already sent by webhook handler)
+    Day 3: Reminder email
+    Day 5: Final warning email
+    """
+    try:
+        from datetime import datetime, timedelta
+
+        now = datetime.utcnow()
+
+        past_due_configs = execute_query("""
+            SELECT sc.id, sc.organization_id, sc.past_due_since
+            FROM backlot_subscription_configs sc
+            WHERE sc.status = 'past_due'
+              AND sc.past_due_since IS NOT NULL
+        """)
+
+        for config in past_due_configs:
+            org_id = str(config["organization_id"])
+            past_due_since = config["past_due_since"]
+
+            if not hasattr(past_due_since, "timestamp"):
+                continue
+
+            days_elapsed = (now - past_due_since).days
+
+            # Send reminders on day 3 and day 5
+            if days_elapsed in (3, 5):
+                try:
+                    from app.services.email_service import send_payment_reminder_email
+                    await send_payment_reminder_email(org_id, days_elapsed)
+                    logger.info(f"process_billing_reminders: sent day-{days_elapsed} reminder for org {org_id}")
+                except Exception as e:
+                    logger.error(f"process_billing_reminders: error sending reminder for org {org_id}: {e}")
+
+    except Exception as e:
+        logger.error(f"process_billing_reminders error: {e}")
+
+
 def start_email_scheduler():
     """Initialize and start the APScheduler for email jobs."""
     try:
@@ -1124,10 +1267,11 @@ def start_email_scheduler():
         scheduler.add_job(process_notification_digests, "interval", seconds=900, id="notification_digests")
         scheduler.add_job(poll_resend_inbound, "interval", seconds=120, id="poll_resend_inbound")
         scheduler.add_job(process_recurring_goals, "interval", seconds=86400, id="recurring_goals")
-        # Internal warmup disabled — no longer needed
-        # scheduler.add_job(process_internal_warmup, "interval", seconds=7200, id="internal_warmup")
+        scheduler.add_job(process_trial_expirations, "interval", seconds=86400, id="trial_expirations")
+        scheduler.add_job(process_billing_grace_periods, "interval", seconds=86400, id="billing_grace_periods")
+        scheduler.add_job(process_billing_reminders, "interval", seconds=86400, id="billing_reminders")
         scheduler.start()
-        logger.info("Email scheduler started with 7 jobs")
+        logger.info("Email scheduler started with 10 jobs")
         return scheduler
     except ImportError:
         logger.warning("APScheduler not installed — email scheduler disabled. Install with: pip install apscheduler")

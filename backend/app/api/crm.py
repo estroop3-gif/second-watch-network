@@ -9456,6 +9456,10 @@ class BacklotTrialRequest(BaseModel):
     phone: str
     consent_contact: bool
     referred_by_rep_id: Optional[str] = None
+    company_name: Optional[str] = None
+    job_title: Optional[str] = None
+    company_size: Optional[str] = None
+    use_case: Optional[str] = None
 
 
 class BacklotTrialRejectRequest(BaseModel):
@@ -9493,23 +9497,29 @@ async def submit_backlot_trial(data: BacklotTrialRequest):
     if not data.first_name.strip() or not data.last_name.strip():
         raise HTTPException(400, "First and last name are required.")
 
-    # Check for duplicate email (pending or approved)
+    # Check for duplicate email (pending, provisioning, active, extended, or approved)
     existing = execute_single(
-        "SELECT id, status FROM backlot_trial_requests WHERE LOWER(email) = LOWER(:email) AND status IN ('pending', 'approved')",
+        "SELECT id, status FROM backlot_trial_requests WHERE LOWER(email) = LOWER(:email) AND status IN ('pending', 'provisioning', 'approved', 'active', 'extended', 'extension_requested')",
         {"email": data.email},
     )
     if existing:
-        raise HTTPException(
-            409,
-            "A trial request with this email already exists."
-            if existing["status"] == "pending"
-            else "This email has already been approved for a trial.",
-        )
+        if existing["status"] == "pending":
+            raise HTTPException(409, "A trial request with this email already exists.")
+        elif existing["status"] in ("active", "extended", "extension_requested"):
+            raise HTTPException(409, "You already have an active Backlot trial.")
+        else:
+            raise HTTPException(409, "This email has already been approved for a trial.")
 
-    execute_insert(
+    row = execute_insert(
         """
-        INSERT INTO backlot_trial_requests (first_name, last_name, email, phone, consent_contact, referred_by_rep_id)
-        VALUES (:first_name, :last_name, :email, :phone, :consent_contact, :referred_by_rep_id)
+        INSERT INTO backlot_trial_requests (
+            first_name, last_name, email, phone, consent_contact, referred_by_rep_id,
+            company_name, job_title, company_size, use_case
+        )
+        VALUES (
+            :first_name, :last_name, :email, :phone, :consent_contact, :referred_by_rep_id,
+            :company_name, :job_title, :company_size, :use_case
+        )
         RETURNING id
         """,
         {
@@ -9519,10 +9529,36 @@ async def submit_backlot_trial(data: BacklotTrialRequest):
             "phone": data.phone.strip(),
             "consent_contact": data.consent_contact,
             "referred_by_rep_id": data.referred_by_rep_id,
+            "company_name": data.company_name.strip() if data.company_name else None,
+            "job_title": data.job_title.strip() if data.job_title else None,
+            "company_size": data.company_size,
+            "use_case": data.use_case.strip() if data.use_case else None,
         },
     )
 
-    return {"success": True, "message": "Thank you! A member of our team will be in touch shortly."}
+    trial_id = row["id"] if row else None
+    auto_provisioned = False
+
+    if trial_id:
+        try:
+            from app.services.trial_provisioning import provision_backlot_trial
+            result = await provision_backlot_trial(str(trial_id))
+            auto_provisioned = result.get("success", False)
+        except Exception as e:
+            logger.warning(f"Trial auto-provisioning failed (non-fatal): {e}")
+
+    if auto_provisioned:
+        return {
+            "success": True,
+            "auto_provisioned": True,
+            "message": "Your Backlot trial is ready! Check your email for login instructions.",
+        }
+
+    return {
+        "success": True,
+        "auto_provisioned": False,
+        "message": "Thank you! A member of our team will be in touch shortly.",
+    }
 
 
 @router.get("/backlot-trials/admin")
@@ -9575,50 +9611,72 @@ async def approve_backlot_trial(
     trial_id: str,
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
 ):
-    """Admin — approve a trial request and create a CRM contact."""
+    """Admin — approve a trial request. If pending with provisioning_error, retries auto-provisioning."""
     trial = execute_single(
         "SELECT * FROM backlot_trial_requests WHERE id = :id",
         {"id": trial_id},
     )
     if not trial:
         raise HTTPException(404, "Trial request not found")
-    if trial["status"] != "pending":
+    if trial["status"] not in ("pending",):
         raise HTTPException(400, f"Trial is already {trial['status']}")
 
-    # Create CRM contact — assign to referring rep if provided
-    contact = execute_insert(
-        """
-        INSERT INTO crm_contacts (
-            first_name, last_name, email, phone,
-            temperature, source, visibility, tags, created_by, assigned_rep_id
-        ) VALUES (
-            :first_name, :last_name, :email, :phone,
-            'warm', 'backlot_trial', 'team',
-            ARRAY['Backlot Trial']::text[], :created_by, :assigned_rep_id
-        ) RETURNING *
-        """,
-        {
-            "first_name": trial["first_name"],
-            "last_name": trial["last_name"],
-            "email": trial["email"],
-            "phone": trial["phone"],
-            "created_by": profile["id"],
-            "assigned_rep_id": trial.get("referred_by_rep_id"),
-        },
-    )
+    # If there's a provisioning error, retry auto-provisioning
+    if trial.get("provisioning_error"):
+        from app.services.trial_provisioning import provision_backlot_trial
+        result = await provision_backlot_trial(str(trial_id))
+        if result.get("success"):
+            return {"success": True, "auto_provisioned": True, "result": result}
+        else:
+            raise HTTPException(500, f"Provisioning retry failed: {result.get('error')}")
 
-    # Update trial request
-    execute_single(
-        """
-        UPDATE backlot_trial_requests
-        SET status = 'approved', reviewed_by = :reviewer, reviewed_at = NOW(),
-            converted_contact_id = :contact_id, updated_at = NOW()
-        WHERE id = :id RETURNING id
-        """,
-        {"id": trial_id, "reviewer": profile["id"], "contact_id": contact["id"]},
-    )
+    # Otherwise, attempt full auto-provisioning
+    from app.services.trial_provisioning import provision_backlot_trial
+    result = await provision_backlot_trial(str(trial_id))
+    if result.get("success"):
+        return {"success": True, "auto_provisioned": True, "result": result}
 
-    return {"success": True, "contact": contact}
+    # Fallback: create CRM contact only (legacy flow)
+    # Re-fetch since provisioning may have changed status
+    trial = execute_single(
+        "SELECT * FROM backlot_trial_requests WHERE id = :id",
+        {"id": trial_id},
+    )
+    if trial and trial["status"] == "pending":
+        contact = execute_insert(
+            """
+            INSERT INTO crm_contacts (
+                first_name, last_name, email, phone,
+                temperature, source, visibility, tags, created_by, assigned_rep_id
+            ) VALUES (
+                :first_name, :last_name, :email, :phone,
+                'warm', 'backlot_trial', 'team',
+                ARRAY['Backlot Trial']::text[], :created_by, :assigned_rep_id
+            ) RETURNING *
+            """,
+            {
+                "first_name": trial["first_name"],
+                "last_name": trial["last_name"],
+                "email": trial["email"],
+                "phone": trial["phone"],
+                "created_by": profile["id"],
+                "assigned_rep_id": trial.get("referred_by_rep_id"),
+            },
+        )
+
+        execute_single(
+            """
+            UPDATE backlot_trial_requests
+            SET status = 'approved', reviewed_by = :reviewer, reviewed_at = NOW(),
+                converted_contact_id = :contact_id, updated_at = NOW()
+            WHERE id = :id RETURNING id
+            """,
+            {"id": trial_id, "reviewer": profile["id"], "contact_id": contact["id"]},
+        )
+
+        return {"success": True, "auto_provisioned": False, "contact": contact}
+
+    return {"success": True, "auto_provisioned": False}
 
 
 @router.post("/backlot-trials/{trial_id}/reject")
@@ -9703,3 +9761,214 @@ async def bulk_approve_backlot_trials(
         approved_count += 1
 
     return {"success": True, "approved": approved_count}
+
+
+# ============================================================================
+# Backlot Trial — Authenticated User Endpoints
+# ============================================================================
+
+@router.get("/backlot-trials/my-trial")
+async def get_my_backlot_trial(
+    user=Depends(get_user_profile),
+):
+    """Get the current user's trial status and details."""
+    profile_id = user["id"]
+    trial = execute_single(
+        """
+        SELECT t.*,
+               o.name as org_name,
+               o.backlot_billing_status as org_billing_status
+        FROM backlot_trial_requests t
+        LEFT JOIN organizations o ON o.id = t.provisioned_org_id
+        WHERE t.provisioned_profile_id = :pid
+        ORDER BY t.created_at DESC
+        LIMIT 1
+        """,
+        {"pid": profile_id},
+    )
+    if not trial:
+        return {"trial": None}
+
+    return {"trial": trial}
+
+
+@router.post("/backlot-trials/{trial_id}/request-extension")
+async def request_trial_extension(
+    trial_id: str,
+    user=Depends(get_user_profile),
+):
+    """Trial user requests a 30-day extension. Available in last 3 days or after expiry."""
+    trial = execute_single(
+        "SELECT * FROM backlot_trial_requests WHERE id = :id",
+        {"id": trial_id},
+    )
+    if not trial:
+        raise HTTPException(404, "Trial not found")
+
+    # Verify caller is the provisioned user
+    if str(trial.get("provisioned_profile_id")) != str(user["id"]):
+        raise HTTPException(403, "Not your trial")
+
+    if trial["status"] not in ("active", "expired"):
+        raise HTTPException(400, f"Cannot request extension for trial with status '{trial['status']}'")
+
+    # Check if already requested
+    if trial.get("extension_requested_at"):
+        raise HTTPException(400, "Extension already requested")
+
+    # For active trials, verify within last 3 days
+    if trial["status"] == "active" and trial.get("trial_ends_at"):
+        from datetime import datetime, timedelta
+        trial_end = trial["trial_ends_at"]
+        if hasattr(trial_end, "timestamp"):
+            days_left = (trial_end - datetime.utcnow().replace(tzinfo=trial_end.tzinfo)).days
+        else:
+            days_left = 999
+        if days_left > 3:
+            raise HTTPException(400, "Extension can only be requested in the last 3 days of your trial")
+
+    execute_single(
+        """
+        UPDATE backlot_trial_requests
+        SET status = 'extension_requested', extension_requested_at = NOW(), updated_at = NOW()
+        WHERE id = :id RETURNING id
+        """,
+        {"id": trial_id},
+    )
+
+    # Create CRM activity
+    if trial.get("converted_contact_id"):
+        try:
+            execute_insert(
+                """
+                INSERT INTO crm_activities (contact_id, activity_type, subject, created_by)
+                VALUES (:cid, 'note', 'Requested 30-day trial extension', :uid)
+                RETURNING id
+                """,
+                {"cid": trial["converted_contact_id"], "uid": user["id"]},
+            )
+        except Exception:
+            pass
+
+    return {"success": True}
+
+
+@router.post("/backlot-trials/{trial_id}/approve-extension")
+async def approve_trial_extension(
+    trial_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """Admin — approve a trial extension request. Extends by 30 days."""
+    trial = execute_single(
+        "SELECT * FROM backlot_trial_requests WHERE id = :id",
+        {"id": trial_id},
+    )
+    if not trial:
+        raise HTTPException(404, "Trial not found")
+    if trial["status"] != "extension_requested":
+        raise HTTPException(400, f"Trial status is '{trial['status']}', expected 'extension_requested'")
+
+    from datetime import datetime, timedelta
+
+    # Calculate extension end: from trial_ends_at or NOW() if expired
+    base_date = trial.get("trial_ends_at")
+    now = datetime.utcnow()
+    if base_date and hasattr(base_date, "timestamp"):
+        if base_date.replace(tzinfo=None) < now:
+            base_date = now
+    else:
+        base_date = now
+
+    extension_ends_at = base_date + timedelta(days=30)
+
+    execute_single(
+        """
+        UPDATE backlot_trial_requests SET
+            status = 'extended',
+            extension_approved_at = NOW(),
+            extension_approved_by = :approver,
+            extension_ends_at = :ends_at,
+            updated_at = NOW()
+        WHERE id = :id RETURNING id
+        """,
+        {"id": trial_id, "approver": profile["id"], "ends_at": extension_ends_at.isoformat()},
+    )
+
+    # Update org trial_ends_at and billing status
+    if trial.get("provisioned_org_id"):
+        execute_single(
+            """
+            UPDATE organizations SET
+                trial_ends_at = :ends_at,
+                backlot_billing_status = 'trial'
+            WHERE id = :oid RETURNING id
+            """,
+            {"oid": trial["provisioned_org_id"], "ends_at": extension_ends_at.isoformat()},
+        )
+
+    # CRM activity
+    if trial.get("converted_contact_id"):
+        try:
+            execute_insert(
+                """
+                INSERT INTO crm_activities (contact_id, activity_type, subject, created_by)
+                VALUES (:cid, 'note', '30-day trial extension approved', :uid)
+                RETURNING id
+                """,
+                {"cid": trial["converted_contact_id"], "uid": profile["id"]},
+            )
+        except Exception:
+            pass
+
+    return {"success": True, "extension_ends_at": extension_ends_at.isoformat()}
+
+
+@router.post("/backlot-trials/{trial_id}/deny-extension")
+async def deny_trial_extension(
+    trial_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """Admin — deny a trial extension request."""
+    trial = execute_single(
+        "SELECT * FROM backlot_trial_requests WHERE id = :id",
+        {"id": trial_id},
+    )
+    if not trial:
+        raise HTTPException(404, "Trial not found")
+    if trial["status"] != "extension_requested":
+        raise HTTPException(400, f"Trial status is '{trial['status']}', expected 'extension_requested'")
+
+    # Determine if trial was expired or still active when extension was requested
+    from datetime import datetime
+    new_status = "expired"
+    if trial.get("trial_ends_at") and hasattr(trial["trial_ends_at"], "timestamp"):
+        if trial["trial_ends_at"].replace(tzinfo=None) > datetime.utcnow():
+            new_status = "active"
+
+    execute_single(
+        """
+        UPDATE backlot_trial_requests SET
+            status = :new_status,
+            extension_denied_at = NOW(),
+            extension_denied_by = :denier,
+            updated_at = NOW()
+        WHERE id = :id RETURNING id
+        """,
+        {"id": trial_id, "denier": profile["id"], "new_status": new_status},
+    )
+
+    # CRM activity
+    if trial.get("converted_contact_id"):
+        try:
+            execute_insert(
+                """
+                INSERT INTO crm_activities (contact_id, activity_type, subject, created_by)
+                VALUES (:cid, 'note', 'Trial extension denied', :uid)
+                RETURNING id
+                """,
+                {"cid": trial["converted_contact_id"], "uid": profile["id"]},
+            )
+        except Exception:
+            pass
+
+    return {"success": True}

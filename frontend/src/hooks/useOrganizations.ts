@@ -70,7 +70,7 @@ export function useMyBacklotOrganizations() {
   return useQuery({
     queryKey: ['my-backlot-orgs'],
     queryFn: async (): Promise<MyBacklotOrg[]> => {
-      const response = await api.get('/organizations/my-backlot-orgs');
+      const response = await api.get('/api/v1/organizations/my-backlot-orgs');
       return response;
     },
   });
@@ -83,7 +83,7 @@ export function useOrganizationBacklotStatus(organizationId: string) {
   return useQuery({
     queryKey: ['org-backlot-status', organizationId],
     queryFn: async (): Promise<OrganizationBacklotStatus> => {
-      const response = await api.get(`/organizations/${organizationId}/backlot/status`);
+      const response = await api.get(`/api/v1/organizations/${organizationId}/backlot/status`);
       return response;
     },
     enabled: !!organizationId,
@@ -99,7 +99,7 @@ export function useEnableBacklot() {
 
   return useMutation({
     mutationFn: async ({ organizationId, seatLimit }: { organizationId: string; seatLimit: number }) => {
-      return api.post(`/organizations/${organizationId}/backlot/enable`, { seat_limit: seatLimit });
+      return api.post(`/api/v1/organizations/${organizationId}/backlot/enable`, { seat_limit: seatLimit });
     },
     onSuccess: (_, { organizationId }) => {
       queryClient.invalidateQueries({ queryKey: ['org-backlot-status', organizationId] });
@@ -119,7 +119,7 @@ export function useOrganizationSeats(organizationId: string) {
   return useQuery({
     queryKey: ['org-backlot-seats', organizationId],
     queryFn: async (): Promise<BacklotSeat[]> => {
-      const response = await api.get(`/organizations/${organizationId}/backlot/seats`);
+      const response = await api.get(`/api/v1/organizations/${organizationId}/backlot/seats`);
       return response;
     },
     enabled: !!organizationId,
@@ -144,7 +144,7 @@ export function useAddOrganizationSeat() {
       role: 'owner' | 'admin' | 'collaborative';
       canCreateProjects: boolean;
     }) => {
-      return api.post(`/organizations/${organizationId}/backlot/seats`, {
+      return api.post(`/api/v1/organizations/${organizationId}/backlot/seats`, {
         user_id: userId,
         role,
         can_create_projects: canCreateProjects,
@@ -175,7 +175,7 @@ export function useUpdateOrganizationSeat() {
       role?: 'owner' | 'admin' | 'collaborative';
       canCreateProjects?: boolean;
     }) => {
-      return api.patch(`/organizations/${organizationId}/backlot/seats/${userId}`, {
+      return api.patch(`/api/v1/organizations/${organizationId}/backlot/seats/${userId}`, {
         role,
         can_create_projects: canCreateProjects,
       });
@@ -194,7 +194,7 @@ export function useRemoveOrganizationSeat() {
 
   return useMutation({
     mutationFn: async ({ organizationId, userId }: { organizationId: string; userId: string }) => {
-      return api.delete(`/organizations/${organizationId}/backlot/seats/${userId}`);
+      return api.delete(`/api/v1/organizations/${organizationId}/backlot/seats/${userId}`);
     },
     onSuccess: (_, { organizationId }) => {
       queryClient.invalidateQueries({ queryKey: ['org-backlot-seats', organizationId] });
@@ -214,7 +214,7 @@ export function useUserProjectAccess(organizationId: string, userId: string) {
   return useQuery({
     queryKey: ['org-user-project-access', organizationId, userId],
     queryFn: async (): Promise<ProjectAccess[]> => {
-      const response = await api.get(`/organizations/${organizationId}/backlot/seats/${userId}/projects`);
+      const response = await api.get(`/api/v1/organizations/${organizationId}/backlot/seats/${userId}/projects`);
       return response;
     },
     enabled: !!organizationId && !!userId,
@@ -239,7 +239,7 @@ export function useGrantProjectAccess() {
       projectId: string;
       tabPermissions?: Record<string, { view: boolean; edit: boolean }>;
     }) => {
-      return api.post(`/organizations/${organizationId}/backlot/seats/${userId}/projects`, {
+      return api.post(`/api/v1/organizations/${organizationId}/backlot/seats/${userId}/projects`, {
         project_id: projectId,
         tab_permissions: tabPermissions,
       });
@@ -268,7 +268,7 @@ export function useUpdateProjectAccess() {
       projectId: string;
       tabPermissions: Record<string, { view: boolean; edit: boolean }>;
     }) => {
-      return api.patch(`/organizations/${organizationId}/backlot/seats/${userId}/projects/${projectId}`, {
+      return api.patch(`/api/v1/organizations/${organizationId}/backlot/seats/${userId}/projects/${projectId}`, {
         tab_permissions: tabPermissions,
       });
     },
@@ -294,7 +294,7 @@ export function useRevokeProjectAccess() {
       userId: string;
       projectId: string;
     }) => {
-      return api.delete(`/organizations/${organizationId}/backlot/seats/${userId}/projects/${projectId}`);
+      return api.delete(`/api/v1/organizations/${organizationId}/backlot/seats/${userId}/projects/${projectId}`);
     },
     onSuccess: (_, { organizationId, userId }) => {
       queryClient.invalidateQueries({ queryKey: ['org-user-project-access', organizationId, userId] });
@@ -313,7 +313,7 @@ export function useOrganizationProjects(organizationId: string) {
   return useQuery({
     queryKey: ['org-projects', organizationId],
     queryFn: async () => {
-      const response = await api.get(`/organizations/${organizationId}/projects`);
+      const response = await api.get(`/api/v1/organizations/${organizationId}/projects`);
       return response;
     },
     enabled: !!organizationId,
@@ -334,7 +334,7 @@ export function useAssignProjectToOrg() {
       projectId: string;
       organizationId: string | null;
     }) => {
-      return api.post(`/projects/${projectId}/organization`, { organization_id: organizationId });
+      return api.post(`/api/v1/projects/${projectId}/organization`, { organization_id: organizationId });
     },
     onSuccess: (_, { organizationId }) => {
       if (organizationId) {
@@ -366,7 +366,7 @@ export function useBacklotAccess() {
   return useQuery({
     queryKey: ['backlot-access'],
     queryFn: async (): Promise<BacklotAccessInfo> => {
-      const response = await api.get('/backlot/access');
+      const response = await api.get('/api/v1/backlot/access');
       return response;
     },
     staleTime: 30000, // Cache for 30 seconds

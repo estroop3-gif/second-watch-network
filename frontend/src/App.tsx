@@ -56,6 +56,7 @@ const Terms = React.lazy(() => import("./pages/Terms"));
 const Donations = React.lazy(() => import("./pages/Donations"));
 const PartnerApply = React.lazy(() => import("./pages/PartnerApply"));
 const SubscriptionsAndRolesPage = React.lazy(() => import("./pages/SubscriptionsAndRolesPage"));
+const PricingPage = React.lazy(() => import("./pages/Pricing"));
 const FilmmakerProfile = React.lazy(() => import("./pages/FilmmakerProfile"));
 
 // Authenticated general pages
@@ -318,6 +319,7 @@ const App = () => (
                   <Route path="/terms-of-submission" element={<TermsOfSubmission />} />
                   <Route path="/partners/apply" element={<PartnerApply />} />
                   <Route path="/subscriptions" element={<SubscriptionsAndRolesPage />} />
+                  <Route path="/pricing" element={<PricingPage />} />
                   <Route path="/account/membership" element={<SubscriptionsAndRolesPage />} />
                   <Route path="/watch-now" element={<WatchNow />} />
                   <Route path="/dashboard/free" element={<DashboardFree />} />

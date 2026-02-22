@@ -287,6 +287,73 @@ def enforce_user_org_limit(user_id: str) -> None:
 
 
 # =============================================================================
+# Trial Expiry Enforcement
+# =============================================================================
+
+def enforce_trial_not_expired(org_id: str) -> None:
+    """
+    Check if the organization's trial has expired.
+    Raises 403 if backlot_billing_status is 'expired'.
+    Read-only access should still be allowed — only call this on write endpoints.
+    """
+    row = execute_single(
+        "SELECT backlot_billing_status FROM organizations WHERE id = :oid",
+        {"oid": org_id},
+    )
+    if row and row.get("backlot_billing_status") == "expired":
+        raise HTTPException(
+            status_code=403,
+            detail="Your Backlot trial has expired. Subscribe to continue creating and editing. Your data is preserved and accessible in read-only mode.",
+        )
+
+
+def enforce_billing_active(org_id: str) -> None:
+    """
+    Check if the organization has an active billing status.
+    Raises 403 on write operations if:
+    - expired (trial)
+    - canceled (subscription)
+    - past_due AND past_due_since > 7 days (grace period exceeded)
+
+    Read-only access should still be allowed — only call this on write endpoints.
+    This replaces enforce_trial_not_expired() for endpoints that should check
+    both trial expiry and subscription billing status.
+    """
+    from datetime import datetime, timedelta
+
+    row = execute_single(
+        "SELECT backlot_billing_status, past_due_since FROM organizations WHERE id = :oid",
+        {"oid": org_id},
+    )
+    if not row:
+        return
+
+    status = row.get("backlot_billing_status")
+
+    if status == "expired":
+        raise HTTPException(
+            status_code=403,
+            detail="Your Backlot trial has expired. Subscribe to continue creating and editing. Your data is preserved and accessible in read-only mode.",
+        )
+
+    if status == "canceled":
+        raise HTTPException(
+            status_code=403,
+            detail="Your Backlot subscription has been canceled. Resubscribe to continue creating and editing. Your data is preserved and accessible in read-only mode.",
+        )
+
+    if status == "past_due":
+        past_due_since = row.get("past_due_since")
+        if past_due_since and hasattr(past_due_since, "timestamp"):
+            grace_end = past_due_since + timedelta(days=7)
+            if datetime.utcnow() > grace_end:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Your payment is past due and the grace period has ended. Update your payment method to restore access. Your data is preserved and accessible in read-only mode.",
+                )
+
+
+# =============================================================================
 # Bandwidth Recording
 # =============================================================================
 

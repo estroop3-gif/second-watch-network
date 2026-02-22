@@ -990,8 +990,8 @@ async def get_analytics(
         evt_date_clause += " AND e.created_at >= :date_from"
         params["date_from"] = date_from
     if date_to:
-        req_date_clause += " AND r.created_at <= :date_to::timestamp + INTERVAL '1 day'"
-        evt_date_clause += " AND e.created_at <= :date_to::timestamp + INTERVAL '1 day'"
+        req_date_clause += " AND r.created_at <= CAST(:date_to AS timestamp) + INTERVAL '1 day'"
+        evt_date_clause += " AND e.created_at <= CAST(:date_to AS timestamp) + INTERVAL '1 day'"
         params["date_to"] = date_to
 
     # --- Summary ---
@@ -1002,7 +1002,10 @@ async def get_analytics(
             COUNT(*) FILTER (WHERE r.status NOT IN ('posted', 'cancelled')) AS active,
             COUNT(*) FILTER (WHERE r.status = 'cancelled') AS cancelled,
             ROUND(
-                100.0 * COUNT(*) FILTER (WHERE r.revision_count > 0)
+                100.0 * COUNT(*) FILTER (WHERE EXISTS (
+                    SELECT 1 FROM media_request_status_history h2
+                    WHERE h2.request_id = r.id AND h2.new_status = 'revision'
+                ))
                 / NULLIF(COUNT(*), 0), 1
             ) AS revision_rate,
             ROUND(

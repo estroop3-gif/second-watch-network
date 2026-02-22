@@ -136,6 +136,13 @@ export const UserNav = () => {
           </DropdownMenuItem>
         )}
 
+        <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
+          <Link to="/media/requests">
+            <Megaphone className="mr-2 h-4 w-4" />
+            <span>Media Hub</span>
+          </Link>
+        </DropdownMenuItem>
+
         {showOrderLink && (
           <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
             <Link to="/order/dashboard">

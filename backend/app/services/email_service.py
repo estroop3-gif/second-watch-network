@@ -1099,6 +1099,171 @@ async def send_welcome_email(
 
 
 # =============================================================================
+# BACKLOT TRIAL WELCOME EMAIL
+# =============================================================================
+
+async def send_backlot_trial_welcome_email(
+    email: str,
+    name: str,
+    temp_password: str,
+    trial_ends_at,
+    org_name: str,
+) -> Dict[str, Any]:
+    """
+    Send welcome email for a new Backlot trial account.
+
+    Includes temp password, trial details, and getting started steps.
+    """
+    from app.services.email_templates import base_template, cta_button, info_card, code_box, TEXT_LIGHT, TEXT_MUTED
+
+    trial_end_str = trial_ends_at.strftime("%B %d, %Y") if hasattr(trial_ends_at, "strftime") else str(trial_ends_at)[:10]
+
+    account_info = (
+        f'<strong style="color: {TEXT_LIGHT};">Email:</strong> {email}<br>'
+        f'<strong style="color: {TEXT_LIGHT};">Organization:</strong> {org_name}'
+    )
+
+    trial_details = (
+        f'<strong style="color: {TEXT_LIGHT};">Trial ends:</strong> {trial_end_str}<br>'
+        f'<strong style="color: {TEXT_LIGHT};">Projects:</strong> 1 active project<br>'
+        f'<strong style="color: {TEXT_LIGHT};">Storage:</strong> 5 GB<br>'
+        f'<strong style="color: {TEXT_LIGHT};">Bandwidth:</strong> 50 GB/month<br>'
+        f'<strong style="color: {TEXT_LIGHT};">Team:</strong> Up to 3 members (1 owner + 2 collaborative)'
+    )
+
+    getting_started = (
+        f'<strong style="color: {TEXT_LIGHT};">1.</strong> Log in and set a new password<br>'
+        f'<strong style="color: {TEXT_LIGHT};">2.</strong> Create your first project<br>'
+        f'<strong style="color: {TEXT_LIGHT};">3.</strong> Invite your team<br>'
+        f'<strong style="color: {TEXT_LIGHT};">4.</strong> Start managing your production'
+    )
+
+    body_html = f"""
+<h2 style="color: {TEXT_LIGHT}; margin: 0 0 16px 0; font-size: 22px;">Welcome to Backlot, {name}!</h2>
+<p style="color: {TEXT_MUTED}; margin: 0 0 24px 0; font-size: 15px; line-height: 1.6;">
+    Your 14-day free trial is ready. You now have full access to professional production management tools.
+</p>
+
+{info_card("Your Account", account_info)}
+
+<p style="color: {TEXT_MUTED}; margin: 0 0 8px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px;">Your Temporary Password</p>
+{code_box(temp_password)}
+
+{info_card("Trial Details", trial_details, "#4ade80")}
+
+{info_card("Getting Started", getting_started, "#60a5fa")}
+
+{cta_button("Log In Now", "https://www.secondwatchnetwork.com/login")}
+
+<p style="color: #666; margin: 0; font-size: 12px; text-align: center;">
+    Questions? Reply to this email or reach out to your sales rep.
+</p>"""
+
+    text_content = f"""Welcome to Backlot, {name}!
+
+Your 14-day free trial is ready.
+
+Account: {email}
+Organization: {org_name}
+Temporary Password: {temp_password}
+
+Trial ends: {trial_end_str}
+Limits: 1 project, 5 GB storage, 50 GB bandwidth, 3 team members
+
+Getting Started:
+1. Log in at https://www.secondwatchnetwork.com/login
+2. Set a new password
+3. Create your first project
+4. Invite your team
+
+Questions? Reply to this email or reach out to your sales rep.
+"""
+
+    return await EmailService.send_email(
+        to_emails=[email],
+        subject="Your Backlot Trial is Ready - Log In Now",
+        html_content=base_template("Welcome to Backlot", body_html, preheader="Your 14-day Backlot trial is ready. Log in to get started."),
+        text_content=text_content,
+        email_type="backlot_trial_welcome",
+        source_service="trial",
+        source_action="trial_provisioning",
+    )
+
+
+async def send_backlot_trial_existing_user_email(
+    email: str,
+    name: str,
+    trial_ends_at,
+    org_name: str,
+) -> Dict[str, Any]:
+    """
+    Send trial activation email to an existing user (no temp password needed).
+    """
+    from app.services.email_templates import base_template, cta_button, info_card, TEXT_LIGHT, TEXT_MUTED
+
+    trial_end_str = trial_ends_at.strftime("%B %d, %Y") if hasattr(trial_ends_at, "strftime") else str(trial_ends_at)[:10]
+
+    trial_details = (
+        f'<strong style="color: {TEXT_LIGHT};">Organization:</strong> {org_name}<br>'
+        f'<strong style="color: {TEXT_LIGHT};">Trial ends:</strong> {trial_end_str}<br>'
+        f'<strong style="color: {TEXT_LIGHT};">Projects:</strong> 1 active project<br>'
+        f'<strong style="color: {TEXT_LIGHT};">Storage:</strong> 5 GB<br>'
+        f'<strong style="color: {TEXT_LIGHT};">Bandwidth:</strong> 50 GB/month<br>'
+        f'<strong style="color: {TEXT_LIGHT};">Team:</strong> Up to 3 members (1 owner + 2 collaborative)'
+    )
+
+    getting_started = (
+        f'<strong style="color: {TEXT_LIGHT};">1.</strong> Log in with your existing account<br>'
+        f'<strong style="color: {TEXT_LIGHT};">2.</strong> Create your first project<br>'
+        f'<strong style="color: {TEXT_LIGHT};">3.</strong> Invite your team<br>'
+        f'<strong style="color: {TEXT_LIGHT};">4.</strong> Start managing your production'
+    )
+
+    body_html = f"""
+<h2 style="color: {TEXT_LIGHT}; margin: 0 0 16px 0; font-size: 22px;">Your Backlot Trial is Ready, {name}!</h2>
+<p style="color: {TEXT_MUTED}; margin: 0 0 24px 0; font-size: 15px; line-height: 1.6;">
+    Great news! Your 14-day free trial has been activated. Since you already have a Second Watch Network account, just log in with your existing credentials to access Backlot.
+</p>
+
+{info_card("Your Trial", trial_details, "#4ade80")}
+
+{info_card("Getting Started", getting_started, "#60a5fa")}
+
+{cta_button("Log In Now", "https://www.secondwatchnetwork.com/login")}
+
+<p style="color: #666; margin: 0; font-size: 12px; text-align: center;">
+    Questions? Reply to this email or reach out to your sales rep.
+</p>"""
+
+    text_content = f"""Your Backlot Trial is Ready, {name}!
+
+Your 14-day free trial has been activated. Log in with your existing credentials to access Backlot.
+
+Organization: {org_name}
+Trial ends: {trial_end_str}
+Limits: 1 project, 5 GB storage, 50 GB bandwidth, 3 team members
+
+Getting Started:
+1. Log in at https://www.secondwatchnetwork.com/login
+2. Create your first project
+3. Invite your team
+4. Start managing your production
+
+Questions? Reply to this email or reach out to your sales rep.
+"""
+
+    return await EmailService.send_email(
+        to_emails=[email],
+        subject="Your Backlot Trial is Ready - Log In Now",
+        html_content=base_template("Your Backlot Trial is Ready", body_html, preheader="Your 14-day Backlot trial is activated. Log in to get started."),
+        text_content=text_content,
+        email_type="backlot_trial_welcome",
+        source_service="trial",
+        source_action="trial_provisioning",
+    )
+
+
+# =============================================================================
 # SUBMISSION STATUS CHANGE EMAIL TEMPLATES
 # =============================================================================
 
@@ -1307,3 +1472,194 @@ async def send_submission_status_email(
         source_action="status_change",
         source_reference_id=submission_id
     )
+
+
+# =============================================================================
+# Subscription Billing Emails
+# =============================================================================
+
+def _get_org_owner_emails(org_id: str):
+    """Get email addresses of org owners/admins for billing notifications."""
+    from app.core.database import execute_query
+    rows = execute_query("""
+        SELECT p.email, p.full_name FROM profiles p
+        JOIN organization_members om ON om.user_id = p.id
+        WHERE om.organization_id = :oid AND om.status = 'active'
+          AND om.role IN ('owner', 'admin')
+    """, {"oid": org_id})
+    return [(r["email"], r.get("full_name", "")) for r in rows if r.get("email")]
+
+
+async def send_subscription_activated_email(org_id: str, config: dict) -> None:
+    """Send email when a subscription is activated."""
+    from app.services.email_templates import base_template, cta_button, info_card
+
+    recipients = _get_org_owner_emails(org_id)
+    if not recipients:
+        return
+
+    tier_label = (config.get("tier_name") or "A La Carte").title()
+    monthly = config.get("monthly_total_cents", 0) / 100
+
+    body = f"""
+    <h2 style="color: #FCDC58; margin: 0 0 16px;">Subscription Activated</h2>
+    <p style="color: #F9F5EF; margin: 0 0 16px;">
+        Your Backlot subscription is now active. Here's your plan summary:
+    </p>
+    {info_card(f'''
+        <strong>Plan:</strong> {tier_label}<br>
+        <strong>Monthly:</strong> ${monthly:,.2f}<br>
+        <strong>Owner Seats:</strong> {config.get("owner_seats", 1)}<br>
+        <strong>Collaborative Seats:</strong> {config.get("collaborative_seats", 2)}<br>
+        <strong>Active Projects:</strong> {config.get("active_projects", 5)}
+    ''')}
+    {cta_button("Go to Backlot", f"{settings.FRONTEND_URL}/backlot")}
+    """
+
+    html = base_template("Subscription Activated", body, "Your Backlot subscription is now active")
+
+    for email, name in recipients:
+        await EmailService.send_email(
+            to_emails=[email],
+            subject="Your Backlot Subscription is Active",
+            html_content=html,
+            email_type="subscription_activated",
+            source_service="billing",
+            source_action="activated",
+        )
+
+
+async def send_payment_failed_email(org_id: str) -> None:
+    """Send email when a payment fails."""
+    from app.services.email_templates import base_template, cta_button, security_notice
+
+    recipients = _get_org_owner_emails(org_id)
+    if not recipients:
+        return
+
+    body = f"""
+    <h2 style="color: #FF3C3C; margin: 0 0 16px;">Payment Failed</h2>
+    {security_notice("We were unable to process your payment. You have a 7-day grace period to update your payment method before your account becomes read-only.")}
+    <p style="color: #F9F5EF; margin: 16px 0;">
+        Please update your payment method to avoid any interruption to your service.
+    </p>
+    {cta_button("Update Payment Method", f"{settings.FRONTEND_URL}/organizations")}
+    """
+
+    html = base_template("Payment Failed", body, "Your payment could not be processed")
+
+    for email, name in recipients:
+        await EmailService.send_email(
+            to_emails=[email],
+            subject="Action Required: Payment Failed for Your Backlot Subscription",
+            html_content=html,
+            email_type="payment_failed",
+            source_service="billing",
+            source_action="payment_failed",
+        )
+
+
+async def send_payment_reminder_email(org_id: str, days_elapsed: int) -> None:
+    """Send escalating payment reminder emails during grace period."""
+    from app.services.email_templates import base_template, cta_button, security_notice
+
+    recipients = _get_org_owner_emails(org_id)
+    if not recipients:
+        return
+
+    days_remaining = max(0, 7 - days_elapsed)
+
+    if days_elapsed <= 3:
+        urgency = "Reminder"
+        color = "#FCDC58"
+    else:
+        urgency = "Final Warning"
+        color = "#FF3C3C"
+
+    body = f"""
+    <h2 style="color: {color}; margin: 0 0 16px;">Payment {urgency}</h2>
+    {security_notice(f"Your payment is past due. You have {days_remaining} day(s) remaining to update your payment method before your account becomes read-only.")}
+    <p style="color: #F9F5EF; margin: 16px 0;">
+        Update your payment information now to maintain full access to your projects and data.
+    </p>
+    {cta_button("Update Payment Method", f"{settings.FRONTEND_URL}/organizations")}
+    """
+
+    html = base_template(f"Payment {urgency}", body, f"Payment past due — {days_remaining} days remaining")
+
+    for email, name in recipients:
+        await EmailService.send_email(
+            to_emails=[email],
+            subject=f"{'URGENT: ' if days_elapsed >= 5 else ''}Payment Past Due — {days_remaining} Days Remaining",
+            html_content=html,
+            email_type="payment_reminder",
+            source_service="billing",
+            source_action="payment_reminder",
+        )
+
+
+async def send_subscription_canceled_email(org_id: str) -> None:
+    """Send email when a subscription is canceled."""
+    from app.services.email_templates import base_template, cta_button
+
+    recipients = _get_org_owner_emails(org_id)
+    if not recipients:
+        return
+
+    body = f"""
+    <h2 style="color: #F9F5EF; margin: 0 0 16px;">Subscription Canceled</h2>
+    <p style="color: #F9F5EF; margin: 0 0 16px;">
+        Your Backlot subscription has been canceled. Your data is preserved and accessible in read-only mode.
+    </p>
+    <p style="color: #a0a0a0; margin: 0 0 24px;">
+        You can resubscribe at any time to restore full access to all your projects and data.
+    </p>
+    {cta_button("Resubscribe", f"{settings.FRONTEND_URL}/organizations")}
+    """
+
+    html = base_template("Subscription Canceled", body, "Your Backlot subscription has been canceled")
+
+    for email, name in recipients:
+        await EmailService.send_email(
+            to_emails=[email],
+            subject="Your Backlot Subscription Has Been Canceled",
+            html_content=html,
+            email_type="subscription_canceled",
+            source_service="billing",
+            source_action="canceled",
+        )
+
+
+async def send_plan_changed_email(org_id: str, quote: dict) -> None:
+    """Send email when a subscription plan is changed."""
+    from app.services.email_templates import base_template, cta_button, info_card
+
+    recipients = _get_org_owner_emails(org_id)
+    if not recipients:
+        return
+
+    monthly = quote.get("monthly_total", 0)
+
+    body = f"""
+    <h2 style="color: #FCDC58; margin: 0 0 16px;">Plan Updated</h2>
+    <p style="color: #F9F5EF; margin: 0 0 16px;">
+        Your Backlot subscription plan has been updated. Here's your new plan summary:
+    </p>
+    {info_card(f'''
+        <strong>New Monthly Total:</strong> ${monthly:,.2f}<br>
+        <strong>Changes will be prorated</strong> on your next invoice.
+    ''')}
+    {cta_button("View Your Plan", f"{settings.FRONTEND_URL}/organizations")}
+    """
+
+    html = base_template("Plan Updated", body, "Your Backlot plan has been updated")
+
+    for email, name in recipients:
+        await EmailService.send_email(
+            to_emails=[email],
+            subject="Your Backlot Plan Has Been Updated",
+            html_content=html,
+            email_type="plan_changed",
+            source_service="billing",
+            source_action="plan_changed",
+        )

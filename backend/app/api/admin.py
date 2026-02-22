@@ -1367,6 +1367,7 @@ ROLE_TO_COLUMN = {
     "sales_admin": "is_sales_admin",
     "sales_agent": "is_sales_agent",
     "sales_rep": "is_sales_rep",
+    "media_team": "is_media_team",
     "lodge_officer": "is_lodge_officer",
     "order_member": "is_order_member",
     "partner": "is_partner",

@@ -74,6 +74,7 @@ from app.api import org_messages  # Organization messaging
 from app.api import organization_backlot  # Organization Backlot seat management
 from app.api import crm, crm_admin  # CRM - Sales & Customer Relationship Management
 from app.api import media_hub  # Media/Marketing Hub
+from app.api import subscription_billing  # Self-service subscription billing
 
 # Configure structured logging
 setup_logging(level="INFO")
@@ -339,8 +340,10 @@ app.include_router(themes.router, prefix=f"{settings.API_V1_PREFIX}/themes", tag
 app.include_router(media.router, prefix=f"{settings.API_V1_PREFIX}/media", tags=["Media Processing"])
 
 # Creator Monetization & Organizations
-app.include_router(organizations.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Organizations"])
+# NOTE: organization_backlot must come BEFORE organizations so that
+# /organizations/my-backlot-orgs matches before /organizations/{org_id}
 app.include_router(organization_backlot.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Organization Backlot"])
+app.include_router(organizations.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Organizations"])
 app.include_router(creator_earnings.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Creator Earnings"])
 
 # Phase 2A: Linear Channels
@@ -405,6 +408,7 @@ app.include_router(org_messages.router, prefix=settings.API_V1_PREFIX, tags=["Or
 app.include_router(crm.router, prefix=f"{settings.API_V1_PREFIX}/crm", tags=["CRM"])
 app.include_router(crm_admin.router, prefix=f"{settings.API_V1_PREFIX}/admin/crm", tags=["CRM Admin"])
 app.include_router(media_hub.router, prefix=f"{settings.API_V1_PREFIX}/media-hub", tags=["Media Hub"])
+app.include_router(subscription_billing.router, prefix=f"{settings.API_V1_PREFIX}/subscription-billing", tags=["Subscription Billing"])
 
 # Mount Socket.IO for real-time communications
 try:

@@ -1,11 +1,17 @@
 import { useState } from 'react';
-import { useTrialRequests, useApproveTrialRequest, useRejectTrialRequest, useBulkApproveTrials } from '@/hooks/crm/useTrialRequests';
+import {
+  useTrialRequests, useApproveTrialRequest, useRejectTrialRequest,
+  useBulkApproveTrials, useApproveTrialExtension, useDenyTrialExtension,
+} from '@/hooks/crm/useTrialRequests';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { Search, CheckCircle2, XCircle, Loader2, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react';
+import {
+  Search, CheckCircle2, XCircle, Loader2, ChevronLeft, ChevronRight,
+  ExternalLink, AlertTriangle, RefreshCw, Clock, ArrowUpRight,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -15,6 +21,10 @@ import { Textarea } from '@/components/ui/textarea';
 const STATUS_FILTERS = [
   { label: 'All', value: '' },
   { label: 'Pending', value: 'pending' },
+  { label: 'Active', value: 'active' },
+  { label: 'Extension Requested', value: 'extension_requested' },
+  { label: 'Extended', value: 'extended' },
+  { label: 'Expired', value: 'expired' },
   { label: 'Approved', value: 'approved' },
   { label: 'Rejected', value: 'rejected' },
 ];
@@ -23,6 +33,18 @@ const statusBadge = (status: string) => {
   switch (status) {
     case 'pending':
       return <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30">Pending</Badge>;
+    case 'provisioning':
+      return <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30">Provisioning</Badge>;
+    case 'active':
+      return <Badge className="bg-green-500/20 text-green-400 border-green-500/30">Active</Badge>;
+    case 'extension_requested':
+      return <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30">Extension Requested</Badge>;
+    case 'extended':
+      return <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30">Extended</Badge>;
+    case 'expired':
+      return <Badge className="bg-red-500/20 text-red-400 border-red-500/30">Expired</Badge>;
+    case 'converted':
+      return <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30">Converted</Badge>;
     case 'approved':
       return <Badge className="bg-green-500/20 text-green-400 border-green-500/30">Approved</Badge>;
     case 'rejected':
@@ -40,6 +62,7 @@ const BacklotTrials = () => {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [rejectModal, setRejectModal] = useState<{ open: boolean; id: string }>({ open: false, id: '' });
   const [rejectNotes, setRejectNotes] = useState('');
+  const [detailModal, setDetailModal] = useState<{ open: boolean; trial: any }>({ open: false, trial: null });
   const limit = 25;
 
   const { data, isLoading } = useTrialRequests({
@@ -52,6 +75,8 @@ const BacklotTrials = () => {
   const approveMutation = useApproveTrialRequest();
   const rejectMutation = useRejectTrialRequest();
   const bulkApproveMutation = useBulkApproveTrials();
+  const approveExtensionMutation = useApproveTrialExtension();
+  const denyExtensionMutation = useDenyTrialExtension();
 
   const trials = data?.trials || [];
   const total = data?.total || 0;
@@ -60,7 +85,7 @@ const BacklotTrials = () => {
   const handleApprove = async (id: string) => {
     try {
       await approveMutation.mutateAsync(id);
-      toast.success('Trial approved — CRM contact created');
+      toast.success('Trial approved and provisioned');
       setSelected((s) => { const n = new Set(s); n.delete(id); return n; });
     } catch (err: any) {
       toast.error(err?.message || 'Failed to approve');
@@ -87,6 +112,24 @@ const BacklotTrials = () => {
       setSelected(new Set());
     } catch (err: any) {
       toast.error(err?.message || 'Bulk approve failed');
+    }
+  };
+
+  const handleApproveExtension = async (id: string) => {
+    try {
+      await approveExtensionMutation.mutateAsync(id);
+      toast.success('Extension approved — trial extended 30 days');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to approve extension');
+    }
+  };
+
+  const handleDenyExtension = async (id: string) => {
+    try {
+      await denyExtensionMutation.mutateAsync(id);
+      toast.success('Extension denied');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to deny extension');
     }
   };
 
@@ -191,8 +234,9 @@ const BacklotTrials = () => {
                 </th>
                 <th className="px-3 py-2 text-left text-bone-white/60 font-medium">Name</th>
                 <th className="px-3 py-2 text-left text-bone-white/60 font-medium">Email</th>
-                <th className="px-3 py-2 text-left text-bone-white/60 font-medium">Phone</th>
+                <th className="px-3 py-2 text-left text-bone-white/60 font-medium">Company</th>
                 <th className="px-3 py-2 text-left text-bone-white/60 font-medium">Status</th>
+                <th className="px-3 py-2 text-left text-bone-white/60 font-medium">Trial Ends</th>
                 <th className="px-3 py-2 text-left text-bone-white/60 font-medium">Submitted</th>
                 <th className="px-3 py-2 text-left text-bone-white/60 font-medium">Actions</th>
               </tr>
@@ -208,12 +252,31 @@ const BacklotTrials = () => {
                       />
                     )}
                   </td>
-                  <td className="px-3 py-2 text-bone-white font-medium">
-                    {trial.first_name} {trial.last_name}
+                  <td className="px-3 py-2">
+                    <button
+                      onClick={() => setDetailModal({ open: true, trial })}
+                      className="text-bone-white font-medium hover:text-accent-yellow transition-colors text-left"
+                    >
+                      {trial.first_name} {trial.last_name}
+                    </button>
                   </td>
                   <td className="px-3 py-2 text-bone-white/70">{trial.email}</td>
-                  <td className="px-3 py-2 text-bone-white/70">{trial.phone}</td>
-                  <td className="px-3 py-2">{statusBadge(trial.status)}</td>
+                  <td className="px-3 py-2 text-bone-white/70 text-xs">
+                    {trial.company_name || '-'}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-1.5">
+                      {statusBadge(trial.status)}
+                      {trial.provisioning_error && (
+                        <AlertTriangle className="h-3.5 w-3.5 text-red-400" title={trial.provisioning_error} />
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-bone-white/50 text-xs">
+                    {trial.trial_ends_at
+                      ? new Date(trial.extension_ends_at || trial.trial_ends_at).toLocaleDateString()
+                      : '-'}
+                  </td>
                   <td className="px-3 py-2 text-bone-white/50 text-xs">
                     {new Date(trial.created_at).toLocaleDateString()}
                   </td>
@@ -228,7 +291,11 @@ const BacklotTrials = () => {
                             disabled={approveMutation.isPending}
                             className="text-green-400 hover:text-green-300 hover:bg-green-500/10 h-7 px-2"
                           >
-                            <CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Approve
+                            {trial.provisioning_error ? (
+                              <><RefreshCw className="h-3.5 w-3.5 mr-1" /> Retry</>
+                            ) : (
+                              <><CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Approve</>
+                            )}
                           </Button>
                           <Button
                             size="sm"
@@ -240,16 +307,46 @@ const BacklotTrials = () => {
                           </Button>
                         </>
                       )}
-                      {trial.status === 'approved' && trial.converted_contact_id && (
+                      {trial.status === 'extension_requested' && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => handleApproveExtension(trial.id)}
+                            disabled={approveExtensionMutation.isPending}
+                            className="text-green-400 hover:text-green-300 hover:bg-green-500/10 h-7 px-2"
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Approve Ext.
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => handleDenyExtension(trial.id)}
+                            disabled={denyExtensionMutation.isPending}
+                            className="text-red-400 hover:text-red-300 hover:bg-red-500/10 h-7 px-2"
+                          >
+                            <XCircle className="h-3.5 w-3.5 mr-1" /> Deny Ext.
+                          </Button>
+                        </>
+                      )}
+                      {trial.converted_contact_id && (
                         <Link
                           to={`/crm/contacts/${trial.converted_contact_id}`}
                           className="text-accent-yellow hover:underline text-xs flex items-center gap-1"
                         >
-                          <ExternalLink className="h-3 w-3" /> View Contact
+                          <ExternalLink className="h-3 w-3" /> Contact
+                        </Link>
+                      )}
+                      {trial.provisioned_profile_id && (
+                        <Link
+                          to={`/admin/users?search=${encodeURIComponent(trial.email)}`}
+                          className="text-blue-400 hover:underline text-xs flex items-center gap-1"
+                        >
+                          <ArrowUpRight className="h-3 w-3" /> Profile
                         </Link>
                       )}
                       {trial.status === 'rejected' && trial.notes && (
-                        <span className="text-bone-white/40 text-xs italic truncate max-w-[200px]" title={trial.notes}>
+                        <span className="text-bone-white/40 text-xs italic truncate max-w-[150px]" title={trial.notes}>
                           {trial.notes}
                         </span>
                       )}
@@ -318,6 +415,90 @@ const BacklotTrials = () => {
               Reject
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Detail Modal */}
+      <Dialog open={detailModal.open} onOpenChange={(open) => { if (!open) setDetailModal({ open: false, trial: null }); }}>
+        <DialogContent className="bg-gray-900 border-muted-gray/30 max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-bone-white">Trial Request Details</DialogTitle>
+          </DialogHeader>
+          {detailModal.trial && (
+            <div className="space-y-4 text-sm">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <span className="text-bone-white/50 text-xs uppercase">Name</span>
+                  <p className="text-bone-white">{detailModal.trial.first_name} {detailModal.trial.last_name}</p>
+                </div>
+                <div>
+                  <span className="text-bone-white/50 text-xs uppercase">Email</span>
+                  <p className="text-bone-white">{detailModal.trial.email}</p>
+                </div>
+                <div>
+                  <span className="text-bone-white/50 text-xs uppercase">Phone</span>
+                  <p className="text-bone-white">{detailModal.trial.phone}</p>
+                </div>
+                <div>
+                  <span className="text-bone-white/50 text-xs uppercase">Status</span>
+                  <div className="mt-0.5">{statusBadge(detailModal.trial.status)}</div>
+                </div>
+                {detailModal.trial.company_name && (
+                  <div>
+                    <span className="text-bone-white/50 text-xs uppercase">Company</span>
+                    <p className="text-bone-white">{detailModal.trial.company_name}</p>
+                  </div>
+                )}
+                {detailModal.trial.job_title && (
+                  <div>
+                    <span className="text-bone-white/50 text-xs uppercase">Job Title</span>
+                    <p className="text-bone-white">{detailModal.trial.job_title}</p>
+                  </div>
+                )}
+                {detailModal.trial.company_size && (
+                  <div>
+                    <span className="text-bone-white/50 text-xs uppercase">Team Size</span>
+                    <p className="text-bone-white">{detailModal.trial.company_size}</p>
+                  </div>
+                )}
+                {detailModal.trial.trial_ends_at && (
+                  <div>
+                    <span className="text-bone-white/50 text-xs uppercase">Trial Ends</span>
+                    <p className="text-bone-white">{new Date(detailModal.trial.extension_ends_at || detailModal.trial.trial_ends_at).toLocaleDateString()}</p>
+                  </div>
+                )}
+              </div>
+
+              {detailModal.trial.use_case && (
+                <div>
+                  <span className="text-bone-white/50 text-xs uppercase">Use Case</span>
+                  <p className="text-bone-white/80 mt-1">{detailModal.trial.use_case}</p>
+                </div>
+              )}
+
+              {detailModal.trial.provisioning_error && (
+                <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+                  <span className="text-red-400 text-xs uppercase font-medium">Provisioning Error</span>
+                  <p className="text-red-300 mt-1 text-xs font-mono">{detailModal.trial.provisioning_error}</p>
+                </div>
+              )}
+
+              {(detailModal.trial.provisioned_profile_id || detailModal.trial.provisioned_org_id) && (
+                <div className="bg-gray-800/50 rounded-lg p-3 space-y-1">
+                  <span className="text-bone-white/50 text-xs uppercase">Provisioned Resources</span>
+                  {detailModal.trial.provisioned_profile_id && (
+                    <p className="text-bone-white/70 text-xs">Profile: <code className="text-accent-yellow">{detailModal.trial.provisioned_profile_id}</code></p>
+                  )}
+                  {detailModal.trial.provisioned_org_id && (
+                    <p className="text-bone-white/70 text-xs">Org: <code className="text-accent-yellow">{detailModal.trial.provisioned_org_id}</code></p>
+                  )}
+                  {detailModal.trial.org_name && (
+                    <p className="text-bone-white/70 text-xs">Org Name: {detailModal.trial.org_name}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

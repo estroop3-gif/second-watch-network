@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     STRIPE_BACKLOT_MONTHLY_PRICE_ID: str = os.getenv("STRIPE_BACKLOT_MONTHLY_PRICE_ID", "")
     STRIPE_BACKLOT_YEARLY_PRICE_ID: str = os.getenv("STRIPE_BACKLOT_YEARLY_PRICE_ID", "")
 
+    # Billing
+    BILLING_GRACE_PERIOD_DAYS: int = int(os.getenv("BILLING_GRACE_PERIOD_DAYS", "7"))
+
     # WebSocket Configuration (AWS API Gateway WebSocket)
     WEBSOCKET_API_ENDPOINT: str = os.getenv("WEBSOCKET_API_ENDPOINT", "")
     WEBSOCKET_CONNECTIONS_TABLE: str = os.getenv("WEBSOCKET_CONNECTIONS_TABLE", "second-watch-websocket-connections")

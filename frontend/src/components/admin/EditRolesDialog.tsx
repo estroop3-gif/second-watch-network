@@ -15,7 +15,7 @@ import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { usePermissions } from '@/hooks/usePermissions';
-import { Shield, Crown, Users, Star, Film, Briefcase, Sparkles, Lock, FlaskConical, Headset, UserCog, BadgeDollarSign } from 'lucide-react';
+import { Shield, Crown, Users, Star, Film, Briefcase, Sparkles, Lock, FlaskConical, Headset, UserCog, BadgeDollarSign, Megaphone } from 'lucide-react';
 
 interface User {
   id: string;
@@ -42,6 +42,7 @@ const ROLE_DEFINITIONS = [
   { id: 'sales_admin', label: 'Sales Admin', icon: UserCog, description: 'Full CRM access and admin controls', requiresSuperadmin: false, color: 'text-rose-500' },
   { id: 'sales_agent', label: 'Sales Agent', icon: Headset, description: 'CRM view and create access', requiresSuperadmin: false, color: 'text-pink-500' },
   { id: 'sales_rep', label: 'Sales Rep', icon: BadgeDollarSign, description: 'Broad platform + CRM access', requiresSuperadmin: false, color: 'text-emerald-500' },
+  { id: 'media_team', label: 'Media Team', icon: Megaphone, description: 'Media & marketing hub management', requiresSuperadmin: false, color: 'text-pink-500' },
   { id: 'lodge_officer', label: 'Lodge Officer', icon: Star, description: 'Order lodge leadership', requiresSuperadmin: false, color: 'text-purple-500' },
   { id: 'order_member', label: 'Order Member', icon: Sparkles, description: 'Member of The Second Watch Order', requiresSuperadmin: false, color: 'text-blue-500' },
   { id: 'partner', label: 'Partner', icon: Briefcase, description: 'Business/sponsor partner', requiresSuperadmin: false, color: 'text-green-500' },

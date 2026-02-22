@@ -153,11 +153,14 @@ async def check_backlot_access(user=Depends(get_current_user)):
     if backlot_status in ["active", "trialing"]:
         return {"has_access": True, "reason": "subscription"}
 
-    # Check for organization seat access
+    # Check for organization seat access (including expired trials and past_due for read-only)
     org_seat = execute_single("""
         SELECT
             o.id as organization_id,
             o.name as organization_name,
+            o.backlot_billing_status,
+            o.trial_ends_at,
+            o.past_due_since,
             om.role,
             om.can_create_projects
         FROM organization_members om
@@ -166,19 +169,57 @@ async def check_backlot_access(user=Depends(get_current_user)):
           AND om.status = 'active'
           AND om.role IN ('owner', 'admin', 'collaborative')
           AND o.backlot_enabled = TRUE
-          AND o.backlot_billing_status IN ('free', 'trial', 'active')
+          AND o.backlot_billing_status IN ('free', 'trial', 'active', 'expired', 'past_due', 'canceled')
         LIMIT 1
     """, {"user_id": profile_id})
 
     if org_seat:
-        return {
+        billing_status = org_seat["backlot_billing_status"]
+        is_expired = billing_status == "expired"
+        is_canceled = billing_status == "canceled"
+        is_past_due = billing_status == "past_due"
+
+        # Determine if past_due is within or beyond the 7-day grace period
+        past_grace = False
+        grace_info = None
+        if is_past_due and org_seat.get("past_due_since"):
+            from datetime import datetime, timedelta
+            past_due_since = org_seat["past_due_since"]
+            if hasattr(past_due_since, "timestamp"):
+                grace_end = past_due_since + timedelta(days=7)
+                days_remaining = max(0, (grace_end - datetime.utcnow()).days)
+                past_grace = days_remaining <= 0
+                grace_info = {
+                    "past_due_since": past_due_since.isoformat(),
+                    "grace_period_end": grace_end.isoformat(),
+                    "grace_days_remaining": days_remaining,
+                }
+
+        # Read-only if expired, canceled, or past grace period
+        is_read_only = is_expired or is_canceled or past_grace
+
+        result = {
             "has_access": True,
             "reason": "organization_seat",
             "organization_id": org_seat["organization_id"],
             "organization_name": org_seat["organization_name"],
             "role": org_seat["role"],
-            "can_create_projects": org_seat["can_create_projects"] or False
+            "can_create_projects": (org_seat["can_create_projects"] or False) and not is_read_only,
+            "billing_status": billing_status,
         }
+        if is_read_only:
+            result["read_only"] = True
+            if is_expired:
+                result["expired_reason"] = "trial_expired"
+            elif is_canceled:
+                result["expired_reason"] = "subscription_canceled"
+            elif past_grace:
+                result["expired_reason"] = "payment_past_due"
+        if is_past_due and grace_info:
+            result["grace_info"] = grace_info
+        if org_seat.get("trial_ends_at"):
+            result["trial_ends_at"] = org_seat["trial_ends_at"].isoformat() if hasattr(org_seat["trial_ends_at"], "isoformat") else str(org_seat["trial_ends_at"])
+        return result
 
     return {"has_access": False, "reason": "no_subscription"}
 
@@ -242,7 +283,15 @@ async def stripe_webhook(request: Request):
         subscription = event["data"]["object"]
         customer_id = subscription["customer"]
         product = subscription.get("metadata", {}).get("product", "premium")
-        await _update_subscription_status(customer_id, subscription, product, is_active=True)
+
+        # Backlot org subscriptions — route to subscription_service
+        if product == "backlot_org":
+            config_id = subscription.get("metadata", {}).get("config_id")
+            if config_id:
+                from app.services.subscription_service import handle_subscription_activated
+                handle_subscription_activated(subscription, config_id, event.get("id"))
+        else:
+            await _update_subscription_status(customer_id, subscription, product, is_active=True)
 
     elif event["type"] == "customer.subscription.updated":
         subscription = event["data"]["object"]
@@ -250,14 +299,55 @@ async def stripe_webhook(request: Request):
         status = subscription["status"]
         product = subscription.get("metadata", {}).get("product", "premium")
 
-        is_active = status in ["active", "trialing"]
-        await _update_subscription_status(customer_id, subscription, product, is_active=is_active)
+        if product == "backlot_org":
+            org_id = subscription.get("metadata", {}).get("organization_id")
+            config_id = subscription.get("metadata", {}).get("config_id")
+            if org_id:
+                from app.services.subscription_service import (
+                    handle_subscription_activated,
+                    handle_payment_failed,
+                    handle_subscription_canceled,
+                )
+                if status in ("active", "trialing"):
+                    # Payment recovered or initial activation
+                    if config_id:
+                        handle_subscription_activated(subscription, config_id, event.get("id"))
+                elif status == "past_due":
+                    handle_payment_failed(subscription, org_id, event.get("id"))
+                elif status == "canceled":
+                    handle_subscription_canceled(subscription, org_id, event.get("id"))
+        else:
+            is_active = status in ["active", "trialing"]
+            await _update_subscription_status(customer_id, subscription, product, is_active=is_active)
 
     elif event["type"] == "customer.subscription.deleted":
         subscription = event["data"]["object"]
         customer_id = subscription["customer"]
         product = subscription.get("metadata", {}).get("product", "premium")
-        await _update_subscription_status(customer_id, subscription, product, is_active=False)
+
+        if product == "backlot_org":
+            org_id = subscription.get("metadata", {}).get("organization_id")
+            if org_id:
+                from app.services.subscription_service import handle_subscription_canceled
+                handle_subscription_canceled(subscription, org_id, event.get("id"))
+        else:
+            await _update_subscription_status(customer_id, subscription, product, is_active=False)
+
+    # Handle invoice payment succeeded (for recovering past_due)
+    elif event["type"] == "invoice.payment_succeeded":
+        invoice = event["data"]["object"]
+        sub_id = invoice.get("subscription")
+        if sub_id:
+            # Check if this is a backlot_org subscription recovering from past_due
+            config = execute_single("""
+                SELECT id, organization_id, status FROM backlot_subscription_configs
+                WHERE stripe_subscription_id = :sub_id AND status = 'past_due'
+            """, {"sub_id": sub_id})
+            if config:
+                from app.services.subscription_service import handle_subscription_activated
+                handle_subscription_activated(
+                    {"id": sub_id}, str(config["id"]), event.get("id")
+                )
 
     # Handle checkout session completed - for one-time donations
     elif event["type"] == "checkout.session.completed":

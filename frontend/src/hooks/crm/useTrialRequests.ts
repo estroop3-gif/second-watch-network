@@ -31,3 +31,37 @@ export function useBulkApproveTrials() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['backlot-trial-requests'] }),
   });
 }
+
+export function useMyBacklotTrial() {
+  return useQuery({
+    queryKey: ['my-backlot-trial'],
+    queryFn: () => api.getMyBacklotTrial(),
+  });
+}
+
+export function useRequestTrialExtension() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (trialId: string) => api.requestTrialExtension(trialId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['my-backlot-trial'] });
+      qc.invalidateQueries({ queryKey: ['backlot-trial-requests'] });
+    },
+  });
+}
+
+export function useApproveTrialExtension() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (trialId: string) => api.approveTrialExtension(trialId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['backlot-trial-requests'] }),
+  });
+}
+
+export function useDenyTrialExtension() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (trialId: string) => api.denyTrialExtension(trialId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['backlot-trial-requests'] }),
+  });
+}

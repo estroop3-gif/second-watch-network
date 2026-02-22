@@ -596,6 +596,95 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  // --- Proactive token refresh timer ---
+  // Refresh the access token every 50 minutes (before the 1-hour Cognito expiry)
+  // so users never hit an expired token and get logged out unexpectedly.
+  const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const startRefreshTimer = useCallback(() => {
+    // Clear any existing timer
+    if (refreshTimerRef.current) {
+      clearInterval(refreshTimerRef.current);
+    }
+
+    const REFRESH_INTERVAL_MS = 50 * 60 * 1000; // 50 minutes
+
+    refreshTimerRef.current = setInterval(async () => {
+      const rt = safeStorage.getItem('refresh_token');
+      const at = safeStorage.getItem('access_token');
+      if (!rt || !at) return;
+
+      try {
+        console.log('[Auth] Proactive token refresh...');
+        const refreshData = await api.refreshToken(rt);
+        if (refreshData.access_token) {
+          safeStorage.setItem('access_token', refreshData.access_token);
+          if (refreshData.refresh_token) {
+            safeStorage.setItem('refresh_token', refreshData.refresh_token);
+          }
+          api.setToken(refreshData.access_token);
+          console.log('[Auth] Proactive refresh succeeded');
+        }
+      } catch {
+        console.warn('[Auth] Proactive refresh failed — will retry on next interval');
+      }
+    }, REFRESH_INTERVAL_MS);
+  }, []);
+
+  // Start/stop refresh timer when session changes
+  useEffect(() => {
+    if (session?.access_token) {
+      startRefreshTimer();
+    } else if (refreshTimerRef.current) {
+      clearInterval(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+    }
+    return () => {
+      if (refreshTimerRef.current) {
+        clearInterval(refreshTimerRef.current);
+      }
+    };
+  }, [session?.access_token, startRefreshTimer]);
+
+  // --- Refresh on tab visibility change ---
+  // When the user switches back to the tab after being away, immediately
+  // check if the token needs refreshing instead of waiting for a 401.
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState !== 'visible') return;
+
+      const at = safeStorage.getItem('access_token');
+      const rt = safeStorage.getItem('refresh_token');
+      if (!at || !rt) return;
+
+      // Decode the JWT to check expiry (access tokens are base64-encoded JWTs)
+      try {
+        const payload = JSON.parse(atob(at.split('.')[1]));
+        const expiresAt = payload.exp * 1000; // seconds → ms
+        const now = Date.now();
+        const fiveMinutes = 5 * 60 * 1000;
+
+        if (expiresAt - now < fiveMinutes) {
+          console.log('[Auth] Tab became visible with near-expired token, refreshing...');
+          const refreshData = await api.refreshToken(rt);
+          if (refreshData.access_token) {
+            safeStorage.setItem('access_token', refreshData.access_token);
+            if (refreshData.refresh_token) {
+              safeStorage.setItem('refresh_token', refreshData.refresh_token);
+            }
+            api.setToken(refreshData.access_token);
+            console.log('[Auth] Visibility refresh succeeded');
+          }
+        }
+      } catch {
+        // JWT decode failed or refresh failed — reactive refresh will handle it
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
   const profileId = profile?.id || safeStorage.getItem('profile_id') || null;
 
   return (

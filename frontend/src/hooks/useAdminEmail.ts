@@ -38,6 +38,23 @@ export function useDeactivateAdminEmailAccount() {
   });
 }
 
+export function useCreateAdminMemberEmailAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { profile_id: string; email_address: string; display_name: string }) =>
+      api.createAdminMemberEmailAccount(data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-email-accounts'] }),
+  });
+}
+
+export function useDeleteAdminEmailAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteAdminEmailAccountPermanent(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-email-accounts'] }),
+  });
+}
+
 // ============================================================================
 // Access Grants
 // ============================================================================

@@ -5305,6 +5305,14 @@ class APIClient {
     return this.delete<any>(`/api/v1/admin/email-accounts/${id}`)
   }
 
+  async createAdminMemberEmailAccount(data: { profile_id: string; email_address: string; display_name: string }) {
+    return this.post<{ account: any }>('/api/v1/admin/email-accounts/member', data)
+  }
+
+  async deleteAdminEmailAccountPermanent(id: string) {
+    return this.delete<any>(`/api/v1/admin/email-accounts/${id}/permanent`)
+  }
+
   async getAdminEmailAccountAccess(accountId: string) {
     return this.get<{ grants: any[] }>(`/api/v1/admin/email-accounts/${accountId}/access`)
   }
@@ -6116,8 +6124,8 @@ class APIClient {
     return this.get<{ reps: { id: string; full_name: string }[] }>('/api/v1/crm/backlot-trials/reps')
   }
 
-  async submitBacklotTrial(data: { first_name: string; last_name: string; email: string; phone: string; consent_contact: boolean; referred_by_rep_id?: string }) {
-    return this.post<{ success: boolean; message: string }>('/api/v1/crm/backlot-trials', data)
+  async submitBacklotTrial(data: { first_name: string; last_name: string; email: string; phone: string; consent_contact: boolean; referred_by_rep_id?: string; company_name?: string; job_title?: string; company_size?: string; use_case?: string }) {
+    return this.post<{ success: boolean; auto_provisioned: boolean; message: string }>('/api/v1/crm/backlot-trials', data)
   }
 
   async getBacklotTrialRequests(params?: { status?: string; search?: string; limit?: number; offset?: number }) {
@@ -6140,6 +6148,22 @@ class APIClient {
 
   async bulkApproveBacklotTrials(ids: string[]) {
     return this.post<{ success: boolean; approved: number }>('/api/v1/crm/backlot-trials/bulk-approve', { ids })
+  }
+
+  async getMyBacklotTrial() {
+    return this.get<{ trial: any }>('/api/v1/crm/backlot-trials/my-trial')
+  }
+
+  async requestTrialExtension(trialId: string) {
+    return this.post<{ success: boolean }>(`/api/v1/crm/backlot-trials/${trialId}/request-extension`)
+  }
+
+  async approveTrialExtension(trialId: string) {
+    return this.post<{ success: boolean; extension_ends_at: string }>(`/api/v1/crm/backlot-trials/${trialId}/approve-extension`)
+  }
+
+  async denyTrialExtension(trialId: string) {
+    return this.post<{ success: boolean }>(`/api/v1/crm/backlot-trials/${trialId}/deny-extension`)
   }
 
   // =========================================================================
@@ -6411,6 +6435,59 @@ class APIClient {
 
   async deleteMediaDiscussionReply(id: string) {
     return this.delete<{ success: boolean }>(`/api/v1/media-hub/discussions/replies/${id}`)
+  }
+
+  // =========================================================================
+  // Subscription Billing
+  // =========================================================================
+
+  async getSubscriptionPricingTiers() {
+    return this.get<{ tiers: any; addon_prices: any; volume_discount_tiers: any; a_la_carte: any }>('/api/v1/subscription-billing/pricing/tiers')
+  }
+
+  async calculateSubscriptionPrice(data: { plan_type: string; tier_name?: string; config?: any }) {
+    return this.post<any>('/api/v1/subscription-billing/pricing/calculate', data)
+  }
+
+  async createSubscriptionCheckout(data: { org_id: string; plan_type: string; tier_name?: string; config?: any }) {
+    return this.post<{ checkout_url: string; config_id: string }>('/api/v1/subscription-billing/checkout', data)
+  }
+
+  async createTrialConvertCheckout(data: { org_id: string; plan_type?: string; tier_name?: string; config?: any }) {
+    return this.post<{ checkout_url: string; config_id: string }>('/api/v1/subscription-billing/checkout/trial-convert', data)
+  }
+
+  async getOrgSubscription(orgId: string) {
+    return this.get<any>(`/api/v1/subscription-billing/organizations/${orgId}/subscription`)
+  }
+
+  async changeSubscriptionPlan(orgId: string, data: { plan_type: string; tier_name?: string; config?: any }) {
+    return this.post<{ success: boolean; new_monthly_total_cents: number }>(`/api/v1/subscription-billing/organizations/${orgId}/change-plan`, data)
+  }
+
+  async cancelSubscription(orgId: string) {
+    return this.post<{ success: boolean; message: string }>(`/api/v1/subscription-billing/organizations/${orgId}/cancel`)
+  }
+
+  async reactivateSubscription(orgId: string) {
+    return this.post<{ success: boolean; message: string }>(`/api/v1/subscription-billing/organizations/${orgId}/reactivate`)
+  }
+
+  async createSubscriptionPortalSession(orgId: string, returnTo?: string) {
+    return this.post<{ url: string }>(`/api/v1/subscription-billing/organizations/${orgId}/portal`, { return_to: returnTo })
+  }
+
+  // Module management
+  async getOrgModules(orgId: string) {
+    return this.get<{ modules: any[] }>(`/api/v1/subscription-billing/organizations/${orgId}/modules`)
+  }
+
+  async addOrgModule(orgId: string, moduleKey: string) {
+    return this.post<{ success: boolean; module: string }>(`/api/v1/subscription-billing/organizations/${orgId}/modules`, { module_key: moduleKey })
+  }
+
+  async removeOrgModule(orgId: string, moduleKey: string) {
+    return this.delete<{ success: boolean; module: string }>(`/api/v1/subscription-billing/organizations/${orgId}/modules/${moduleKey}`)
   }
 }
 

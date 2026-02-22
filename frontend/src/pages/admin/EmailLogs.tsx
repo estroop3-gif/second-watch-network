@@ -172,7 +172,7 @@ const EmailLogs = () => {
   const { data: stats, isLoading: statsLoading, refetch: refetchStats } = useQuery({
     queryKey: ['admin', 'email-stats', dateRange],
     queryFn: async () => {
-      const response = await api.get<EmailStats>(`/admin/emails/stats?days=${dateRange === 'all' ? 365 : dateRange}`);
+      const response = await api.get<EmailStats>(`/api/v1/admin/emails/stats?days=${dateRange === 'all' ? 365 : dateRange}`);
       return response;
     },
   });
@@ -198,7 +198,7 @@ const EmailLogs = () => {
         page: number;
         page_size: number;
         total_pages: number;
-      }>(`/admin/emails/logs?${params.toString()}`);
+      }>(`/api/v1/admin/emails/logs?${params.toString()}`);
       return response;
     },
   });
@@ -208,7 +208,7 @@ const EmailLogs = () => {
     queryKey: ['admin', 'email-log-detail', selectedLog],
     queryFn: async () => {
       if (!selectedLog) return null;
-      const response = await api.get<EmailLogDetail>(`/admin/emails/logs/${selectedLog}`);
+      const response = await api.get<EmailLogDetail>(`/api/v1/admin/emails/logs/${selectedLog}`);
       return response;
     },
     enabled: !!selectedLog,
@@ -218,7 +218,7 @@ const EmailLogs = () => {
   const { data: emailTypes } = useQuery({
     queryKey: ['admin', 'email-types'],
     queryFn: async () => {
-      const response = await api.get<{ types: string[] }>('/admin/emails/types');
+      const response = await api.get<{ types: string[] }>('/api/v1/admin/emails/types');
       return response.types || [];
     },
   });
@@ -227,7 +227,7 @@ const EmailLogs = () => {
   const { data: emailSources } = useQuery({
     queryKey: ['admin', 'email-sources'],
     queryFn: async () => {
-      const response = await api.get<{ sources: string[] }>('/admin/emails/sources');
+      const response = await api.get<{ sources: string[] }>('/api/v1/admin/emails/sources');
       return response.sources || [];
     },
   });

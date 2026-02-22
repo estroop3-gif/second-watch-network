@@ -3,9 +3,9 @@
  * Manage organization Backlot seats and project access
  */
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Building2, Users, FolderKanban, Plus, Settings, ChevronRight, Crown, Shield, UserCheck } from 'lucide-react';
+import { Building2, Users, FolderKanban, Plus, Settings, ChevronRight, Crown, Shield, UserCheck, CreditCard } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -31,6 +31,17 @@ import {
   MyBacklotOrg,
   BacklotSeat,
 } from '@/hooks/useOrganizations';
+import {
+  useOrgSubscription,
+  useCreateCheckout,
+  useTrialConvertCheckout,
+  useCancelSubscription,
+  useReactivateSubscription,
+  usePortalSession,
+} from '@/hooks/useSubscriptionBilling';
+import BillingWarningBanner from '@/components/backlot/BillingWarningBanner';
+import PlanConfigurator from '@/components/pricing/PlanConfigurator';
+import PriceSummary from '@/components/pricing/PriceSummary';
 
 // =============================================================================
 // Helper Components
@@ -243,6 +254,12 @@ function OrganizationPanel({ org }: { org: MyBacklotOrg }) {
               <FolderKanban className="w-4 h-4 mr-2" />
               Projects ({projects?.length || 0})
             </TabsTrigger>
+            {isAdmin && (
+              <TabsTrigger value="billing">
+                <CreditCard className="w-4 h-4 mr-2" />
+                Billing
+              </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="seats" className="mt-4">
@@ -321,9 +338,264 @@ function OrganizationPanel({ org }: { org: MyBacklotOrg }) {
               </div>
             )}
           </TabsContent>
+
+          {isAdmin && (
+            <TabsContent value="billing" className="mt-4">
+              <BillingTab org={org} />
+            </TabsContent>
+          )}
         </Tabs>
       </CardContent>
     </Card>
+  );
+}
+
+function formatStorageDisplay(gb: number) {
+  if (gb >= 1024) return `${(gb / 1024).toFixed(gb % 1024 === 0 ? 0 : 1)} TB`;
+  return `${gb} GB`;
+}
+
+function UsageMeter({ label, used, limit, unit = '' }: { label: string; used: number; limit: number; unit?: string }) {
+  const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+  const isHigh = pct > 80;
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between text-xs">
+        <span className="text-muted-gray">{label}</span>
+        <span className={isHigh ? 'text-primary-red' : 'text-bone-white/70'}>
+          {used.toLocaleString()}{unit} / {limit < 0 ? 'Unlimited' : `${limit.toLocaleString()}${unit}`}
+        </span>
+      </div>
+      {limit > 0 && (
+        <div className="h-1.5 bg-[#2a2a2a] rounded-full overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all ${isHigh ? 'bg-primary-red' : 'bg-accent-yellow'}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BillingTab({ org }: { org: MyBacklotOrg }) {
+  const { toast } = useToast();
+  const navigate = useNavigate();
+  const { data: subscription, isLoading } = useOrgSubscription(org.id);
+  const createCheckout = useCreateCheckout();
+  const trialConvert = useTrialConvertCheckout();
+  const cancelSub = useCancelSubscription();
+  const reactivateSub = useReactivateSubscription();
+  const portalSession = usePortalSession();
+  const [showConfigurator, setShowConfigurator] = useState(false);
+  const [planConfig, setPlanConfig] = useState<any>(null);
+
+  const handleConfigChange = useCallback((config: any) => {
+    setPlanConfig(config);
+  }, []);
+
+  const handleCheckout = () => {
+    if (!planConfig) return;
+
+    // Free tier activation
+    if (planConfig.tier_name === 'free') {
+      createCheckout.mutate(
+        { org_id: org.id, plan_type: 'tier', tier_name: 'free', config: {} },
+        {
+          onSuccess: (data: any) => {
+            if (data?.success) {
+              toast({ title: 'Free plan activated!' });
+              setShowConfigurator(false);
+            } else if (data?.checkout_url) {
+              window.location.href = data.checkout_url;
+            }
+          },
+          onError: (error: any) => {
+            toast({ title: 'Failed', description: error.message, variant: 'destructive' });
+          },
+        }
+      );
+      return;
+    }
+
+    const mutationFn = subscription?.billing_status === 'trial' || subscription?.billing_status === 'expired' || subscription?.billing_status === 'free'
+      ? trialConvert
+      : createCheckout;
+
+    mutationFn.mutate(
+      {
+        org_id: org.id,
+        plan_type: planConfig.plan_type,
+        tier_name: planConfig.tier_name,
+        config: { ...planConfig.config, term_type: planConfig.term_type },
+      },
+      {
+        onSuccess: (data: any) => {
+          if (data?.checkout_url) {
+            window.location.href = data.checkout_url;
+          }
+        },
+        onError: (error: any) => {
+          toast({ title: 'Checkout failed', description: error.message, variant: 'destructive' });
+        },
+      }
+    );
+  };
+
+  const handleCancel = () => {
+    if (!confirm('Cancel your subscription? You\'ll retain access until the end of the billing period.')) return;
+    cancelSub.mutate(org.id, {
+      onSuccess: () => toast({ title: 'Subscription will cancel at period end' }),
+      onError: (error: any) => toast({ title: 'Failed', description: error.message, variant: 'destructive' }),
+    });
+  };
+
+  const handleReactivate = () => {
+    reactivateSub.mutate(org.id, {
+      onSuccess: () => toast({ title: 'Cancellation reversed' }),
+      onError: (error: any) => toast({ title: 'Failed', description: error.message, variant: 'destructive' }),
+    });
+  };
+
+  const handlePortal = () => {
+    portalSession.mutate({ orgId: org.id, returnTo: '/organizations' });
+  };
+
+  if (isLoading) {
+    return <div className="space-y-3"><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /></div>;
+  }
+
+  const billingStatus = subscription?.billing_status || 'free';
+  const sub = subscription?.subscription;
+  const modules = subscription?.modules || [];
+  const isFree = billingStatus === 'free' || sub?.tier_name === 'free';
+  const isActive = sub && (sub.status === 'active' || sub.status === 'free');
+
+  return (
+    <div className="space-y-4">
+      <BillingWarningBanner
+        billingStatus={billingStatus}
+        graceInfo={subscription?.grace_info}
+        organizationId={org.id}
+        onSubscribe={() => setShowConfigurator(true)}
+      />
+
+      {/* Active subscription info */}
+      {isActive && (
+        <Card className="bg-charcoal-black/50 border-muted-gray/20">
+          <CardContent className="p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-bone-white font-medium">
+                  {sub.tier_name ? `${sub.tier_name.charAt(0).toUpperCase() + sub.tier_name.slice(1)} Plan` : 'Custom Plan'}
+                </h4>
+                <p className="text-sm text-muted-gray">
+                  {isFree ? 'Free forever' : sub.annual_prepay ? 'Annual billing' : 'Monthly billing'}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-xl font-bold text-accent-yellow">
+                  {isFree ? 'Free' : (
+                    <>${(sub.effective_monthly_cents / 100).toLocaleString()}<span className="text-sm text-muted-gray">/mo</span></>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            {/* Usage meters */}
+            <div className="space-y-2.5 pt-1">
+              <UsageMeter label="Owner Seats" used={org.seats_used || 0} limit={sub.owner_seats} />
+              <UsageMeter label="Collaborative Seats" used={0} limit={sub.collaborative_seats < 0 ? -1 : sub.collaborative_seats} />
+              <UsageMeter label="Active Projects" used={0} limit={sub.active_projects < 0 ? -1 : sub.active_projects} />
+              <UsageMeter label="Active Storage" used={0} limit={sub.active_storage_gb || 0} unit=" GB" />
+              <UsageMeter label="Archive Storage" used={0} limit={sub.archive_storage_gb || 0} unit=" GB" />
+              <UsageMeter label="Bandwidth" used={0} limit={sub.bandwidth_gb} unit=" GB" />
+            </div>
+
+            {/* Active modules */}
+            {modules.length > 0 && (
+              <div className="pt-2">
+                <p className="text-xs uppercase tracking-wide text-muted-gray mb-2">Active Modules</p>
+                <div className="flex flex-wrap gap-2">
+                  {modules.map((mod: any) => (
+                    <Badge key={mod.module_key} variant="outline" className="text-xs text-accent-yellow border-accent-yellow/30">
+                      {mod.module_name}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-2 pt-2">
+              <Button size="sm" variant="outline" onClick={() => setShowConfigurator(true)}>
+                {isFree ? 'Upgrade Plan' : 'Change Plan'}
+              </Button>
+              {!isFree && (
+                <>
+                  <Button size="sm" variant="outline" onClick={handlePortal}>Update Payment</Button>
+                  <Button size="sm" variant="ghost" className="text-primary-red hover:text-primary-red/80" onClick={handleCancel}>Cancel</Button>
+                </>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Trial or expired or no subscription — show subscribe CTA */}
+      {(!isActive && !showConfigurator) && (
+        <Card className="bg-charcoal-black/50 border-muted-gray/20">
+          <CardContent className="p-8 text-center">
+            <CreditCard className="h-10 w-10 mx-auto mb-3 text-accent-yellow" />
+            <h4 className="text-lg font-medium text-bone-white mb-2">
+              {billingStatus === 'canceled' ? 'Resubscribe to Backlot' :
+               billingStatus === 'expired' ? 'Subscribe to Backlot' :
+               'Get Started with Backlot'}
+            </h4>
+            <p className="text-sm text-muted-gray mb-4">
+              {billingStatus === 'trial' ? 'Upgrade from your trial to keep full access.' :
+               billingStatus === 'expired' ? 'Your trial has ended. Subscribe to restore access.' :
+               billingStatus === 'canceled' ? 'Resubscribe to restore full access to your projects.' :
+               'Start free or choose a paid plan to unlock more features.'}
+            </p>
+            <Button
+              className="bg-accent-yellow text-charcoal-black hover:bg-yellow-400"
+              onClick={() => setShowConfigurator(true)}
+            >
+              {billingStatus === 'canceled' ? 'Resubscribe' : 'Choose a Plan'}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Configurator */}
+      {showConfigurator && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h4 className="text-bone-white font-medium">
+              {isActive && !isFree ? 'Change Your Plan' : isFree ? 'Upgrade Your Plan' : 'Choose Your Plan'}
+            </h4>
+            <Button variant="ghost" size="sm" className="text-muted-gray" onClick={() => setShowConfigurator(false)}>
+              Cancel
+            </Button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2">
+              <PlanConfigurator onConfigChange={handleConfigChange} />
+            </div>
+            <div>
+              <PriceSummary
+                config={planConfig}
+                showCTA
+                ctaLabel={isActive && !isFree ? 'Update Plan' : isFree ? 'Upgrade' : 'Subscribe'}
+                ctaLoading={createCheckout.isPending || trialConvert.isPending}
+                onCTAClick={handleCheckout}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

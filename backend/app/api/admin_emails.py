@@ -377,11 +377,11 @@ async def export_email_logs(
 async def get_email_types(authorization: str = Header(None)):
     """Get list of distinct email types for filtering"""
     try:
-        client = get_client()
-        result = client.table("email_logs").select("email_type").not_.is_("email_type", "null").execute()
-
-        # Get unique types
-        types = list(set(log["email_type"] for log in (result.data or []) if log.get("email_type")))
+        rows = execute_query(
+            "SELECT DISTINCT email_type FROM email_logs WHERE email_type IS NOT NULL ORDER BY email_type",
+            {}
+        )
+        types = [r["email_type"] for r in rows]
         types.sort()
 
         return {"types": types}
@@ -393,11 +393,11 @@ async def get_email_types(authorization: str = Header(None)):
 async def get_email_sources(authorization: str = Header(None)):
     """Get list of distinct source services for filtering"""
     try:
-        client = get_client()
-        result = client.table("email_logs").select("source_service").not_.is_("source_service", "null").execute()
-
-        # Get unique sources
-        sources = list(set(log["source_service"] for log in (result.data or []) if log.get("source_service")))
+        rows = execute_query(
+            "SELECT DISTINCT source_service FROM email_logs WHERE source_service IS NOT NULL ORDER BY source_service",
+            {}
+        )
+        sources = [r["source_service"] for r in rows]
         sources.sort()
 
         return {"sources": sources}
@@ -485,17 +485,69 @@ async def create_admin_email_account(
     return {"account": account}
 
 
+class CreateMemberEmailAccountRequest(BaseModel):
+    profile_id: str
+    email_address: str
+    display_name: str
+
+
+@router.post("/email-accounts/member")
+async def create_member_email_account(
+    data: CreateMemberEmailAccountRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.ADMIN_EMAIL_MANAGE)),
+):
+    """Create a rep-type email account linked to a user profile."""
+    # Verify profile exists
+    target = execute_single(
+        "SELECT id, full_name FROM profiles WHERE id = :pid",
+        {"pid": data.profile_id},
+    )
+    if not target:
+        raise HTTPException(404, "Profile not found")
+
+    # Check for duplicate email address
+    existing = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE email_address = :email",
+        {"email": data.email_address},
+    )
+    if existing:
+        raise HTTPException(400, "An account with this email address already exists")
+
+    # Check for existing active account for this profile
+    existing_profile = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE profile_id = :pid AND is_active = true",
+        {"pid": data.profile_id},
+    )
+    if existing_profile:
+        raise HTTPException(400, "This user already has an active email account")
+
+    account = execute_single(
+        """
+        INSERT INTO crm_email_accounts (email_address, display_name, account_type, profile_id, is_active)
+        VALUES (:email, :name, 'rep', :pid, true)
+        RETURNING *
+        """,
+        {
+            "email": data.email_address,
+            "name": data.display_name,
+            "pid": data.profile_id,
+        },
+    )
+    return {"account": account}
+
+
 @router.get("/email-accounts")
 async def list_admin_email_accounts(
     profile: Dict[str, Any] = Depends(require_permissions(Permission.ADMIN_EMAIL_MANAGE)),
 ):
-    """List all admin/system email accounts."""
+    """List all email accounts (admin, system, and member rep accounts)."""
     accounts = execute_query(
         """
         SELECT a.*,
-               (SELECT COUNT(*) FROM admin_email_access WHERE account_id = a.id) as access_count
+               (SELECT COUNT(*) FROM admin_email_access WHERE account_id = a.id) as access_count,
+               p.full_name as profile_name, p.email as profile_email
         FROM crm_email_accounts a
-        WHERE a.account_type != 'rep'
+        LEFT JOIN profiles p ON p.id = a.profile_id
         ORDER BY a.created_at DESC
         """
     )
@@ -553,6 +605,61 @@ async def deactivate_admin_email_account(
         "UPDATE crm_email_accounts SET is_active = false WHERE id = :aid RETURNING id",
         {"aid": account_id},
     )
+    return {"success": True}
+
+
+@router.delete("/email-accounts/{account_id}/permanent")
+async def permanently_delete_email_account(
+    account_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.ADMIN_EMAIL_MANAGE)),
+):
+    """Permanently delete an email account and all associated data."""
+    account = execute_single(
+        "SELECT id FROM crm_email_accounts WHERE id = :aid",
+        {"aid": account_id},
+    )
+    if not account:
+        raise HTTPException(404, "Email account not found")
+
+    from app.core.database import get_db_session
+    from sqlalchemy import text as sa_text
+
+    with get_db_session() as db:
+        # Delete attachments for messages in threads on this account
+        db.execute(sa_text(
+            """
+            DELETE FROM crm_email_attachments
+            WHERE message_id IN (
+                SELECT m.id FROM crm_email_messages m
+                JOIN crm_email_threads t ON t.id = m.thread_id
+                WHERE t.account_id = :aid
+            )
+            """
+        ), {"aid": account_id})
+
+        # Delete access grants
+        db.execute(sa_text(
+            "DELETE FROM admin_email_access WHERE account_id = :aid"
+        ), {"aid": account_id})
+
+        # Delete messages for all threads on this account
+        db.execute(sa_text(
+            """
+            DELETE FROM crm_email_messages
+            WHERE thread_id IN (SELECT id FROM crm_email_threads WHERE account_id = :aid)
+            """
+        ), {"aid": account_id})
+
+        # Delete threads
+        db.execute(sa_text(
+            "DELETE FROM crm_email_threads WHERE account_id = :aid"
+        ), {"aid": account_id})
+
+        # Delete the account
+        db.execute(sa_text(
+            "DELETE FROM crm_email_accounts WHERE id = :aid"
+        ), {"aid": account_id})
+
     return {"success": True}
 
 
@@ -695,9 +802,14 @@ async def get_admin_email_inbox(
     profile: Dict[str, Any] = Depends(get_user_profile),
 ):
     """Get threads for an admin email account's inbox."""
-    account = _check_admin_email_access(profile, account_id)
+    try:
+        account = _check_admin_email_access(profile, account_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Access check failed: {str(e)}")
 
-    conditions = ["t.account_id = :aid"]
+    conditions = ["t.account_id = :aid", "COALESCE(t.is_deleted, false) = false"]
     params: Dict[str, Any] = {"aid": account_id, "lim": limit, "off": offset}
 
     if archived:
@@ -714,27 +826,34 @@ async def get_admin_email_inbox(
 
     where = " AND ".join(conditions)
 
-    threads = execute_query(
-        f"""
-        SELECT t.*,
-               (SELECT COUNT(*) FROM crm_email_messages m WHERE m.thread_id = t.id) as message_count,
-               (SELECT COUNT(*) FROM crm_email_messages m WHERE m.thread_id = t.id AND m.is_read = false AND m.direction = 'inbound') as unread_count
-        FROM crm_email_threads t
-        WHERE {where}
-        ORDER BY t.last_message_at DESC NULLS LAST
-        LIMIT :lim OFFSET :off
-        """,
-        params,
-    )
+    try:
+        threads = execute_query(
+            f"""
+            SELECT t.*,
+                   (SELECT COUNT(*) FROM crm_email_messages m WHERE m.thread_id = t.id) as message_count,
+                   COALESCE(t.unread_count, 0) as unread_count
+            FROM crm_email_threads t
+            WHERE {where}
+            ORDER BY t.last_message_at DESC NULLS LAST
+            LIMIT :lim OFFSET :off
+            """,
+            params,
+        )
 
-    # Get total count
-    count_row = execute_single(
-        f"SELECT COUNT(*) as total FROM crm_email_threads t WHERE {where}",
-        {k: v for k, v in params.items() if k not in ("lim", "off")},
-    )
-    total = count_row["total"] if count_row else 0
+        # Get total count
+        count_row = execute_single(
+            f"SELECT COUNT(*) as total FROM crm_email_threads t WHERE {where}",
+            {k: v for k, v in params.items() if k not in ("lim", "off")},
+        )
+        total = count_row["total"] if count_row else 0
 
-    return {"threads": threads, "total": total}
+        return {"threads": threads, "total": total}
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Inbox query failed: {str(e)}")
 
 
 @router.get("/email/threads/{thread_id}")
@@ -943,8 +1062,8 @@ async def mark_admin_thread_read(
 
     _check_admin_email_access(profile, thread["account_id"])
 
-    execute_query(
-        "UPDATE crm_email_messages SET is_read = true WHERE thread_id = :tid AND direction = 'inbound' AND is_read = false",
+    execute_single(
+        "UPDATE crm_email_threads SET unread_count = 0 WHERE id = :tid RETURNING id",
         {"tid": thread_id},
     )
     return {"success": True}

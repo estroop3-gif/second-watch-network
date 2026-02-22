@@ -70,6 +70,7 @@ import {
   Film,
   Briefcase,
   FlaskConical,
+  Megaphone,
 } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -278,6 +279,7 @@ const PLATFORM_ROLE_DEFINITIONS = [
   { id: 'sales_admin', label: 'Sales Admin', icon: Briefcase, description: 'Full CRM access and management', color: 'text-emerald-500' },
   { id: 'sales_agent', label: 'Sales Agent', icon: Briefcase, description: 'CRM view and create access', color: 'text-teal-500' },
   { id: 'sales_rep', label: 'Sales Rep', icon: Briefcase, description: 'Platform + CRM access', color: 'text-cyan-500' },
+  { id: 'media_team', label: 'Media Team', icon: Megaphone, description: 'Media & marketing hub management', color: 'text-pink-500' },
   { id: 'lodge_officer', label: 'Lodge Officer', icon: Star, description: 'Order lodge leadership', color: 'text-purple-500' },
   { id: 'order_member', label: 'Order Member', icon: Sparkles, description: 'Member of The Second Watch Order', color: 'text-blue-500' },
   { id: 'partner', label: 'Partner', icon: Briefcase, description: 'Business/sponsor partner', color: 'text-green-500' },
