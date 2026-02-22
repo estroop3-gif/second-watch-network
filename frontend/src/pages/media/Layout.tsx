@@ -6,6 +6,7 @@ import {
   Calendar, MessageSquare, BarChart3,
 } from 'lucide-react';
 import { usePermissions } from '@/hooks/usePermissions';
+import { useUnreadCount, useEmailSocket } from '@/hooks/crm/useEmail';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -17,6 +18,11 @@ const MediaLayout = () => {
   const isTeam = hasAnyRole(['media_team', 'admin', 'superadmin']);
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
+
+  // Email unread badge + real-time updates (team users only)
+  const { data: unreadData } = useUnreadCount();
+  useEmailSocket();
+  const emailUnread = unreadData?.count || 0;
 
   const userItems = [
     { name: 'My Requests', href: '/media/requests', icon: FileText, badge: 0 },
@@ -31,7 +37,7 @@ const MediaLayout = () => {
     { name: 'Calendar', href: '/media/calendar', icon: CalendarDays, badge: 0 },
     { name: 'Platforms', href: '/media/platforms', icon: Globe, badge: 0 },
     { name: 'Analytics', href: '/media/analytics', icon: BarChart3, badge: 0 },
-    { name: 'Email', href: '/media/email', icon: AtSign, badge: 0 },
+    { name: 'Email', href: '/media/email', icon: AtSign, badge: emailUnread },
   ];
 
   const allItems = isTeam ? [...teamItems.slice(0, 1), ...userItems, ...teamItems.slice(1)] : userItems;

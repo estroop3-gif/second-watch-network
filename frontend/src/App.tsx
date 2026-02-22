@@ -514,7 +514,7 @@ const App = () => (
                     </Route>
 
                     {/* Media Hub Routes — accessible to ALL authenticated users */}
-                    <Route path="/media" element={<MediaLayout />}>
+                    <Route path="/media" element={<EmailComposeProvider><MediaLayout /></EmailComposeProvider>}>
                       <Route index element={<Navigate to="requests" replace />} />
                       <Route path="requests" element={<MediaContentRequests />} />
                       <Route path="requests/new" element={<MediaNewRequest />} />
