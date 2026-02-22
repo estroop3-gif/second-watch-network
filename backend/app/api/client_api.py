@@ -760,14 +760,8 @@ def _check_playback_access(profile: dict, episode: dict) -> PlaybackAccess:
     visibility = episode.get("visibility", "public")
 
     if visibility == "premium":
-        if profile.get("is_order_member") or profile.get("is_premium"):
-            return PlaybackAccess(allowed=True)
-        return PlaybackAccess(
-            allowed=False,
-            reason="This content requires Order membership or premium access",
-            requires_premium=True,
-            requires_order=True
-        )
+        # Free-to-watch: all authenticated users can watch premium content
+        return PlaybackAccess(allowed=True)
 
     if visibility == "private":
         return PlaybackAccess(

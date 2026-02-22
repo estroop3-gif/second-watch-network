@@ -76,7 +76,7 @@ export const PERMISSIONS: PermToRoles = {
   profile_edit: ALL_ROLES,
 
   watch_now_free: ALL_ROLES,
-  watch_now_premium: ['premium', 'creator', 'partner', 'admin', 'superadmin', 'moderator'],
+  watch_now_premium: ALL_ROLES,
 
   // Admin/Superadmin permissions
   admin_panel: ADMIN_ROLES,

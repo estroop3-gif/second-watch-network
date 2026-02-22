@@ -622,42 +622,9 @@ async def create_playback_session(
             detail=f"Video not ready for playback. Status: {video_data['processing_status']}"
         )
 
-    # Check for premium content access
-    # Video can be linked to an episode - check if episode requires premium access
-    premium_check = execute_single("""
-        SELECT wc.id, wc.visibility
-        FROM world_content wc
-        WHERE wc.video_asset_id = :video_asset_id
-          AND wc.visibility = 'premium'
-          AND wc.status = 'published'
-        LIMIT 1
-    """, {"video_asset_id": request.video_asset_id})
-
-    if premium_check:
-        # This is a premium episode - check user access
-        profile = client.table("profiles").select(
-            "id, is_order_member, is_admin, is_superadmin, is_moderator, is_premium"
-        ).eq("id", profile_id).single().execute()
-
-        if profile.data:
-            profile_data = profile.data
-            has_access = (
-                profile_data.get("is_order_member") or
-                profile_data.get("is_admin") or
-                profile_data.get("is_superadmin") or
-                profile_data.get("is_moderator") or
-                profile_data.get("is_premium")
-            )
-            if not has_access:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Order membership or premium subscription required for this content"
-                )
-        else:
-            raise HTTPException(
-                status_code=403,
-                detail="Order membership or premium subscription required for this content"
-            )
+    # Free-to-watch: premium visibility no longer gates playback.
+    # All authenticated users can watch premium content. Private episodes
+    # are still restricted via their own visibility check.
 
     # Phase 2C: Check festival/venue availability
     # Look up the episode's world to check for release window restrictions

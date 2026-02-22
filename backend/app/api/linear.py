@@ -888,7 +888,8 @@ async def _can_access_channel(channel: dict, user: Optional[dict]) -> bool:
     if visibility == 'order_only' and profile.get('is_order_member'):
         return True
 
-    if visibility == 'premium' and (profile.get('is_premium') or profile.get('is_order_member')):
+    if visibility == 'premium':
+        # Free-to-watch: all authenticated users can access premium channels
         return True
 
     if visibility == 'internal':
