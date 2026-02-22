@@ -3,7 +3,7 @@ import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import {
   FileText, Plus, LayoutDashboard, Inbox, CalendarDays,
   Globe, AtSign, PanelLeftClose, PanelLeftOpen,
-  Calendar, MessageSquare, BarChart3,
+  Calendar, MessageSquare, BarChart3, Shield,
 } from 'lucide-react';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useUnreadCount, useEmailSocket } from '@/hooks/crm/useEmail';
@@ -31,6 +31,8 @@ const MediaLayout = () => {
     { name: 'Discussions', href: '/media/discussions', icon: MessageSquare, badge: 0 },
   ];
 
+  const isAdmin = hasAnyRole(['admin', 'superadmin']);
+
   const teamItems = [
     { name: 'Dashboard', href: '/media/dashboard', icon: LayoutDashboard, badge: 0 },
     { name: 'All Requests', href: '/media/requests?scope=all', icon: Inbox, badge: 0 },
@@ -40,7 +42,11 @@ const MediaLayout = () => {
     { name: 'Email', href: '/media/email', icon: AtSign, badge: emailUnread },
   ];
 
-  const allItems = isTeam ? [...teamItems.slice(0, 1), ...userItems, ...teamItems.slice(1)] : userItems;
+  const adminItems = isAdmin ? [
+    { name: 'Admin', href: '/media/admin', icon: Shield, badge: 0 },
+  ] : [];
+
+  const allItems = isTeam ? [...teamItems.slice(0, 1), ...userItems, ...teamItems.slice(1), ...adminItems] : userItems;
 
   const sidebarWidth = collapsed ? 'md:w-16' : 'md:w-64';
   const mainMargin = collapsed ? 'md:ml-16' : 'md:ml-64';

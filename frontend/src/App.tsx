@@ -188,6 +188,7 @@ const MediaEventDetail = React.lazy(() => import("./pages/media/EventDetail"));
 const MediaDiscussions = React.lazy(() => import("./pages/media/Discussions"));
 const MediaDiscussionThread = React.lazy(() => import("./pages/media/DiscussionThread"));
 const MediaAnalytics = React.lazy(() => import("./pages/media/Analytics"));
+const MediaAdmin = React.lazy(() => import("./pages/media/Admin"));
 
 // Backlot Production Hub Pages
 const BacklotHome = React.lazy(() => import("./pages/backlot/BacklotHome"));
@@ -529,6 +530,7 @@ const App = () => (
                       <Route path="discussions" element={<MediaDiscussions />} />
                       <Route path="discussions/:threadId" element={<MediaDiscussionThread />} />
                       <Route path="analytics" element={<MediaAnalytics />} />
+                      <Route path="admin" element={<MediaAdmin />} />
                     </Route>
 
                     {/* CRM Routes (sales agents and admin) */}
