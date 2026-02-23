@@ -1,14 +1,12 @@
 import HeroSection from "@/components/landing/HeroSection";
-import LiveStreamSection from "@/components/landing/LiveStreamSection";
-import TrendingNowSection from "@/components/landing/TrendingNowSection";
-import OriginalsSection from "@/components/landing/OriginalsSection";
-import GreenRoomSection from "@/components/landing/GreenRoomSection";
-import SubmitContentSection from "@/components/landing/SubmitContentSection";
+import CreateAccountSection from "@/components/landing/CreateAccountSection";
 import BacklotSection from "@/components/landing/BacklotSection";
-import TheOrderSection from "@/components/landing/TheOrderSection";
+import CommunityFeaturesSection from "@/components/landing/CommunityFeaturesSection";
+import SubmitContentSection from "@/components/landing/SubmitContentSection";
 import PartnershipsSection from "@/components/landing/PartnershipsSection";
-import OurStorySection from "@/components/landing/OurStorySection";
+import GreenRoomSection from "@/components/landing/GreenRoomSection";
 import SupportSection from "@/components/landing/SupportSection";
+import OriginalsSection from "@/components/landing/OriginalsSection";
 import { useEffect } from "react";
 import { useLocation } from "react-router-dom";
 
@@ -36,16 +34,14 @@ const LandingPage = () => {
   return (
     <>
       <HeroSection />
-      <LiveStreamSection />
-      <TrendingNowSection />
-      <OriginalsSection />
-      <GreenRoomSection />
-      <SubmitContentSection />
+      <CreateAccountSection />
       <BacklotSection />
-      <TheOrderSection />
+      <CommunityFeaturesSection />
+      <SubmitContentSection />
       <PartnershipsSection />
-      <OurStorySection />
+      <GreenRoomSection />
       <SupportSection />
+      <OriginalsSection />
     </>
   );
 };

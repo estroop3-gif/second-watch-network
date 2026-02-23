@@ -228,7 +228,14 @@ const LandingHeader = () => {
                 <div className="flex flex-col gap-4">
                   <PublicMobileNav />
                   <div className="h-[1px] bg-muted-gray" />
-                  <Button asChild className="w-full" onClick={closeMenu}>
+                  <Button
+                    asChild
+                    className="w-full bg-accent-yellow text-charcoal-black hover:bg-bone-white hover:text-charcoal-black font-bold rounded-[4px] uppercase"
+                    onClick={closeMenu}
+                  >
+                    <Link to="/signup">Sign Up</Link>
+                  </Button>
+                  <Button asChild variant="outline" className="w-full" onClick={closeMenu}>
                     <Link to="/login">Log In</Link>
                   </Button>
                 </div>
