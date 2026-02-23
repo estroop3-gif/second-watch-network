@@ -360,6 +360,72 @@ export function useBreakdownMutations(options: UseBreakdownMutationsOptions) {
 // PDF EXPORT
 // =============================================================================
 
+/** Fetch with retry — handles Lambda cold start 503s that CORS-block the response */
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  maxRetries = 2,
+  delayMs = 1500,
+): Promise<Response> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, init);
+      // 503 = Lambda cold start / timeout — retry
+      if (response.status === 503 && attempt < maxRetries) {
+        console.warn(`[Breakdown PDF] 503 on attempt ${attempt + 1}, retrying in ${delayMs}ms...`);
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+      return response;
+    } catch (err) {
+      // Network/CORS errors from 503 show up as TypeError — retry
+      lastError = err as Error;
+      if (attempt < maxRetries) {
+        console.warn(`[Breakdown PDF] Network error on attempt ${attempt + 1}, retrying in ${delayMs}ms...`);
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+  }
+  throw lastError || new Error("Export failed after retries");
+}
+
+/** Parse an error response into a human-readable message */
+async function parseErrorResponse(response: Response, prefix: string): never {
+  let detail = `Export failed (${response.status})`;
+  try {
+    const error = await response.json();
+    detail = error.detail || detail;
+  } catch {
+    const text = await response.text().catch(() => "");
+    if (text) detail = text.slice(0, 200);
+  }
+  console.error(`[Breakdown PDF] ${prefix}:`, detail);
+  throw new Error(detail);
+}
+
+/** Trigger a browser file download from a Response */
+function downloadBlob(blob: Blob, filename: string) {
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = downloadUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(downloadUrl);
+}
+
+/** Extract filename from Content-Disposition header */
+function getFilename(response: Response, fallback: string): string {
+  const cd = response.headers.get("Content-Disposition");
+  if (cd) {
+    const match = cd.match(/filename=([^;]+)/);
+    if (match) return match[1].trim().replace(/"/g, "");
+  }
+  return fallback;
+}
+
 interface UseBreakdownPdfExportOptions {
   projectId: string | null;
 }
@@ -389,45 +455,15 @@ export function useBreakdownPdfExport(options: UseBreakdownPdfExportOptions) {
 
       const url = `${API_BASE}/api/v1/backlot/projects/${projectId}/script/breakdown/pdf${urlParams.toString() ? `?${urlParams.toString()}` : ""}`;
 
-      const response = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+      const response = await fetchWithRetry(url, {
+        headers: { Authorization: `Bearer ${token}` },
       });
 
-      if (!response.ok) {
-        let detail = `Export failed (${response.status})`;
-        try {
-          const error = await response.json();
-          detail = error.detail || detail;
-        } catch {
-          const text = await response.text().catch(() => "");
-          if (text) detail = text.slice(0, 200);
-        }
-        console.error("[Breakdown PDF] Export error:", detail);
-        throw new Error(detail);
-      }
+      if (!response.ok) await parseErrorResponse(response, "Export error");
 
-      // Get filename from Content-Disposition header or use default
-      const contentDisposition = response.headers.get("Content-Disposition");
-      let filename = "breakdown.pdf";
-      if (contentDisposition) {
-        const match = contentDisposition.match(/filename=([^;]+)/);
-        if (match) {
-          filename = match[1].trim().replace(/"/g, "");
-        }
-      }
-
-      // Download the PDF
+      const filename = getFilename(response, "breakdown.pdf");
       const blob = await response.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = downloadUrl;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(downloadUrl);
+      downloadBlob(blob, filename);
 
       return { success: true, filename };
     },
@@ -438,48 +474,17 @@ export function useBreakdownPdfExport(options: UseBreakdownPdfExportOptions) {
       const token = api.getToken();
       if (!token) throw new Error("Not authenticated");
 
-      const response = await fetch(
-        `${API_BASE}/api/v1/backlot/scenes/${sceneId}/breakdown/pdf`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
+      const url = `${API_BASE}/api/v1/backlot/scenes/${sceneId}/breakdown/pdf`;
 
-      if (!response.ok) {
-        let detail = `Export failed (${response.status})`;
-        try {
-          const error = await response.json();
-          detail = error.detail || detail;
-        } catch {
-          const text = await response.text().catch(() => "");
-          if (text) detail = text.slice(0, 200);
-        }
-        console.error("[Breakdown PDF] Scene export error:", detail);
-        throw new Error(detail);
-      }
+      const response = await fetchWithRetry(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
 
-      // Get filename from Content-Disposition header
-      const contentDisposition = response.headers.get("Content-Disposition");
-      let filename = "scene_breakdown.pdf";
-      if (contentDisposition) {
-        const match = contentDisposition.match(/filename=([^;]+)/);
-        if (match) {
-          filename = match[1].trim().replace(/"/g, "");
-        }
-      }
+      if (!response.ok) await parseErrorResponse(response, "Scene export error");
 
-      // Download the PDF
+      const filename = getFilename(response, "scene_breakdown.pdf");
       const blob = await response.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = downloadUrl;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(downloadUrl);
+      downloadBlob(blob, filename);
 
       return { success: true, filename };
     },
