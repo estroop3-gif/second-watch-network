@@ -2,10 +2,10 @@
  * CommunityTabs - Tab navigation for Community Hub
  */
 import React from 'react';
-import { Home, Users, Handshake, MessageSquare, Newspaper, Store, Tag } from 'lucide-react';
+import { Home, Users, Handshake, MessageSquare, Newspaper, Store, Tag, FileText } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-export type CommunityTabType = 'home' | 'people' | 'collabs' | 'topics' | 'feed' | 'marketplace' | 'for-sale';
+export type CommunityTabType = 'home' | 'people' | 'collabs' | 'topics' | 'feed' | 'marketplace' | 'for-sale' | 'my-posts';
 
 interface Tab {
   id: CommunityTabType;
@@ -21,6 +21,7 @@ const tabs: Tab[] = [
   { id: 'marketplace', label: 'Rentals', icon: <Store className="w-4 h-4" /> },
   { id: 'for-sale', label: 'For Sale', icon: <Tag className="w-4 h-4" /> },
   { id: 'topics', label: 'Topics', icon: <MessageSquare className="w-4 h-4" /> },
+  { id: 'my-posts', label: 'My Posts', icon: <FileText className="w-4 h-4" /> },
 ];
 
 interface CommunityTabsProps {

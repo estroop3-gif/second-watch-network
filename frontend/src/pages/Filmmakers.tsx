@@ -2,8 +2,8 @@
  * Filmmakers / Community Hub
  * Main community page with tabbed navigation for Home, People, Collabs, and Topics
  */
-import React, { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import CommunityTabs, { CommunityTabType } from '@/components/community/CommunityTabs';
 import CommunityHome from '@/components/community/CommunityHome';
 import PeopleDirectory from '@/components/community/PeopleDirectory';
@@ -22,6 +22,7 @@ import { useAuth } from '@/context/AuthContext';
 
 const Filmmakers = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialTab = (searchParams.get('tab') as CommunityTabType) || 'home';
   const initialFilter = searchParams.get('filter') || undefined;
@@ -37,6 +38,12 @@ const Filmmakers = () => {
   const [viewingThread, setViewingThread] = useState<CommunityThread | undefined>();
 
   const handleTabChange = (tab: CommunityTabType) => {
+    // Navigate to dedicated page for "My Posts"
+    if (tab === 'my-posts') {
+      navigate('/my-job-posts');
+      return;
+    }
+
     setActiveTab(tab);
     // Update URL without full navigation
     const newParams = new URLSearchParams(searchParams);

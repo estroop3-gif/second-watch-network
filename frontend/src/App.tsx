@@ -7,6 +7,7 @@ import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client
 import { createSyncStoragePersister } from "@tanstack/query-sync-storage-persister";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { performanceMetrics } from "@/lib/performanceMetrics";
+import { runCleanup } from "@/lib/formDraftStorage";
 import React, { Suspense } from "react";
 
 // --- Eager imports (critical render path) ---
@@ -70,6 +71,7 @@ const MyProfile = React.lazy(() => import("./pages/MyProfile"));
 const MySubmissions = React.lazy(() => import("./pages/MySubmissions"));
 const Notifications = React.lazy(() => import("./pages/Notifications"));
 const MyApplications = React.lazy(() => import("./pages/MyApplications"));
+const MyJobPosts = React.lazy(() => import("./pages/MyJobPosts"));
 const ApplicationsReceived = React.lazy(() => import("./pages/ApplicationsReceived"));
 const FilmmakerOnboarding = React.lazy(() => import("./pages/FilmmakerOnboarding"));
 const FilmmakerOnboardingSuccess = React.lazy(() => import("./pages/FilmmakerOnboardingSuccess"));
@@ -276,6 +278,7 @@ const LoadingSpinner = () => (
 const AppMountTracker = ({ children }: { children: React.ReactNode }) => {
   useEffect(() => {
     performanceMetrics.markAppMounted();
+    runCleanup();
 
     // Fallback: send initial load metrics after 5s if no API call triggers it
     const fallbackTimer = setTimeout(() => {
@@ -416,6 +419,7 @@ const App = () => (
                     <Route path="/notifications" element={<Notifications />} />
                     <Route path="/connections" element={<Connections />} />
                     <Route path="/my-applications" element={<MyApplications />} />
+                    <Route path="/my-job-posts" element={<MyJobPosts />} />
                     <Route path="/applications-received" element={<ApplicationsReceived />} />
                     <Route path="/messages" element={<Messages />} />
                     <Route path="/my-profile" element={<MyProfile />} />
