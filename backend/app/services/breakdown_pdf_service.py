@@ -5,11 +5,6 @@ Uses WeasyPrint to convert HTML templates to professional PDFs
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
-try:
-    from weasyprint import HTML
-except ImportError:
-    HTML = None
-
 
 # Color mapping for breakdown types (matching standard industry colors)
 BREAKDOWN_TYPE_COLORS = {
@@ -708,8 +703,10 @@ def generate_breakdown_pdf(
     include_notes: bool = True,
 ) -> bytes:
     """Generate a single scene breakdown PDF"""
-    if HTML is None:
-        raise ImportError("WeasyPrint is not installed. PDF generation is not available.")
+    try:
+        from weasyprint import HTML
+    except ImportError:
+        raise ImportError("WeasyPrint is required for PDF generation. Install with: pip install weasyprint")
 
     html_content = generate_breakdown_sheet_html(
         project_title=project_title,
@@ -732,8 +729,10 @@ def generate_project_breakdown_pdf(
     include_notes: bool = True,
 ) -> bytes:
     """Generate a multi-page project breakdown PDF"""
-    if HTML is None:
-        raise ImportError("WeasyPrint is not installed. PDF generation is not available.")
+    try:
+        from weasyprint import HTML
+    except ImportError:
+        raise ImportError("WeasyPrint is required for PDF generation. Install with: pip install weasyprint")
 
     html_content = generate_project_breakdown_pdf_html(
         project_title=project_title,

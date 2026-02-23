@@ -15,15 +15,10 @@ from app.services.email_service import (
 from app.services.pdf_service import generate_call_sheet_pdf as create_call_sheet_pdf
 from app.services.deal_memo_pdf_service import generate_deal_memo_pdf, generate_signed_deal_memo_pdf
 
-# Breakdown PDF service is optional - requires WeasyPrint with native libraries
-try:
-    from app.services.breakdown_pdf_service import (
-        generate_breakdown_pdf,
-        generate_project_breakdown_pdf,
-    )
-except (ImportError, OSError):
-    generate_breakdown_pdf = None
-    generate_project_breakdown_pdf = None
+from app.services.breakdown_pdf_service import (
+    generate_breakdown_pdf,
+    generate_project_breakdown_pdf,
+)
 
 # Excel export is optional - only available if openpyxl is installed
 try:
