@@ -281,7 +281,7 @@ def generate_breakdown_pdf(
     pdf.cell(page_w / 2, 4, f"Script: {script_title or project_title}")
     pdf.cell(page_w / 2, 4, f"Generated: {datetime.now().strftime('%B %d, %Y')}", align="R")
 
-    return pdf.output()
+    return bytes(pdf.output())
 
 
 def generate_project_breakdown_pdf(
@@ -365,4 +365,4 @@ def generate_project_breakdown_pdf(
         pdf.add_page()
         _render_scene_page(pdf, project_title, scene, items, include_notes)
 
-    return pdf.output()
+    return bytes(pdf.output())
