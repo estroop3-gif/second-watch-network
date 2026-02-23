@@ -1,4 +1,4 @@
-import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/context/AuthContext';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -12,15 +12,11 @@ import {
   CarouselNext,
   CarouselPrevious,
 } from "@/components/ui/carousel";
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import FilmmakerApplicationForm from '@/components/forms/FilmmakerApplicationForm';
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { api } from '@/lib/api';
-import { toast } from 'sonner';
-import { track } from '@/utils/telemetry';
 import { Card, CardContent } from '@/components/ui/card';
-import { CheckCircle, Star, Rocket, Zap, Building2, Crown, ArrowRight, Film } from 'lucide-react';
+import { CheckCircle, Star, Rocket, Zap, Building2, Crown, ArrowRight, Film, Shield } from 'lucide-react';
 
 const BACKLOT_TIERS = [
   {
@@ -87,10 +83,7 @@ const SubscriptionsAndRolesPage = () => {
   const { hasRole } = usePermissions();
   const { profile } = useProfile();
   const navigate = useNavigate();
-  const location = useLocation();
-  const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>('monthly');
   const [isFilmmakerModalOpen, setIsFilmmakerModalOpen] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
 
   const handleBecomeFilmmakerClick = () => {
     if (!session) {
@@ -109,36 +102,7 @@ const SubscriptionsAndRolesPage = () => {
   };
 
   const isLoggedIn = !!session;
-  const isPremium = hasRole('premium');
-
-  // Show cancel notice if coming back from Checkout cancel
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    if (params.get('checkout') === 'cancelled') {
-      try { track('checkout_cancel'); } catch {}
-      toast.message('Checkout canceled');
-    }
-  }, [location.search]);
-
-  const startCheckout = async () => {
-    if (submitting) return;
-    setSubmitting(true);
-    try {
-      try { track('premium_subscribe_click'); } catch {}
-      const returnTo = window.location.pathname + window.location.search;
-      const result = await api.createCheckoutSession('premium', undefined, returnTo);
-      try { track('checkout_session_created', { plan: 'premium' }); } catch {}
-      if (result?.url) {
-        window.location.href = result.url;
-      } else {
-        toast.error("Couldn't start checkout. Try again.");
-        setSubmitting(false);
-      }
-    } catch {
-      toast.error("Couldn't start checkout. Try again.");
-      setSubmitting(false);
-    }
-  };
+  const isOrderMember = hasRole('order_member');
 
   return (
     <div className="container mx-auto px-4 py-12 sm:px-6 lg:px-8">
@@ -150,25 +114,6 @@ const SubscriptionsAndRolesPage = () => {
           Explore what each level offers and how to join the Second Watch Network community.
         </p>
       </header>
-
-      <div className="flex items-center justify-center mb-12">
-        <ToggleGroup
-          type="single"
-          defaultValue="monthly"
-          value={billingCycle}
-          onValueChange={(value: 'monthly' | 'yearly') => {
-            if (value) setBillingCycle(value);
-          }}
-          className="bg-muted-gray/20 p-1 rounded-lg"
-        >
-          <ToggleGroupItem value="monthly" aria-label="Select monthly billing" className="data-[state=on]:bg-accent-yellow data-[state=on]:text-charcoal-black px-6 text-bone-white rounded-md">
-            Monthly
-          </ToggleGroupItem>
-          <ToggleGroupItem value="yearly" aria-label="Select yearly billing" className="data-[state=on]:bg-accent-yellow data-[state=on]:text-charcoal-black px-6 text-bone-white rounded-md">
-            Yearly
-          </ToggleGroupItem>
-        </ToggleGroup>
-      </div>
 
       <div className="relative px-12">
         <Carousel
@@ -186,52 +131,35 @@ const SubscriptionsAndRolesPage = () => {
                 price="$0"
                 description="The default for all registered users. Jump into the community."
                 features={[
-                  'View the community forum (The Backlot)',
-                  'Watch community-submitted content with ads',
-                  'Receive notifications about project submission updates',
-                  'Ability to apply to become a Filmmaker or Partner',
+                  'Watch all shows, films, and originals for free',
+                  'Browse the community forum',
+                  'Receive notifications about content and updates',
+                  'Apply to become a Filmmaker or Partner',
                 ]}
                 badge={<Badge variant="secondary">Default</Badge>}
               />
             </CarouselItem>
 
-            {/* Premium Subscription */}
+            {/* The Second Watch Order */}
             <CarouselItem className="pl-8 md:basis-1/2 xl:basis-1/3">
               <RoleCard
-                title="Premium"
-                price={
-                  billingCycle === 'monthly' ? (
-                    <>
-                      <span className="text-base font-normal text-muted-foreground line-through mr-2">$9.99</span>
-                      <span>$5.99 / month</span>
-                    </>
-                  ) : (
-                    <span>$59.99 / year</span>
-                  )
-                }
-                description="The ultimate viewing experience with exclusive perks."
+                title="The Second Watch Order"
+                description="A professional guild for film industry craftspeople."
                 features={[
-                  'No ads on all content',
-                  'Watch all Second Watch Originals for free',
-                  'Premium badge across the platform',
-                  'Early access to new films and series',
-                  'Smart notifications for content you love',
-                  'Bookmark and favorite content',
-                  'Enhanced visibility in community feed',
-                  'Access to premium-only events and Q&As (future rollout)',
+                  'Professional networking & member directory',
+                  'Exclusive job opportunities',
+                  'Local lodges & in-person events',
+                  'Booking system & industry recognition',
                 ]}
+                badge={<Badge variant="outline">Application-Based</Badge>}
                 action={
-                  isPremium ? (
+                  isOrderMember ? (
                     <Button asChild className="w-full">
-                      <Link to="/account/billing">Manage in Subscription settings</Link>
+                      <Link to="/order/dashboard">Go to Dashboard</Link>
                     </Button>
                   ) : (
-                    <Button
-                      className="w-full bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
-                      onClick={startCheckout}
-                      disabled={submitting}
-                    >
-                      {submitting ? 'Redirecting…' : 'Subscribe'}
+                    <Button asChild className="w-full bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90">
+                      <Link to="/order/apply">Apply for Membership</Link>
                     </Button>
                   )
                 }
@@ -300,6 +228,114 @@ const SubscriptionsAndRolesPage = () => {
           <CarouselPrevious className="absolute left-0 top-1/2 -translate-y-1/2 bg-muted-gray/50 hover:bg-muted-gray/80 border-muted-gray text-white" />
           <CarouselNext className="absolute right-0 top-1/2 -translate-y-1/2 bg-muted-gray/50 hover:bg-muted-gray/80 border-muted-gray text-white" />
         </Carousel>
+      </div>
+
+      {/* The Second Watch Order Tiers */}
+      <div className="mt-16 max-w-5xl mx-auto">
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center gap-2 mb-2">
+            <Shield className="h-6 w-6 text-accent-yellow" />
+            <h2 className="text-3xl font-bold text-white">The Second Watch Order</h2>
+          </div>
+          <p className="text-muted-foreground max-w-2xl mx-auto">
+            A professional guild for film industry craftspeople. Application required — dues begin after approval.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {[
+            {
+              name: 'Base',
+              price: '$50',
+              tagline: 'For working professionals',
+              highlights: [
+                'Full member access',
+                'Lodge membership',
+                'Job board access',
+                'Booking system',
+              ],
+            },
+            {
+              name: 'Steward',
+              price: '$100',
+              tagline: 'For committed craftspeople',
+              popular: true,
+              highlights: [
+                'Everything in Base',
+                'Priority job listings',
+                'Craft house leadership',
+                'Enhanced profile',
+              ],
+            },
+            {
+              name: 'Patron',
+              price: '$250',
+              tagline: 'For industry leaders',
+              highlights: [
+                'Everything in Steward',
+                'Governance voting',
+                'Featured placement & VIP events',
+                'Patron badge',
+              ],
+            },
+          ].map((tier) => (
+            <Card
+              key={tier.name}
+              className={`relative flex flex-col ${
+                tier.popular
+                  ? 'border-accent-yellow bg-accent-yellow/5'
+                  : 'bg-muted-gray/20 border-muted-gray'
+              }`}
+            >
+              {tier.popular && (
+                <Badge className="absolute -top-2.5 left-1/2 -translate-x-1/2 bg-accent-yellow text-charcoal-black text-[10px]">
+                  Popular
+                </Badge>
+              )}
+              <CardContent className="p-5 flex flex-col flex-grow">
+                <div className="text-center mb-4">
+                  <Shield className={`h-6 w-6 mx-auto mb-2 ${tier.popular ? 'text-accent-yellow' : 'text-muted-gray'}`} />
+                  <div className="text-lg font-bold text-bone-white">{tier.name}</div>
+                  <div className="text-2xl font-bold text-accent-yellow">
+                    {tier.price}
+                    <span className="text-xs text-muted-gray font-normal">/mo</span>
+                  </div>
+                  <div className="text-xs text-muted-gray mt-1">{tier.tagline}</div>
+                </div>
+                <ul className="space-y-2 mb-4 flex-grow">
+                  {tier.highlights.map((h, i) => (
+                    <li key={i} className="flex items-start gap-1.5 text-sm text-bone-white">
+                      <CheckCircle className="h-4 w-4 text-accent-yellow mt-0.5 flex-shrink-0" />
+                      <span>{h}</span>
+                    </li>
+                  ))}
+                </ul>
+                <Button
+                  asChild
+                  size="sm"
+                  className={`w-full ${
+                    tier.popular
+                      ? 'bg-accent-yellow text-charcoal-black hover:bg-yellow-500'
+                      : 'bg-muted-gray/30 text-bone-white hover:bg-muted-gray/50'
+                  }`}
+                >
+                  <Link to={isOrderMember ? '/order/dashboard' : '/order/apply'}>
+                    {isOrderMember ? 'Go to Dashboard' : 'Apply for Membership'}
+                  </Link>
+                </Button>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+
+        <div className="text-center mt-6">
+          <Button asChild variant="outline" className="border-muted-gray/50 text-bone-white hover:bg-muted-gray/20">
+            <Link to="/order">
+              Learn More About The Order
+              <ArrowRight className="h-4 w-4 ml-2" />
+            </Link>
+          </Button>
+        </div>
       </div>
 
       {/* Backlot Production Plans */}
