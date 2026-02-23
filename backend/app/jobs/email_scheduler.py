@@ -1333,6 +1333,42 @@ async def process_billing_reminders():
         logger.error(f"process_billing_reminders error: {e}")
 
 
+async def reset_monthly_bandwidth():
+    """Reset bandwidth counters for orgs past their reset date. Runs daily."""
+    try:
+        rows = execute_query("""
+            UPDATE organization_usage
+            SET current_month_bandwidth_bytes = 0,
+                bandwidth_reset_date = DATE_TRUNC('month', NOW() + INTERVAL '1 month')::date,
+                updated_at = NOW()
+            WHERE bandwidth_reset_date <= CURRENT_DATE
+            RETURNING organization_id
+        """)
+        if rows:
+            logger.info(f"reset_monthly_bandwidth: reset {len(rows)} orgs")
+    except Exception as e:
+        logger.error(f"reset_monthly_bandwidth error: {e}")
+
+
+async def recalculate_org_storage():
+    """Recalculate storage usage for all orgs from source tables. Runs weekly."""
+    try:
+        orgs = execute_query("SELECT id FROM organizations")
+        recalculated = 0
+        for org in orgs:
+            try:
+                execute_single(
+                    "SELECT recalculate_organization_usage(:oid)",
+                    {"oid": str(org["id"])}
+                )
+                recalculated += 1
+            except Exception as e:
+                logger.error(f"recalculate_org_storage: error for org {org['id']}: {e}")
+        logger.info(f"recalculate_org_storage: recalculated {recalculated}/{len(orgs)} orgs")
+    except Exception as e:
+        logger.error(f"recalculate_org_storage error: {e}")
+
+
 def start_email_scheduler():
     """Initialize and start the APScheduler for email jobs."""
     try:
@@ -1349,8 +1385,10 @@ def start_email_scheduler():
         scheduler.add_job(process_trial_expirations, "interval", seconds=86400, id="trial_expirations")
         scheduler.add_job(process_billing_grace_periods, "interval", seconds=86400, id="billing_grace_periods")
         scheduler.add_job(process_billing_reminders, "interval", seconds=86400, id="billing_reminders")
+        scheduler.add_job(reset_monthly_bandwidth, "interval", seconds=86400, id="reset_monthly_bandwidth")
+        scheduler.add_job(recalculate_org_storage, "interval", seconds=604800, id="recalculate_org_storage")
         scheduler.start()
-        logger.info("Email scheduler started with 10 jobs")
+        logger.info("Email scheduler started with 12 jobs")
         return scheduler
     except ImportError:
         logger.warning("APScheduler not installed — email scheduler disabled. Install with: pip install apscheduler")

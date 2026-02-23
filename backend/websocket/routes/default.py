@@ -41,6 +41,10 @@ def handler(event: dict, context, connection_id: str, callback_url: str) -> dict
             print(f"[Default] No action in message from {connection_id}")
             return {'statusCode': 400, 'body': 'Missing action'}
 
+        # Fast path for keepalive pings — no DynamoDB lookup needed
+        if action == 'ping':
+            return {'statusCode': 200, 'body': 'pong'}
+
         print(f"[Default] Processing action={action} from connection={connection_id}")
 
         # Get connection info

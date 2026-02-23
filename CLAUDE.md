@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 Second Watch Network is a faith-driven filmmaking platform with four main components:
-- **Backend**: FastAPI Python REST API (114 route modules) — see `backend/CLAUDE.md`
+- **Backend**: FastAPI Python REST API (116 route modules) — see `backend/CLAUDE.md`
 - **Frontend**: Vite/React TypeScript web app with shadcn/ui — see `frontend/CLAUDE.md`
 - **SWN Dailies Helper**: PyQt6 desktop app for footage management (offload, proxy generation, upload)
 - **Flet App**: Cross-platform desktop/mobile app in `app/` (Python/Flet)
@@ -74,7 +74,7 @@ cd backend
 node -e "
 const { Client } = require('pg');
 const fs = require('fs');
-const sql = fs.readFileSync('migrations/246_*.sql', 'utf8');
+const sql = fs.readFileSync('migrations/259_*.sql', 'utf8');
 const client = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 client.connect().then(() => client.query(sql)).then(() => console.log('Done')).finally(() => client.end());
 "
@@ -82,7 +82,7 @@ client.connect().then(() => client.query(sql)).then(() => console.log('Done')).f
 
 Two migration directories exist:
 - `database/` — Schema migrations (001–059), the original migration set
-- `backend/migrations/` — Feature migrations (001–246), the active migration directory
+- `backend/migrations/` — Feature migrations (001–259), the active migration directory
 
 ## Service Ports
 
@@ -96,9 +96,9 @@ Two migration directories exist:
 ## Architecture
 
 ### Backend Structure (`backend/app/`)
-- `api/` — 114 route modules organized by domain (largest: `backlot.py` ~49K lines, `crm.py` ~8.7K lines)
+- `api/` — 116 route modules organized by domain (largest: `backlot.py` ~49K lines, `crm.py` ~8.7K lines)
 - `core/` — Config, database client, auth, permissions, storage, roles, exceptions
-- `services/` — 60 service modules (email, PDF generation, media orchestration, revenue, gear, AI, pricing engine)
+- `services/` — 63 service modules (email, PDF generation, media orchestration, revenue, gear, AI, pricing engine, subscription billing, trial provisioning, feature gates)
 - `jobs/` — Background jobs (APScheduler: scheduled sends, snooze expiry, sequence progression, campaign blasts, notification digests)
 - `docker/` — ECS Fargate workers: `scraper/` (web scraping), `discovery/` (Google CSE/Maps lead discovery), `transcode/` (media)
 - `main.py` — FastAPI app entry with router registrations and middleware stack
@@ -152,7 +152,9 @@ Connection pooling: NullPool for Lambda, QueuePool for local dev (auto-detected)
 
 **Data Scraping & Discovery**: Admin-only lead generation. ECS Fargate workers for web scraping (`docker/scraper/`) and Google CSE/Maps discovery (`docker/discovery/`). Tables: `crm_scrape_sources`, `crm_scrape_jobs`, `crm_scraped_leads`, `crm_scrape_profiles`, `crm_discovery_profiles`, `crm_discovery_runs`, `crm_discovery_sites`, `crm_lead_lists`. Pipeline: Discovery → Scrape → Staged Leads → Lead Lists (export→ChatGPT clean→import) → CRM Contacts.
 
-**Pricing/CPQ**: Quote wizard with tiered pricing engine. `app/services/pricing_engine.py` — TIERS, ADDON_PRICES, annual prepay (pay 10 months for 12).
+**Pricing/Subscription Billing**: 5-tier model: Free $0 / Indie $129 / Pro $299 / Business $599 / Enterprise $1,299. Enterprise is fully unlimited (all limits = -1). Pricing engine in `app/services/pricing_engine.py` (TIERS, ADDON_PRICES, premium modules). Annual prepay: pay 10 months for 12. Subscription service in `app/services/subscription_service.py`. Feature gates in `app/services/feature_gates.py`. DB tier table: `organization_tiers` (prices in `price_cents`, limits as integers, -1 = unlimited). Frontend: `/pricing` page, `PlanConfigurator` + `PriceSummary` components, `useSubscriptionBilling.ts` hooks. Prices displayed in `Pricing.tsx`, `BacklotUpgradePrompt.tsx`, `SubscriptionsAndRolesPage.tsx`, `PlanConfigurator.tsx`.
+
+**CRM Pricing/CPQ**: Quote wizard for sales reps. `pricing_quotes`, `pricing_quote_versions` tables. Frontend: `/crm/pricing`, `usePricing.ts`, `PricingTab.tsx`.
 
 ## Authentication & Permissions
 

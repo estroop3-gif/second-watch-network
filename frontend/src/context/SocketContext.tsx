@@ -24,6 +24,9 @@ const RECONNECT_INITIAL_DELAY = 1000;
 const RECONNECT_MAX_DELAY = 30000;
 const RECONNECT_MAX_ATTEMPTS = 10;
 
+// Keepalive ping interval (5 minutes) to prevent API Gateway idle timeout (10 min)
+const KEEPALIVE_INTERVAL = 5 * 60 * 1000;
+
 // ============================================================================
 // SOCKET.IO PROVIDER (Development)
 // ============================================================================
@@ -258,6 +261,7 @@ const AWSWebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const shouldReconnectRef = useRef(true);
+  const keepaliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Use refs for user/token so connect() doesn't need them as dependencies
   const userRef = useRef(user);
   const tokenRef = useRef(token);
@@ -317,6 +321,14 @@ const AWSWebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setError(null);
         reconnectAttemptsRef.current = 0;
 
+        // Start keepalive ping to prevent API Gateway idle timeout
+        if (keepaliveRef.current) clearInterval(keepaliveRef.current);
+        keepaliveRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ action: 'ping' }));
+          }
+        }, KEEPALIVE_INTERVAL);
+
         // Rejoin any channels we were in
         joinedChannelsRef.current.forEach((channelId) => {
           send('join_channel', { channel_id: channelId });
@@ -327,6 +339,11 @@ const AWSWebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         // Only log unexpected disconnects
         if (event.code !== 1000) {
           console.log('[WebSocket] Disconnected:', event.code, event.reason);
+        }
+        // Stop keepalive ping
+        if (keepaliveRef.current) {
+          clearInterval(keepaliveRef.current);
+          keepaliveRef.current = null;
         }
         setSocket(null);
         setIsConnected(false);
@@ -386,6 +403,10 @@ const AWSWebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!user || !token) {
       // Cleanup on logout
       shouldReconnectRef.current = false;
+      if (keepaliveRef.current) {
+        clearInterval(keepaliveRef.current);
+        keepaliveRef.current = null;
+      }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
@@ -414,6 +435,10 @@ const AWSWebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return () => {
       clearTimeout(connectTimeout);
       shouldReconnectRef.current = false;
+      if (keepaliveRef.current) {
+        clearInterval(keepaliveRef.current);
+        keepaliveRef.current = null;
+      }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }

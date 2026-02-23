@@ -106,7 +106,7 @@ async def check_org_access(org_id: str, user_id: str) -> Dict[str, Any]:
         SELECT role FROM organization_members
         WHERE organization_id = :org_id
           AND user_id = :user_id
-          AND is_active = TRUE
+          AND status = 'active'
           AND role IN ('owner', 'admin')
     """, {"org_id": org_id, "user_id": user_id})
 

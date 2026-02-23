@@ -13,7 +13,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 node -e "
 const { Client } = require('pg');
 const fs = require('fs');
-const sql = fs.readFileSync('migrations/246_*.sql', 'utf8');
+const sql = fs.readFileSync('migrations/259_*.sql', 'utf8');
 const client = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 client.connect().then(() => client.query(sql)).then(() => console.log('Done')).finally(() => client.end());
 "
@@ -150,7 +150,7 @@ async def route(profile = Depends(require_premium_content_access)):
 
 ## Migrations
 
-Located in `migrations/`. Currently at 246. Run via Node.js pg client (psql not installed).
+Located in `migrations/`. Currently at 259. Run via Node.js pg client (psql not installed).
 
 ## S3 Buckets
 

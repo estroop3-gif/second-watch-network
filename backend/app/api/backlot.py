@@ -45,6 +45,11 @@ from pypdf import PdfReader
 from app.core.database import get_client, execute_single, execute_query, execute_insert
 from app.core.config import settings
 from app.core.storage import upload_file, get_signed_url, generate_unique_filename, BACKLOT_FILES_BUCKET, download_from_s3_uri
+from app.core.quota_enforcement import (
+    enforce_storage_limit,
+    enforce_bandwidth_limit,
+    record_bandwidth_usage,
+)
 from app.socketio_app import get_user_from_token
 
 router = APIRouter()
@@ -72,6 +77,45 @@ def generate_signed_url(s3_uri: str, expires_in: int = 86400) -> str:
 
     # If it's already a regular URL or invalid format, return as-is
     return s3_uri
+
+
+def _get_org_id_for_project(project_id: str) -> Optional[str]:
+    """Get organization_id for a project. Returns None if project has no org."""
+    row = execute_single(
+        "SELECT organization_id FROM backlot_projects WHERE id = :pid",
+        {"pid": project_id}
+    )
+    return str(row["organization_id"]) if row and row.get("organization_id") else None
+
+
+def _enforce_org_storage(project_id: str, file_size: int = 0):
+    """Enforce org-level storage limit for a project. No-op if project has no org."""
+    org_id = _get_org_id_for_project(project_id)
+    if org_id:
+        enforce_storage_limit(org_id, file_size, "active")
+
+
+def _enforce_org_bandwidth_and_record(
+    project_id: str,
+    file_size: int,
+    user_id: Optional[str] = None,
+    event_type: str = "file_download",
+    resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
+):
+    """Enforce bandwidth limit and record usage. No-op if project has no org."""
+    org_id = _get_org_id_for_project(project_id)
+    if org_id:
+        enforce_bandwidth_limit(org_id, file_size)
+        record_bandwidth_usage(
+            org_id=org_id,
+            bytes_transferred=file_size,
+            event_type=event_type,
+            project_id=project_id,
+            user_id=user_id,
+            resource_type=resource_type,
+            resource_id=resource_id,
+        )
 
 
 class ChatMessage(BaseModel):
@@ -1425,12 +1469,32 @@ async def update_project(
         if not update_data:
             raise HTTPException(status_code=400, detail="No fields to update")
 
+        # Capture old status before update for archive storage shift
+        old_status = None
+        if "status" in update_data:
+            old_proj = client.table("backlot_projects").select("status").eq("id", project_id).single().execute()
+            old_status = old_proj.data.get("status") if old_proj.data else None
+
         result = client.table("backlot_projects").update(update_data).eq("id", project_id).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to update project")
 
         project = result.data[0]
+
+        # Shift storage between active/archive if status changed
+        new_status = update_data.get("status")
+        if new_status and old_status != new_status:
+            if new_status == "archived" and old_status != "archived":
+                execute_single(
+                    "SELECT shift_project_storage(:pid, 'to_archive')",
+                    {"pid": project_id}
+                )
+            elif old_status == "archived" and new_status != "archived":
+                execute_single(
+                    "SELECT shift_project_storage(:pid, 'to_active')",
+                    {"pid": project_id}
+                )
 
         # Fetch owner profile
         profile_result = client.table("profiles").select(
@@ -22165,6 +22229,9 @@ async def get_clearance_upload_url(
         if membership.data and membership.data.get("role") not in ["admin", "editor"]:
             raise HTTPException(status_code=403, detail="Only admins and editors can upload clearance documents")
 
+        # Org-level storage enforcement
+        _enforce_org_storage(project_id, data.file_size)
+
         # Generate S3 key for the file
         import uuid
         file_ext = data.file_name.split(".")[-1] if "." in data.file_name else "pdf"
@@ -29858,6 +29925,28 @@ async def get_review_version_stream_url(
 
         expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
 
+        # Record bandwidth usage for streaming
+        try:
+            asset_response = client.table("backlot_review_assets").select("project_id").eq("id", version["asset_id"]).execute()
+            if asset_response.data:
+                stream_project_id = asset_response.data[0]["project_id"]
+                # Get file size from linked standalone asset
+                file_size = 0
+                if version.get("linked_standalone_asset_id"):
+                    sa = execute_single(
+                        "SELECT file_size_bytes FROM backlot_standalone_assets WHERE id = :said",
+                        {"said": version["linked_standalone_asset_id"]}
+                    )
+                    file_size = (sa.get("file_size_bytes") or 0) if sa else 0
+                if file_size > 0:
+                    _enforce_org_bandwidth_and_record(
+                        stream_project_id, file_size, user["id"],
+                        event_type="stream_view", resource_type="review_version",
+                        resource_id=version_id,
+                    )
+        except Exception as bw_err:
+            print(f"Warning: bandwidth recording failed for review stream: {bw_err}")
+
         return {
             "url": presigned_url,
             "quality": requested_quality,
@@ -29893,6 +29982,9 @@ async def get_review_version_upload_url(
     try:
         review_asset = await verify_review_asset_access(client, asset_id, user["id"], require_edit=True)
         project_id = review_asset["project_id"]
+
+        # Org-level storage enforcement
+        _enforce_org_storage(project_id)
 
         import boto3
         import uuid
@@ -32539,6 +32631,24 @@ async def get_dailies_clip_stream_url(
             ExpiresIn=3600,  # 1 hour
         )
 
+        # Record bandwidth usage for streaming
+        try:
+            sa = execute_single(
+                """SELECT sa.file_size_bytes FROM backlot_standalone_assets sa
+                   JOIN backlot_dailies_clips c ON c.linked_standalone_asset_id = sa.id
+                   WHERE c.id = :cid""",
+                {"cid": clip_id}
+            )
+            stream_file_size = (sa.get("file_size_bytes") or 0) if sa else 0
+            if stream_file_size > 0:
+                _enforce_org_bandwidth_and_record(
+                    clip["project_id"], stream_file_size, user["id"],
+                    event_type="stream_view", resource_type="dailies",
+                    resource_id=clip_id,
+                )
+        except Exception as bw_err:
+            print(f"Warning: bandwidth recording failed for dailies stream: {bw_err}")
+
         # Filter out 'original' from available renditions - only return proxy quality levels
         available = [k for k in renditions.keys() if k != 'original'] if renditions else []
 
@@ -32648,6 +32758,24 @@ async def get_dailies_clip_stream_urls(
                 )
             except:
                 pass
+
+        # Record bandwidth for stream URL generation (best-effort)
+        try:
+            sa = execute_single(
+                """SELECT sa.file_size_bytes FROM backlot_standalone_assets sa
+                   JOIN backlot_dailies_clips c ON c.linked_standalone_asset_id = sa.id
+                   WHERE c.id = :cid""",
+                {"cid": clip_id}
+            )
+            stream_file_size = (sa.get("file_size_bytes") or 0) if sa else 0
+            if stream_file_size > 0 and qualities:
+                _enforce_org_bandwidth_and_record(
+                    clip["project_id"], stream_file_size, user["id"],
+                    event_type="stream_view", resource_type="dailies",
+                    resource_id=clip_id,
+                )
+        except Exception as bw_err:
+            print(f"Warning: bandwidth recording failed for multi-stream: {bw_err}")
 
         return {
             "clip_id": clip_id,
@@ -41637,6 +41765,7 @@ async def get_dailies_upload_url(
     # Check storage quota before allowing upload
     file_size = getattr(request, 'file_size', 0) or 0
     await check_storage_quota(user_id, file_size)
+    _enforce_org_storage(project_id, file_size)
 
     try:
         import uuid
@@ -41729,6 +41858,7 @@ async def get_dailies_browser_upload_url(
 
         # Check storage quota
         await check_storage_quota(user["id"], 0)
+        _enforce_org_storage(project_id)
 
         import boto3
         import uuid
@@ -46485,6 +46615,11 @@ async def get_standalone_asset_upload_url(
 
         # Generate S3 key
         project_id = request.get("project_id")
+
+        # Org-level storage enforcement
+        if project_id:
+            _enforce_org_storage(project_id)
+
         s3_key = f"projects/{project_id}/assets/{asset_id}/{filename}"
 
         # Generate presigned URL
@@ -46558,6 +46693,7 @@ async def get_asset_upload_url(
     try:
         await verify_project_access(client, project_id, user["id"], require_edit=True)
         await check_storage_quota(user["id"], 0)
+        _enforce_org_storage(project_id)
 
         import boto3, uuid
         from botocore.config import Config
@@ -46946,6 +47082,9 @@ async def get_review_upload_url_for_desktop(
         # Verify project access
         await verify_desktop_key_and_project_access(x_api_key, project_id)
 
+        # Org-level storage enforcement
+        _enforce_org_storage(project_id)
+
         # Create version record
         filename = request.get("filename", "upload")
         content_type = request.get("content_type", "video/mp4")
@@ -47195,6 +47334,9 @@ async def get_asset_upload_url_for_desktop(
     try:
         user_id = await verify_desktop_key_and_project_access(x_api_key, project_id)
         client = get_client()
+
+        # Org-level storage enforcement
+        _enforce_org_storage(project_id)
 
         filename = request.get("filename", "upload")
         content_type = request.get("content_type", "application/octet-stream")
