@@ -2,7 +2,7 @@
  * BudgetView - Main budget management view for Backlot projects
  * Professional film/TV budget with Top Sheet, Detail, and Daily Budget sync
  */
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -72,6 +72,8 @@ import {
   ToggleRight,
   Eye,
   StickyNote,
+  Copy,
+  GitCompareArrows,
 } from 'lucide-react';
 import { DialogFooter } from '@/components/ui/dialog';
 import {
@@ -98,10 +100,14 @@ import {
   useGearCosts,
   useSyncGearToBudget,
   useBudgetActuals,
+  useTypedBudgets,
+  useCloneBudget,
   type BudgetActual,
   type BudgetActualSourceDetails,
 } from '@/hooks/backlot';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 import { BudgetCreationModal } from './BudgetCreationModal';
+import BudgetDiffView from './BudgetDiffView';
 import { BudgetDeleteConfirmDialog } from './BudgetDeleteConfirmDialog';
 import { ActualDetailModal } from './ActualDetailModal';
 import {
@@ -1123,6 +1129,11 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
     projectId
   );
 
+  // Typed budgets (estimate/actual/drafts)
+  const { data: typedBudgets } = useTypedBudgets(projectId);
+  const cloneBudget = useCloneBudget();
+  const [showDiffView, setShowDiffView] = useState(false);
+
   // Modal states
   const [activeTab, setActiveTab] = useState('detail');
   const [budgetViewMode, setBudgetViewMode] = useState<'estimated' | 'actual'>('estimated');
@@ -1188,6 +1199,31 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
   });
 
   const isLocked = budget?.status === 'locked';
+
+  // ── Draft persistence for category and line item forms ──
+  const categoryDraftKey = buildDraftKey('backlot', 'budget-category', projectId);
+  const lineItemDraftKey = buildDraftKey('backlot', 'budget-line-item', projectId);
+
+  const categoryDefaults: BudgetCategoryInput = { name: '', code: '', description: '', color: '#6b7280', is_taxable: false, tax_rate: 0 };
+  const lineItemDefaults: BudgetLineItemInput = { description: '', rate_type: 'flat', rate_amount: 0, quantity: 1, units: '', vendor_name: '', account_code: '', notes: '' };
+
+  // Auto-save category form draft when modal is open in create mode
+  useEffect(() => {
+    if (!showCategoryModal || editingCategory) return;
+    const isDefault = JSON.stringify(categoryForm) === JSON.stringify(categoryDefaults);
+    if (isDefault) { clearDraftStorage(categoryDraftKey); return; }
+    const timer = setTimeout(() => saveDraft(categoryDraftKey, categoryForm), 500);
+    return () => clearTimeout(timer);
+  }, [categoryForm, showCategoryModal, editingCategory]);
+
+  // Auto-save line item form draft when modal is open in create mode
+  useEffect(() => {
+    if (!showLineItemModal || editingLineItem) return;
+    const isDefault = JSON.stringify(lineItemForm) === JSON.stringify(lineItemDefaults);
+    if (isDefault) { clearDraftStorage(lineItemDraftKey); return; }
+    const timer = setTimeout(() => saveDraft(lineItemDraftKey, lineItemForm), 500);
+    return () => clearTimeout(timer);
+  }, [lineItemForm, showLineItemModal, editingLineItem]);
 
   // Create budget from template handler
   const handleCreateFromTemplate = async () => {
@@ -1351,7 +1387,9 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
       });
     } else {
       setEditingCategory(null);
-      setCategoryForm({ name: '', code: '', description: '', color: '#6b7280', is_taxable: false, tax_rate: 0 });
+      // Restore draft if available, otherwise use defaults
+      const draft = loadDraft<BudgetCategoryInput>(categoryDraftKey);
+      setCategoryForm(draft ? draft.data : { name: '', code: '', description: '', color: '#6b7280', is_taxable: false, tax_rate: 0 });
     }
     setShowCategoryModal(true);
   };
@@ -1367,6 +1405,7 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
       } else {
         await createCategory.mutateAsync(categoryForm);
       }
+      clearDraftStorage(categoryDraftKey);
       setShowCategoryModal(false);
     } catch (err) {
       console.error('Failed to save category:', err);
@@ -1401,7 +1440,9 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
       });
     } else {
       setEditingLineItem(null);
-      setLineItemForm({
+      // Restore draft if available, otherwise use defaults
+      const draft = loadDraft<BudgetLineItemInput>(lineItemDraftKey);
+      setLineItemForm(draft ? draft.data : {
         description: '',
         rate_type: 'flat',
         rate_amount: 0,
@@ -1438,6 +1479,7 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
         refetchStats(),
         refetchTopSheet(),
       ]);
+      clearDraftStorage(lineItemDraftKey);
       setShowLineItemModal(false);
     } catch (err) {
       console.error('Failed to save line item:', err);
@@ -1744,6 +1786,16 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
               <h2 className="text-2xl font-heading text-bone-white">{activeBudget.name}</h2>
             )}
             <Badge className={statusBadge.style}>{statusBadge.label}</Badge>
+            {activeBudget.budget_type && (
+              <Badge className={
+                activeBudget.budget_type === 'actual' ? 'bg-green-600/20 text-green-400' :
+                activeBudget.budget_type === 'draft' ? 'bg-zinc-600/20 text-zinc-400' :
+                'bg-blue-600/20 text-blue-400'
+              }>
+                {activeBudget.budget_type === 'estimate' || activeBudget.budget_type === 'estimated' ? 'Estimate' :
+                 activeBudget.budget_type === 'actual' ? 'Actual' : 'Draft'}
+              </Badge>
+            )}
             {activeBudget.project_type_template && activeBudget.project_type_template !== 'custom' && (
               <Badge variant="outline" className="text-xs">
                 {BUDGET_PROJECT_TYPE_LABELS[activeBudget.project_type_template]}
@@ -1841,6 +1893,22 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
                     New Budget
                   </DropdownMenuItem>
                   <DropdownMenuItem
+                    onClick={() => {
+                      if (activeBudget?.id) {
+                        cloneBudget.mutate({ budgetId: activeBudget.id });
+                      }
+                    }}
+                    disabled={cloneBudget.isPending}
+                  >
+                    <Copy className="w-4 h-4 mr-2" />
+                    {cloneBudget.isPending ? 'Cloning...' : 'Clone Budget'}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowDiffView(!showDiffView)}>
+                    <GitCompareArrows className="w-4 h-4 mr-2" />
+                    Compare Budgets
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
                     onClick={handleLockBudget}
                     className="text-blue-400"
                   >
@@ -1864,6 +1932,16 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
 
       {/* Stats Cards */}
       <BudgetStatsCards budget={activeBudget} categories={categories || []} stats={stats || null} />
+
+      {/* Budget Diff View */}
+      {showDiffView && (
+        <BudgetDiffView
+          projectId={projectId}
+          initialBudgetAId={typedBudgets?.estimate?.id}
+          initialBudgetBId={typedBudgets?.actual?.id}
+          onClose={() => setShowDiffView(false)}
+        />
+      )}
 
       {/* Gear Costs Section */}
       {gearCosts && gearCosts.total_cost > 0 && (

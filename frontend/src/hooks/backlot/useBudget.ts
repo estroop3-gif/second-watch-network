@@ -3190,3 +3190,137 @@ export function useReorderReceipts(projectId: string) {
     },
   });
 }
+
+
+// =====================================================
+// TYPED BUDGETS (Estimate / Actual / Drafts)
+// =====================================================
+
+/**
+ * Get all budgets for a project grouped by type
+ */
+export function useTypedBudgets(projectId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-typed-budgets', projectId],
+    queryFn: async () => {
+      if (!projectId) return null;
+      const token = getAuthToken();
+      const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budgets/typed`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error('Failed to fetch typed budgets');
+      return response.json();
+    },
+    enabled: !!projectId,
+  });
+}
+
+/**
+ * Ensure an Actual Budget exists (creates if needed)
+ */
+export function useEnsureActualBudget(projectId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      if (!projectId) throw new Error('No project ID');
+      const token = getAuthToken();
+      const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budgets/ensure-actual`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error('Failed to ensure actual budget');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-typed-budgets', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget', projectId] });
+    },
+  });
+}
+
+
+// =====================================================
+// BUDGET CLONING & DIFF
+// =====================================================
+
+/**
+ * Clone a budget
+ */
+export function useCloneBudget() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ budgetId, name, budgetType }: { budgetId: string; name?: string; budgetType?: string }) => {
+      const token = getAuthToken();
+      const response = await fetch(`${API_BASE}/backlot/budgets/${budgetId}/clone`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name, budget_type: budgetType || 'draft' }),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to clone budget' }));
+        throw new Error(error.detail || 'Failed to clone budget');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-typed-budgets'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget'] });
+    },
+  });
+}
+
+/**
+ * Compare two budgets
+ */
+export function useBudgetDiff(budgetAId: string | null, budgetBId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-budget-diff', budgetAId, budgetBId],
+    queryFn: async () => {
+      if (!budgetAId || !budgetBId) return null;
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/backlot/budgets/compare?budget_a_id=${budgetAId}&budget_b_id=${budgetBId}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!response.ok) throw new Error('Failed to compare budgets');
+      return response.json();
+    },
+    enabled: !!budgetAId && !!budgetBId,
+  });
+}
+
+
+// =====================================================
+// WEBSOCKET REAL-TIME BUDGET UPDATES
+// =====================================================
+
+/**
+ * Subscribe to real-time budget updates for a project.
+ * Invalidates budget queries on update events.
+ * Must be called from a component that has SocketContext available.
+ */
+export function createBudgetRealtimeUpdates(
+  socket: any,
+  projectId: string | null,
+  queryClient: ReturnType<typeof useQueryClient>
+) {
+  if (!socket || !projectId) return () => {};
+
+  socket.emit('join_budget_updates', { project_id: projectId });
+
+  const handleBudgetUpdate = () => {
+    queryClient.invalidateQueries({ queryKey: ['backlot-budget', projectId] });
+    queryClient.invalidateQueries({ queryKey: ['backlot-typed-budgets', projectId] });
+    queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', projectId] });
+  };
+
+  socket.on('budget_update', handleBudgetUpdate);
+
+  return () => {
+    socket.emit('leave_budget_updates', { project_id: projectId });
+    socket.off('budget_update', handleBudgetUpdate);
+  };
+}

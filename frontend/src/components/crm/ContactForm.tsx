@@ -11,6 +11,8 @@ import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import CRMCompanySelector from './CRMCompanySelector';
+import { useFormDraftRHF } from '@/hooks/useFormDraftRHF';
+import { buildDraftKey } from '@/lib/formDraftStorage';
 
 const contactSchema = z.object({
   first_name: z.string().min(1, 'First name is required'),
@@ -59,6 +61,7 @@ const ContactForm = ({ defaultValues, onSubmit, isSubmitting, submitLabel = 'Sav
   const [emails, setEmails] = useState<string[]>(initEmails);
   const [phones, setPhones] = useState<string[]>(initPhones);
 
+  const isEditMode = !!defaultValues?.id;
   const form = useForm<ContactFormValues>({
     resolver: zodResolver(contactSchema),
     defaultValues: {
@@ -86,9 +89,15 @@ const ContactForm = ({ defaultValues, onSubmit, isSubmitting, submitLabel = 'Sav
     },
   });
 
+  const { clearDraft } = useFormDraftRHF(form, {
+    key: buildDraftKey('crm', 'contact', (defaultValues as any)?.id || 'new'),
+    enabled: !isEditMode,
+  });
+
   const handleFormSubmit = (values: ContactFormValues) => {
     const filteredEmails = emails.filter(e => e.trim());
     const filteredPhones = phones.filter(p => p.trim());
+    clearDraft();
     onSubmit({
       ...values,
       email: filteredEmails[0] || '',

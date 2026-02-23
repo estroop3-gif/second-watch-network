@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Plus, Edit, Trash2, FileText, Eye, Code } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -17,6 +17,12 @@ import {
 import { usePermissions } from '@/hooks/usePermissions';
 import { useToast } from '@/hooks/use-toast';
 import RichTextEditor from '@/components/crm/RichTextEditor';
+import {
+  saveDraft as saveDraftStorage,
+  loadDraft,
+  clearDraft as clearDraftStorage,
+  buildDraftKey,
+} from '@/lib/formDraftStorage';
 
 const CATEGORIES = ['general', 'follow-up', 'introduction', 'proposal', 'closing', 'support'];
 const PLACEHOLDERS = [
@@ -47,6 +53,24 @@ const EmailTemplates = () => {
 
   const templates = data?.templates || [];
 
+  // ── Draft persistence for create mode ──
+  const templateDraftKey = buildDraftKey('crm', 'email-template', editingTemplate?.id || 'new');
+  const templateDraftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const getTemplateFormSnapshot = useCallback(() => ({
+    name, subject, bodyHtml, category,
+  }), [name, subject, bodyHtml, category]);
+
+  // Persist form changes when editor dialog is open (create mode only)
+  useEffect(() => {
+    if (!showEditor || editingTemplate) return;
+    if (templateDraftTimerRef.current) clearTimeout(templateDraftTimerRef.current);
+    templateDraftTimerRef.current = setTimeout(() => {
+      saveDraftStorage(templateDraftKey, getTemplateFormSnapshot());
+    }, 500);
+    return () => { if (templateDraftTimerRef.current) clearTimeout(templateDraftTimerRef.current); };
+  }, [showEditor, editingTemplate, templateDraftKey, getTemplateFormSnapshot]);
+
   const resetForm = () => {
     setName('');
     setSubject('');
@@ -57,6 +81,14 @@ const EmailTemplates = () => {
 
   const openCreate = () => {
     resetForm();
+    // Restore draft for new template
+    const draft = loadDraft<any>(buildDraftKey('crm', 'email-template', 'new'));
+    if (draft?.data) {
+      if (draft.data.name) setName(draft.data.name);
+      if (draft.data.subject) setSubject(draft.data.subject);
+      if (draft.data.bodyHtml) setBodyHtml(draft.data.bodyHtml);
+      if (draft.data.category) setCategory(draft.data.category);
+    }
     setShowEditor(true);
   };
 
@@ -99,6 +131,7 @@ const EmailTemplates = () => {
         await updateTemplate.mutateAsync({ id: editingTemplate.id, data: payload });
         toast({ title: 'Template updated' });
       } else {
+        clearDraftStorage(buildDraftKey('crm', 'email-template', 'new'));
         await createTemplate.mutateAsync(payload);
         toast({ title: 'Template created' });
       }

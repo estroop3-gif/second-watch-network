@@ -2,7 +2,7 @@
  * InvoicesView - Crew billing and invoice management
  * Create, edit, and export invoices with line items from timecards/expenses
  */
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -108,6 +108,7 @@ import {
 } from '@/types/backlot';
 import { generateInvoicePdf } from './invoice-pdf';
 import { cn } from '@/lib/utils';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 
 interface InvoicesViewProps {
   projectId: string;
@@ -212,6 +213,17 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({
 
   // Form state for create dialog
   const [formData, setFormData] = useState<Partial<InvoiceInput>>({});
+  const invoiceDraftKey = buildDraftKey('backlot', 'invoice', selectedInvoiceId || 'new');
+
+  // Debounced draft save while create dialog is open
+  useEffect(() => {
+    if (!showCreateDialog) return;
+    const timer = setTimeout(() => {
+      saveDraft(invoiceDraftKey, formData);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [formData, showCreateDialog, invoiceDraftKey]);
+
   const [lineItemForm, setLineItemForm] = useState({
     description: '',
     rate_type: 'flat',
@@ -241,6 +253,12 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({
       payment_terms: defaultTerms,
       tax_rate: 0,
     });
+    // Check for saved draft and restore if available
+    const draft = loadDraft<Partial<InvoiceInput>>(invoiceDraftKey);
+    if (draft) {
+      setFormData(draft.data);
+      toast({ title: 'Draft restored', description: 'Your unsaved invoice draft has been restored.' });
+    }
     setShowCreateDialog(true);
   };
 
@@ -256,6 +274,7 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({
 
     try {
       const result = await createInvoice.mutateAsync(formData as InvoiceInput);
+      clearDraftStorage(invoiceDraftKey);
       toast({ title: 'Invoice Created', description: `Invoice ${result.invoice_number} created.` });
       setShowCreateDialog(false);
       setSelectedInvoiceId(result.id);

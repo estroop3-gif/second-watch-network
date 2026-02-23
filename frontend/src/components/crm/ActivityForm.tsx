@@ -6,6 +6,8 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useFormDraftRHF } from '@/hooks/useFormDraftRHF';
+import { buildDraftKey } from '@/lib/formDraftStorage';
 
 const activitySchema = z.object({
   activity_type: z.enum(['call', 'email', 'text', 'meeting', 'demo', 'follow_up', 'proposal_sent', 'note', 'other']),
@@ -62,6 +64,11 @@ const ActivityForm = ({ contactId, onSubmit, isSubmitting, defaultValues }: Acti
     },
   });
 
+  const { clearDraft } = useFormDraftRHF(form, {
+    key: buildDraftKey('crm', 'activity', 'new'),
+    enabled: true,
+  });
+
   const handleSubmit = (values: ActivityFormValues) => {
     const cleaned: any = { contact_id: contactId };
     if (values.activity_type) cleaned.activity_type = values.activity_type;
@@ -71,6 +78,7 @@ const ActivityForm = ({ contactId, onSubmit, isSubmitting, defaultValues }: Acti
     if (values.duration_minutes) cleaned.duration_minutes = values.duration_minutes;
     if (values.follow_up_date) cleaned.follow_up_date = values.follow_up_date;
     if (values.follow_up_notes) cleaned.follow_up_notes = values.follow_up_notes;
+    clearDraft();
     onSubmit(cleaned);
   };
 

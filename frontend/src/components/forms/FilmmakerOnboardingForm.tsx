@@ -31,6 +31,8 @@ import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { useState } from "react";
 import { Loader2, PlusCircle, Trash2 } from "lucide-react";
+import { useFormDraftRHF } from '@/hooks/useFormDraftRHF';
+import { buildDraftKey } from '@/lib/formDraftStorage';
 import { Switch } from "../ui/switch";
 import { Checkbox } from "../ui/checkbox";
 import { TagInput } from "../ui/tag-input";
@@ -127,6 +129,10 @@ const FilmmakerOnboardingForm = () => {
     },
   });
 
+  const { clearDraft } = useFormDraftRHF(form, {
+    key: buildDraftKey('profile', 'filmmaker-onboard', 'new'),
+  });
+
   const { fields, append, remove } = useFieldArray({
     control: form.control,
     name: "credits"
@@ -164,6 +170,7 @@ const FilmmakerOnboardingForm = () => {
         show_email: data.show_email,
       });
 
+      clearDraft();
       toast.success("Profile created successfully!");
       // Invalidate profile queries to refresh data
       await queryClient.invalidateQueries({ queryKey: ['filmmaker_profile', profileId] });

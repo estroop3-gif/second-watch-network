@@ -11,7 +11,7 @@
  * - Publish snapshot
  * - Export CSV
  */
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -62,6 +62,10 @@ import {
   AlertCircle,
   Check,
   X,
+  DollarSign,
+  ChevronDown,
+  ChevronUp,
+  Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -86,8 +90,11 @@ import {
   AvailableCrewMember,
   AvailableContact,
   AvailableTeamMember,
+  useDoodCostSummary,
+  useSyncDoodToBudget,
 } from '@/hooks/backlot';
 import { useSocket } from '@/hooks/useSocket';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 
 interface DoodViewProps {
   projectId: string;
@@ -136,6 +143,48 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
   const [newSubjectRateType, setNewSubjectRateType] = useState<'hourly' | 'daily' | 'weekly' | 'flat' | ''>('');
   const [newSubjectRateAmount, setNewSubjectRateAmount] = useState<string>('');
 
+  // Draft persistence for add-subject form
+  const draftKey = useMemo(() => buildDraftKey('backlot', 'dood-subject', 'new'), []);
+  const draftSaveTimer = useRef<ReturnType<typeof setTimeout>>();
+  const draftInitialized = useRef(false);
+
+  // Restore draft on mount
+  useEffect(() => {
+    const envelope = loadDraft<{
+      name: string;
+      type: string;
+      dept: string;
+      rateType: string;
+      rateAmount: string;
+    }>(draftKey);
+    if (envelope) {
+      setNewSubjectName(envelope.data.name || '');
+      setNewSubjectType(envelope.data.type || 'CAST');
+      setNewSubjectDept(envelope.data.dept || '');
+      setNewSubjectRateType((envelope.data.rateType || '') as typeof newSubjectRateType);
+      setNewSubjectRateAmount(envelope.data.rateAmount || '');
+    }
+    draftInitialized.current = true;
+  }, [draftKey]);
+
+  // Save draft debounced when fields change
+  useEffect(() => {
+    if (!draftInitialized.current) return;
+    clearTimeout(draftSaveTimer.current);
+    const hasContent = newSubjectName || newSubjectDept || newSubjectRateAmount || newSubjectRateType;
+    if (!hasContent) return;
+    draftSaveTimer.current = setTimeout(() => {
+      saveDraft(draftKey, {
+        name: newSubjectName,
+        type: newSubjectType,
+        dept: newSubjectDept,
+        rateType: newSubjectRateType,
+        rateAmount: newSubjectRateAmount,
+      });
+    }, 500);
+    return () => clearTimeout(draftSaveTimer.current);
+  }, [draftKey, newSubjectName, newSubjectType, newSubjectDept, newSubjectRateType, newSubjectRateAmount]);
+
   // Delete confirmation state
   const [deleteSubjectId, setDeleteSubjectId] = useState<string | null>(null);
 
@@ -161,6 +210,11 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
 
   // Available subjects for picker
   const { data: availableSubjects, isLoading: isLoadingAvailable } = useAvailableDoodSubjects(projectId);
+
+  // Cost projection
+  const { data: costSummary } = useDoodCostSummary(projectId);
+  const syncToBudget = useSyncDoodToBudget(projectId);
+  const [showCostProjection, setShowCostProjection] = useState(false);
 
   // Mutations
   const syncDaysFromSchedule = useSyncDoodDaysFromSchedule(projectId);
@@ -232,12 +286,13 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
       setNewSubjectDept('');
       setNewSubjectRateType('');
       setNewSubjectRateAmount('');
+      clearDraftStorage(draftKey);
       setShowAddSubject(false);
       toast.success('Subject added');
     } catch (err: any) {
       toast.error(err.message || 'Failed to add subject');
     }
-  }, [createSubject, newSubjectName, newSubjectType, newSubjectDept, newSubjectRateType, newSubjectRateAmount]);
+  }, [createSubject, newSubjectName, newSubjectType, newSubjectDept, newSubjectRateType, newSubjectRateAmount, draftKey]);
 
   const handleAddSelectedSubjects = useCallback(async () => {
     if (selectedSubjects.size === 0) {
@@ -609,6 +664,93 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
             </Button>
           )}
         </div>
+      )}
+
+      {/* Cost Projection */}
+      {costSummary && costSummary.subjects_with_rates > 0 && (
+        <Card className="bg-white/5 border-white/10">
+          <CardHeader
+            className="pb-2 cursor-pointer"
+            onClick={() => setShowCostProjection(!showCostProjection)}
+          >
+            <CardTitle className="text-sm font-medium text-bone-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <DollarSign className="w-4 h-4 text-green-400" />
+                Cost Projection
+                <Badge variant="outline" className="text-xs border-white/20">
+                  ${costSummary.total_estimated.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </Badge>
+                <span className="text-xs text-muted-gray font-normal">
+                  {costSummary.subjects_with_rates} of {costSummary.subjects_with_rates + costSummary.subjects_without_rates} have rates
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {canEdit && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      syncToBudget.mutate();
+                    }}
+                    disabled={syncToBudget.isPending}
+                    className="text-xs h-7"
+                  >
+                    {syncToBudget.isPending ? (
+                      <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-3 h-3 mr-1" />
+                    )}
+                    Sync to Estimate
+                  </Button>
+                )}
+                {showCostProjection ? (
+                  <ChevronUp className="w-4 h-4 text-muted-gray" />
+                ) : (
+                  <ChevronDown className="w-4 h-4 text-muted-gray" />
+                )}
+              </div>
+            </CardTitle>
+          </CardHeader>
+          {showCostProjection && (
+            <CardContent className="pt-0">
+              <div className="space-y-1">
+                {costSummary.items
+                  .filter((item: any) => item.has_rate)
+                  .map((item: any) => (
+                    <div
+                      key={item.subject_id}
+                      className="flex items-center justify-between py-1 px-2 rounded text-xs hover:bg-white/5"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-bone-white">{item.display_name}</span>
+                        {item.department && (
+                          <span className="text-muted-gray">({item.department})</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3 text-muted-gray">
+                        <span>
+                          ${item.rate_amount.toLocaleString()}/{item.rate_type === 'hourly' ? 'hr' : item.rate_type === 'daily' ? 'day' : item.rate_type}
+                        </span>
+                        <span>&times;</span>
+                        <span>{item.w_days} W-days</span>
+                        <span>=</span>
+                        <span className="text-green-400 font-medium">
+                          ${item.estimated_total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                <div className="flex items-center justify-between pt-2 mt-2 border-t border-white/10 px-2">
+                  <span className="text-xs font-medium text-bone-white">Total Estimated Labor</span>
+                  <span className="text-sm font-bold text-green-400">
+                    ${costSummary.total_estimated.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+              </div>
+            </CardContent>
+          )}
+        </Card>
       )}
 
       {/* DOOD Grid */}

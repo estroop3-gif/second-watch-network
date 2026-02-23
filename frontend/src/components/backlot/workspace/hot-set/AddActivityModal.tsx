@@ -8,7 +8,7 @@
  * - Optional location and notes
  * - Insert position selector
  */
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
@@ -43,6 +43,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 import {
   useCreateActivity,
   ACTIVITY_DEFAULTS,
@@ -118,11 +119,42 @@ export const AddActivityModal: React.FC<AddActivityModalProps> = ({
   const [notes, setNotes] = useState('');
   const [insertAfterId, setInsertAfterId] = useState<string>('end');
 
+  // --- Draft persistence ---
+  const draftKey = buildDraftKey('hotset', 'add-activity', sessionId);
+  const draftLoaded = useRef(false);
+
+  // Restore draft when dialog opens
+  useEffect(() => {
+    if (!open) { draftLoaded.current = false; return; }
+    const saved = loadDraft<{
+      blockType: ActivityBlockType;
+      customName: string;
+      duration: number;
+      locationName: string;
+      notes: string;
+    }>(draftKey);
+    if (saved) {
+      setBlockType(saved.data.blockType);
+      setCustomName(saved.data.customName);
+      setDuration(saved.data.duration);
+      setLocationName(saved.data.locationName);
+      setNotes(saved.data.notes);
+    }
+    draftLoaded.current = true;
+  }, [open, draftKey]);
+
+  // Save draft on field changes (skip the initial load)
+  useEffect(() => {
+    if (!open || !draftLoaded.current) return;
+    saveDraft(draftKey, { blockType, customName, duration, locationName, notes });
+  }, [open, draftKey, blockType, customName, duration, locationName, notes]);
+
   // Create activity mutation
   const createActivityMutation = useCreateActivity();
 
   // Update duration when type changes
   useEffect(() => {
+    if (!draftLoaded.current) return;
     setDuration(ACTIVITY_DEFAULTS[blockType].duration);
     if (blockType !== 'activity') {
       setCustomName('');
@@ -169,6 +201,7 @@ export const AddActivityModal: React.FC<AddActivityModalProps> = ({
         notes: notes || undefined,
       });
 
+      clearDraftStorage(draftKey);
       toast.success(`${name} added to schedule`);
       handleOpenChange(false);
       onSuccess?.();

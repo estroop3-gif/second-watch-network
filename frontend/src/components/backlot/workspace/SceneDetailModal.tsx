@@ -1,7 +1,7 @@
 /**
  * SceneDetailModal - View and edit scene details with breakdown items
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -74,6 +74,8 @@ import {
 } from '@/types/backlot';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
+import { useFormDraft } from '@/hooks/useFormDraft';
+import { buildDraftKey } from '@/lib/formDraftStorage';
 
 interface SceneDetailModalProps {
   scene: BacklotScene | null;
@@ -323,33 +325,22 @@ const SceneDetailModal: React.FC<SceneDetailModalProps> = ({
   const { createItem, updateItem, deleteItem } = useBreakdownItemMutations();
   const { data: projectLocations } = useProjectLocations(projectId);
 
-  // Form state for editing
-  const [formData, setFormData] = useState({
-    scene_number: '',
-    int_ext: '' as BacklotIntExt | '',
-    time_of_day: '' as BacklotTimeOfDay | '',
-    set_name: '',
-    synopsis: '',
-    notes: '',
-    page_count: '',
-    location_id: '',
+  // Form state for editing (with localStorage draft persistence)
+  const { formData, setFormData, clearDraft } = useFormDraft({
+    key: buildDraftKey('backlot', 'scene', initialScene?.id || 'new'),
+    initialData: {
+      scene_number: scene?.scene_number || '',
+      int_ext: (scene?.int_ext || '') as BacklotIntExt | '',
+      time_of_day: (scene?.time_of_day as BacklotTimeOfDay) || '' as BacklotTimeOfDay | '',
+      set_name: scene?.set_name || '',
+      synopsis: scene?.synopsis || '',
+      notes: scene?.notes || '',
+      page_count: scene?.page_count || '',
+      location_id: scene?.location_id || '',
+    },
+    serverTimestamp: scene?.updated_at,
+    enabled: !!scene,
   });
-
-  // Initialize form when scene loads
-  useEffect(() => {
-    if (scene) {
-      setFormData({
-        scene_number: scene.scene_number || '',
-        int_ext: scene.int_ext || '',
-        time_of_day: (scene.time_of_day as BacklotTimeOfDay) || '',
-        set_name: scene.set_name || '',
-        synopsis: scene.synopsis || '',
-        notes: scene.notes || '',
-        page_count: scene.page_count || '',
-        location_id: scene.location_id || '',
-      });
-    }
-  }, [scene]);
 
   const handleSaveScene = async () => {
     if (!scene) return;
@@ -366,6 +357,7 @@ const SceneDetailModal: React.FC<SceneDetailModalProps> = ({
         page_count: formData.page_count || null,
         location_id: formData.location_id || null,
       });
+      clearDraft();
       setIsEditing(false);
       toast({ title: 'Scene Updated', description: 'Scene details have been saved.' });
     } catch (error) {

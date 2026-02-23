@@ -3,6 +3,8 @@ import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Link } from "react-router-dom";
+import { useFormDraftRHF } from '@/hooks/useFormDraftRHF';
+import { buildDraftKey } from '@/lib/formDraftStorage';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -36,6 +38,10 @@ const PartnerApply = () => {
     mode: "onBlur",
   });
 
+  const { clearDraft } = useFormDraftRHF(form, {
+    key: buildDraftKey('partner', 'apply', 'new'),
+  });
+
   const [submitting, setSubmitting] = useState(false);
   const [successOpen, setSuccessOpen] = useState(false);
   const [errorOpen, setErrorOpen] = useState(false);
@@ -55,6 +61,7 @@ const PartnerApply = () => {
       return;
     }
     if (data?.id) {
+      clearDraft();
       setRefId(data.id);
       setSuccessOpen(true);
       form.reset();

@@ -1,7 +1,7 @@
 /**
  * CallSheetCreateEditModal - Template-aware modal for creating and editing call sheets
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -94,6 +94,7 @@ import { CallSheetSourcePicker } from './CallSheetSourcePicker';
 import { CreateLocationModal } from './CreateLocationModal';
 import { api } from '@/lib/api';
 import { useAWSAddressAutocomplete, AWSPlaceResult } from '@/hooks/useAWSAddressAutocomplete';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 import { useToast } from '@/hooks/use-toast';
@@ -545,6 +546,164 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
       advanceSchedule
     );
   };
+
+  // --- Draft persistence ---
+  const draftKey = buildDraftKey('backlot', 'callsheet', callSheet?.id || 'new');
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Collect all form fields into a single object for persistence
+  const collectFormData = useCallback(() => ({
+    title, date, productionTitle, productionCompany, headerLogoUrl,
+    shootDayNumber, totalShootDays,
+    crewCallTime, generalCallTime, firstShotTime, breakfastTime,
+    lunchTime, dinnerTime, estimatedWrapTime, sunriseTime, sunsetTime,
+    locationName, locationAddress, parkingNotes,
+    productionOfficePhone, productionEmail,
+    upmName, upmPhone, firstAdName, firstAdPhone,
+    directorName, directorPhone, producerName, producerPhone,
+    weatherForecast, nearestHospital, hospitalAddress,
+    hospitalName, hospitalPhone, setMedic, fireSafetyOfficer, safetyNotes,
+    generalNotes, advanceSchedule, specialInstructions,
+    productionContact, productionPhone, weatherInfo,
+    departmentNotes, scheduleBlocks, customContacts,
+    locations, scenes, people,
+    // Template-specific
+    hipaaOfficer, privacyNotes, releaseStatus, restrictedAreas, dressCode,
+    clientName, clientPhone, facilityContact, facilityPhone,
+    deadlineTime, storyAngle, reporterName, reporterPhone, subjectNotes,
+    location2Name, location2Address, location3Name, location3Address,
+    loadInTime, rehearsalTime, doorsTime, intermissionTime, strikeTime,
+    truckLocation, videoVillage, commChannel,
+    tdName, tdPhone, stageManagerName, stageManagerPhone,
+    cameraPlot, showRundown, rainPlan, clientNotes, broadcastNotes, playbackNotes,
+  }), [
+    title, date, productionTitle, productionCompany, headerLogoUrl,
+    shootDayNumber, totalShootDays,
+    crewCallTime, generalCallTime, firstShotTime, breakfastTime,
+    lunchTime, dinnerTime, estimatedWrapTime, sunriseTime, sunsetTime,
+    locationName, locationAddress, parkingNotes,
+    productionOfficePhone, productionEmail,
+    upmName, upmPhone, firstAdName, firstAdPhone,
+    directorName, directorPhone, producerName, producerPhone,
+    weatherForecast, nearestHospital, hospitalAddress,
+    hospitalName, hospitalPhone, setMedic, fireSafetyOfficer, safetyNotes,
+    generalNotes, advanceSchedule, specialInstructions,
+    productionContact, productionPhone, weatherInfo,
+    departmentNotes, scheduleBlocks, customContacts,
+    locations, scenes, people,
+    hipaaOfficer, privacyNotes, releaseStatus, restrictedAreas, dressCode,
+    clientName, clientPhone, facilityContact, facilityPhone,
+    deadlineTime, storyAngle, reporterName, reporterPhone, subjectNotes,
+    location2Name, location2Address, location3Name, location3Address,
+    loadInTime, rehearsalTime, doorsTime, intermissionTime, strikeTime,
+    truckLocation, videoVillage, commChannel,
+    tdName, tdPhone, stageManagerName, stageManagerPhone,
+    cameraPlot, showRundown, rainPlan, clientNotes, broadcastNotes, playbackNotes,
+  ]);
+
+  // Restore draft on mount
+  useEffect(() => {
+    if (isEditMode) return; // Only restore drafts for new call sheets
+    const draft = loadDraft<any>(draftKey);
+    if (!draft) return;
+    const d = draft.data;
+    if (d.title) setTitle(d.title);
+    if (d.date) setDate(d.date);
+    if (d.productionTitle) setProductionTitle(d.productionTitle);
+    if (d.productionCompany) setProductionCompany(d.productionCompany);
+    if (d.headerLogoUrl) setHeaderLogoUrl(d.headerLogoUrl);
+    if (d.shootDayNumber) setShootDayNumber(d.shootDayNumber);
+    if (d.totalShootDays) setTotalShootDays(d.totalShootDays);
+    if (d.crewCallTime) setCrewCallTime(d.crewCallTime);
+    if (d.generalCallTime) setGeneralCallTime(d.generalCallTime);
+    if (d.firstShotTime) setFirstShotTime(d.firstShotTime);
+    if (d.breakfastTime) setBreakfastTime(d.breakfastTime);
+    if (d.lunchTime) setLunchTime(d.lunchTime);
+    if (d.dinnerTime) setDinnerTime(d.dinnerTime);
+    if (d.estimatedWrapTime) setEstimatedWrapTime(d.estimatedWrapTime);
+    if (d.sunriseTime) setSunriseTime(d.sunriseTime);
+    if (d.sunsetTime) setSunsetTime(d.sunsetTime);
+    if (d.locationName) setLocationName(d.locationName);
+    if (d.locationAddress) setLocationAddress(d.locationAddress);
+    if (d.parkingNotes) setParkingNotes(d.parkingNotes);
+    if (d.productionOfficePhone) setProductionOfficePhone(d.productionOfficePhone);
+    if (d.productionEmail) setProductionEmail(d.productionEmail);
+    if (d.upmName) setUpmName(d.upmName);
+    if (d.upmPhone) setUpmPhone(d.upmPhone);
+    if (d.firstAdName) setFirstAdName(d.firstAdName);
+    if (d.firstAdPhone) setFirstAdPhone(d.firstAdPhone);
+    if (d.directorName) setDirectorName(d.directorName);
+    if (d.directorPhone) setDirectorPhone(d.directorPhone);
+    if (d.producerName) setProducerName(d.producerName);
+    if (d.producerPhone) setProducerPhone(d.producerPhone);
+    if (d.weatherForecast) setWeatherForecast(d.weatherForecast);
+    if (d.nearestHospital) setNearestHospital(d.nearestHospital);
+    if (d.hospitalAddress) setHospitalAddress(d.hospitalAddress);
+    if (d.hospitalName) setHospitalName(d.hospitalName);
+    if (d.hospitalPhone) setHospitalPhone(d.hospitalPhone);
+    if (d.setMedic) setSetMedic(d.setMedic);
+    if (d.fireSafetyOfficer) setFireSafetyOfficer(d.fireSafetyOfficer);
+    if (d.safetyNotes) setSafetyNotes(d.safetyNotes);
+    if (d.generalNotes) setGeneralNotes(d.generalNotes);
+    if (d.advanceSchedule) setAdvanceSchedule(d.advanceSchedule);
+    if (d.specialInstructions) setSpecialInstructions(d.specialInstructions);
+    if (d.productionContact) setProductionContact(d.productionContact);
+    if (d.productionPhone) setProductionPhone(d.productionPhone);
+    if (d.weatherInfo) setWeatherInfo(d.weatherInfo);
+    if (d.departmentNotes) setDepartmentNotes(d.departmentNotes);
+    if (d.scheduleBlocks?.length) setScheduleBlocks(d.scheduleBlocks);
+    if (d.customContacts?.length) setCustomContacts(d.customContacts);
+    if (d.locations?.length) setLocations(d.locations);
+    if (d.scenes?.length) setScenes(d.scenes);
+    if (d.people?.length) setPeople(d.people);
+    // Template-specific fields
+    if (d.hipaaOfficer) setHipaaOfficer(d.hipaaOfficer);
+    if (d.privacyNotes) setPrivacyNotes(d.privacyNotes);
+    if (d.releaseStatus) setReleaseStatus(d.releaseStatus);
+    if (d.restrictedAreas) setRestrictedAreas(d.restrictedAreas);
+    if (d.dressCode) setDressCode(d.dressCode);
+    if (d.clientName) setClientName(d.clientName);
+    if (d.clientPhone) setClientPhone(d.clientPhone);
+    if (d.facilityContact) setFacilityContact(d.facilityContact);
+    if (d.facilityPhone) setFacilityPhone(d.facilityPhone);
+    if (d.deadlineTime) setDeadlineTime(d.deadlineTime);
+    if (d.storyAngle) setStoryAngle(d.storyAngle);
+    if (d.reporterName) setReporterName(d.reporterName);
+    if (d.reporterPhone) setReporterPhone(d.reporterPhone);
+    if (d.subjectNotes) setSubjectNotes(d.subjectNotes);
+    if (d.location2Name) setLocation2Name(d.location2Name);
+    if (d.location2Address) setLocation2Address(d.location2Address);
+    if (d.location3Name) setLocation3Name(d.location3Name);
+    if (d.location3Address) setLocation3Address(d.location3Address);
+    if (d.loadInTime) setLoadInTime(d.loadInTime);
+    if (d.rehearsalTime) setRehearsalTime(d.rehearsalTime);
+    if (d.doorsTime) setDoorsTime(d.doorsTime);
+    if (d.intermissionTime) setIntermissionTime(d.intermissionTime);
+    if (d.strikeTime) setStrikeTime(d.strikeTime);
+    if (d.truckLocation) setTruckLocation(d.truckLocation);
+    if (d.videoVillage) setVideoVillage(d.videoVillage);
+    if (d.commChannel) setCommChannel(d.commChannel);
+    if (d.tdName) setTdName(d.tdName);
+    if (d.tdPhone) setTdPhone(d.tdPhone);
+    if (d.stageManagerName) setStageManagerName(d.stageManagerName);
+    if (d.stageManagerPhone) setStageManagerPhone(d.stageManagerPhone);
+    if (d.cameraPlot) setCameraPlot(d.cameraPlot);
+    if (d.showRundown) setShowRundown(d.showRundown);
+    if (d.rainPlan) setRainPlan(d.rainPlan);
+    if (d.clientNotes) setClientNotes(d.clientNotes);
+    if (d.broadcastNotes) setBroadcastNotes(d.broadcastNotes);
+    if (d.playbackNotes) setPlaybackNotes(d.playbackNotes);
+    toast({ title: 'Draft restored', description: 'Your unsaved call sheet draft has been restored.' });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Debounced save on change
+  useEffect(() => {
+    if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = setTimeout(() => {
+      saveDraft(draftKey, collectFormData());
+    }, 500);
+    return () => { if (draftTimerRef.current) clearTimeout(draftTimerRef.current); };
+  }, [collectFormData, draftKey]);
 
   // Apply data from a source (previous call sheet or template)
   const applySourceData = (data: BacklotCallSheet | CallSheetFullData | Record<string, unknown>, isFromSource = true) => {
@@ -2477,6 +2636,7 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
         await savePeople(savedCallSheetId);
       }
 
+      clearDraftStorage(draftKey);
       toast({
         title: isEditMode ? 'Call sheet updated' : 'Call sheet created',
         description: `"${title}" has been ${isEditMode ? 'saved' : 'created'} successfully.`,

@@ -70,6 +70,7 @@ import {
   PurchaseOrder,
 } from '@/hooks/backlot';
 import PurchaseOrderDetailContent from './details/PurchaseOrderDetailContent';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 
 interface PurchaseOrdersViewProps {
   projectId: string;
@@ -128,6 +129,28 @@ export default function PurchaseOrdersView({ projectId, canEdit }: PurchaseOrder
   const submitForApproval = useSubmitPurchaseOrderForApproval();
   const bulkSubmitForApproval = useBulkSubmitPurchaseOrdersForApproval(projectId);
 
+  // --- Draft persistence (create mode only) ---
+  const poDraftKey = buildDraftKey('backlot', 'purchase-order', 'new');
+
+  // Restore draft when opening create dialog (not edit)
+  React.useEffect(() => {
+    if (showCreateDialog && !selectedPO) {
+      const saved = loadDraft<typeof formData>(poDraftKey);
+      if (saved) {
+        setFormData(prev => ({ ...prev, ...saved.data }));
+      }
+    }
+  }, [showCreateDialog, selectedPO]);
+
+  // Auto-save draft (debounced, create mode only)
+  React.useEffect(() => {
+    if (!showCreateDialog || selectedPO) return;
+    const timer = setTimeout(() => {
+      saveDraft(poDraftKey, formData);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [formData, showCreateDialog, selectedPO]);
+
   // Filter draft POs (my drafts only)
   const draftPOs = useMemo(() => {
     return myPOs?.filter(po => po.status === 'draft') || [];
@@ -171,6 +194,7 @@ export default function PurchaseOrdersView({ projectId, canEdit }: PurchaseOrder
       await updatePO.mutateAsync({ poId: selectedPO.id, data });
     } else {
       await createPO.mutateAsync(data);
+      clearDraftStorage(poDraftKey);
     }
 
     setShowCreateDialog(false);

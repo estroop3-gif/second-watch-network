@@ -122,7 +122,7 @@ export const BacklotSection: React.FC = () => {
               asChild
               className="bg-accent-yellow text-charcoal-black hover:bg-bone-white hover:text-charcoal-black font-bold rounded-[4px] uppercase px-10 py-6 text-lg transform transition-transform hover:scale-105 hover:-rotate-2"
             >
-              <Link to="/backlot">
+              <Link to="/pricing">
                 <Clapperboard className="h-5 w-5 mr-2" />
                 Start Your Production
               </Link>

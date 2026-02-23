@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -17,6 +17,12 @@ import {
 import { useEmailAccount } from '@/hooks/crm/useEmail';
 import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
 import { useToast } from '@/hooks/use-toast';
+import {
+  saveDraft as saveDraftStorage,
+  loadDraft,
+  clearDraft as clearDraftStorage,
+  buildDraftKey,
+} from '@/lib/formDraftStorage';
 
 const STATUS_BADGE_STYLES: Record<string, string> = {
   draft: 'bg-muted-gray/30 text-bone-white border-muted-gray/50',
@@ -52,6 +58,48 @@ const BusinessCardForm = () => {
 
   // Logo preview
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
+
+  // ── Draft persistence ──
+  const draftKey = buildDraftKey('crm', 'business-card', card?.id || 'new');
+  const draftRestoredRef = useRef(false);
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const getFormSnapshot = useCallback(() => ({
+    swnTitle, swnPhone, personalName, personalTitle,
+    personalEmail, personalPhone, personalWebsite,
+    instagram, linkedin, twitter,
+  }), [swnTitle, swnPhone, personalName, personalTitle, personalEmail, personalPhone, personalWebsite, instagram, linkedin, twitter]);
+
+  // Restore draft on mount (only for new cards — not yet submitted)
+  useEffect(() => {
+    if (draftRestoredRef.current || cardLoading) return;
+    draftRestoredRef.current = true;
+    const draft = loadDraft<any>(draftKey);
+    if (!draft) return;
+    if (draft.data.swnTitle !== undefined) setSwnTitle(draft.data.swnTitle);
+    if (draft.data.swnPhone !== undefined) setSwnPhone(draft.data.swnPhone);
+    if (draft.data.personalName !== undefined) setPersonalName(draft.data.personalName);
+    if (draft.data.personalTitle !== undefined) setPersonalTitle(draft.data.personalTitle);
+    if (draft.data.personalEmail !== undefined) setPersonalEmail(draft.data.personalEmail);
+    if (draft.data.personalPhone !== undefined) setPersonalPhone(draft.data.personalPhone);
+    if (draft.data.personalWebsite !== undefined) setPersonalWebsite(draft.data.personalWebsite);
+    if (draft.data.instagram !== undefined) setInstagram(draft.data.instagram);
+    if (draft.data.linkedin !== undefined) setLinkedin(draft.data.linkedin);
+    if (draft.data.twitter !== undefined) setTwitter(draft.data.twitter);
+  }, [cardLoading]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Debounced persist
+  useEffect(() => {
+    if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = setTimeout(() => {
+      saveDraftStorage(draftKey, getFormSnapshot());
+    }, 500);
+    return () => { if (draftTimerRef.current) clearTimeout(draftTimerRef.current); };
+  }, [draftKey, getFormSnapshot]);
+
+  const clearLocalDraft = useCallback(() => {
+    clearDraftStorage(draftKey);
+  }, [draftKey]);
 
   // Populate form from existing card data
   useEffect(() => {
@@ -128,6 +176,7 @@ const BusinessCardForm = () => {
       },
       {
         onSuccess: () => {
+          clearLocalDraft();
           toast({ title: 'Draft saved', description: 'Your business card draft has been saved.' });
         },
         onError: () => {
@@ -140,6 +189,7 @@ const BusinessCardForm = () => {
   const handleSubmit = () => {
     submitCard.mutate(undefined, {
       onSuccess: () => {
+        clearLocalDraft();
         toast({ title: 'Submitted for review', description: 'Your business card has been submitted for admin approval.' });
       },
       onError: () => {

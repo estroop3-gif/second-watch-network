@@ -98,6 +98,7 @@ import {
   ReceiptFilters,
 } from '@/types/backlot';
 import SceneSelect from '../shared/SceneSelect';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 
 interface ReceiptsViewProps {
   projectId: string;
@@ -636,6 +637,28 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
     payment_method: '' as string,
     tax_amount: '',
   });
+
+  // --- Draft persistence for manual entry ---
+  const receiptDraftKey = buildDraftKey('backlot', 'receipt', 'new');
+
+  // Restore draft when opening manual entry dialog
+  React.useEffect(() => {
+    if (showManualEntry) {
+      const saved = loadDraft<typeof manualForm>(receiptDraftKey);
+      if (saved) {
+        setManualForm(prev => ({ ...prev, ...saved.data }));
+      }
+    }
+  }, [showManualEntry]);
+
+  // Auto-save draft (debounced)
+  React.useEffect(() => {
+    if (!showManualEntry) return;
+    const timer = setTimeout(() => {
+      saveDraft(receiptDraftKey, manualForm);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [manualForm, showManualEntry]);
 
   // Edit form
   const [editForm, setEditForm] = useState<ReceiptInput>({});
@@ -1416,6 +1439,7 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
                       paymentMethod: manualForm.payment_method || undefined,
                       taxAmount: manualForm.tax_amount ? parseFloat(manualForm.tax_amount) : undefined,
                     });
+                    clearDraftStorage(receiptDraftKey);
                     setShowManualEntry(false);
                     setManualForm({
                       vendor_name: '',

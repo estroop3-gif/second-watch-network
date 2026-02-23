@@ -272,6 +272,12 @@ export {
   useBundleById,
   useCreateBudgetFromBundles,
   useAddBundleToBudget,
+  // Budget type architecture
+  useTypedBudgets,
+  useEnsureActualBudget,
+  useCloneBudget,
+  useBudgetDiff,
+  createBudgetRealtimeUpdates,
 } from './useBudget';
 
 export type {
@@ -1192,6 +1198,9 @@ export {
   useSwapSuggestions,
   // Activity defaults
   ACTIVITY_DEFAULTS,
+  // Wrap cost integration
+  useWrapCostPreview,
+  useRecordSessionLabor,
 } from './useHotSet';
 
 export type {
@@ -1339,6 +1348,8 @@ export {
   getCodeInfo,
   DOOD_CODES,
   SUBJECT_TYPES,
+  useDoodCostSummary,
+  useSyncDoodToBudget,
 } from './useDood';
 export type {
   DoodDay,

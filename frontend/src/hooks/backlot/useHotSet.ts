@@ -1944,3 +1944,60 @@ export function useSwapSuggestions(sessionId: string | null, sceneId: string | n
     enabled: !!sessionId && !!sceneId,
   });
 }
+
+
+// =====================================================
+// WRAP COST PREVIEW & RECORD LABOR
+// =====================================================
+
+/**
+ * Get wrap cost preview (per-crew labor breakdown) for a session
+ */
+export function useWrapCostPreview(sessionId: string | null) {
+  return useQuery({
+    queryKey: ['hot-set-wrap-cost-preview', sessionId],
+    queryFn: async () => {
+      if (!sessionId) return null;
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/wrap-cost-preview`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!response.ok) throw new Error('Failed to fetch wrap cost preview');
+      return response.json();
+    },
+    enabled: !!sessionId,
+  });
+}
+
+/**
+ * Record session labor to Actual Budget (after PM review)
+ */
+export function useRecordSessionLabor(sessionId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      if (!sessionId) throw new Error('No session ID');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/record-labor`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to record labor' }));
+        throw new Error(error.detail || 'Failed to record labor');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['hot-set-wrap-cost-preview', sessionId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-typed-budgets'] });
+    },
+  });
+}

@@ -24,65 +24,87 @@ def check_source_already_recorded(source_type: str, source_id: str) -> bool:
 
 def get_or_create_budget_for_project(project_id: str) -> Optional[Dict[str, Any]]:
     """Get existing budget for the project to record actuals against.
+    Legacy alias — now delegates to get_or_create_actual_budget().
+    """
+    return get_or_create_actual_budget(project_id)
 
-    IMPORTANT: Actuals should be recorded against the SAME budget that has
-    the estimated values, so variance can be calculated (actual - estimated).
 
-    Priority:
-    1. Return existing estimated budget (most common case - user created a budget)
-    2. Return any existing budget
-    3. Create a new budget if none exists
-
-    This ensures actuals update the actual_subtotal on categories that already
-    have estimated_subtotal values, enabling variance tracking.
+def get_estimate_budget(project_id: str) -> Optional[Dict[str, Any]]:
+    """Get the Active Estimate budget (budget_type='estimate') for a project.
+    Returns None if no estimate budget exists.
     """
     client = get_client()
+    # Try 'estimate' first (new naming), fall back to 'estimated' (legacy)
+    result = client.table("backlot_budgets").select("id, name, budget_type").eq(
+        "project_id", project_id
+    ).eq("budget_type", "estimate").limit(1).execute()
 
-    # First, look for an estimated budget (the main planning budget)
+    if result.data:
+        return result.data[0]
+
     result = client.table("backlot_budgets").select("id, name, budget_type").eq(
         "project_id", project_id
     ).eq("budget_type", "estimated").limit(1).execute()
 
-    if result.data:
-        logger.info(f"[BudgetActuals] Using estimated budget {result.data[0]['id']} for project {project_id}")
-        return result.data[0]
+    return result.data[0] if result.data else None
 
-    # Fall back to any budget for this project
+
+def get_or_create_actual_budget(project_id: str) -> Optional[Dict[str, Any]]:
+    """Get or create the Actual Budget (budget_type='actual') for a project.
+
+    The Actual Budget is the single source of truth for real spend.
+    If none exists, creates one — copying category structure from the
+    Active Estimate if available.
+
+    Returns the actual budget dict with id, name, budget_type.
+    """
+    client = get_client()
+
+    # Look for existing actual budget
     result = client.table("backlot_budgets").select("id, name, budget_type").eq(
         "project_id", project_id
-    ).limit(1).execute()
+    ).eq("budget_type", "actual").limit(1).execute()
 
     if result.data:
-        logger.info(f"[BudgetActuals] Using existing budget {result.data[0]['id']} for project {project_id}")
         return result.data[0]
 
-    # No budget exists - create one for tracking actuals
+    # No actual budget — create one
     new_budget = {
         "project_id": project_id,
-        "name": "Budget",
+        "name": "Actual Budget",
         "status": "active",
-        "budget_type": "estimated",  # Use estimated so user can add planned values too
+        "budget_type": "actual",
     }
     budget_result = client.table("backlot_budgets").insert(new_budget).execute()
 
     if not budget_result.data:
         return None
 
-    logger.info(f"[BudgetActuals] Auto-created budget for project {project_id}")
-    return budget_result.data[0]
+    actual_budget = budget_result.data[0]
+    logger.info(f"[BudgetActuals] Auto-created actual budget {actual_budget['id']} for project {project_id}")
+
+    # Copy category structure from estimate if available
+    estimate = get_estimate_budget(project_id)
+    if estimate:
+        _copy_budget_structure(estimate["id"], actual_budget["id"])
+
+    return actual_budget
 
 
-def _copy_budget_structure(source_budget_id: str, target_budget_id: str):
+def _copy_budget_structure(source_budget_id: str, target_budget_id: str, include_line_items: bool = False):
     """Copy category structure from source budget to target budget.
 
-    Only copies categories (not line items) - line items in the actual budget
-    will be created as expenses are approved with their specific names.
+    Args:
+        source_budget_id: Budget to copy from
+        target_budget_id: Budget to copy to
+        include_line_items: If True, also copy line items (for cloning).
+                           Actuals (actual_total) are reset to 0 on copies.
     """
     client = get_client()
 
     # Get all categories from source budget
     categories = client.table("backlot_budget_categories").select(
-        "name, category_type, sort_order"
+        "id, name, category_type, sort_order, estimated_subtotal"
     ).eq("budget_id", source_budget_id).order("sort_order").execute()
 
     if not categories.data:
@@ -95,12 +117,35 @@ def _copy_budget_structure(source_budget_id: str, target_budget_id: str):
             "name": cat["name"],
             "category_type": cat.get("category_type", "production"),
             "sort_order": cat.get("sort_order", 0),
-            "estimated_subtotal": 0,
+            "estimated_subtotal": cat.get("estimated_subtotal", 0) if include_line_items else 0,
             "actual_subtotal": 0,
         }
-        client.table("backlot_budget_categories").insert(new_category).execute()
+        cat_result = client.table("backlot_budget_categories").insert(new_category).execute()
 
-    logger.info(f"[BudgetActuals] Copied {len(categories.data)} categories from budget {source_budget_id} to {target_budget_id}")
+        if include_line_items and cat_result.data:
+            new_cat_id = cat_result.data[0]["id"]
+            # Copy line items for this category
+            line_items = client.table("backlot_budget_line_items").select(
+                "description, quantity, rate, unit, sort_order, notes, source_type, source_id"
+            ).eq("category_id", cat["id"]).order("sort_order").execute()
+
+            for li in (line_items.data or []):
+                new_li = {
+                    "budget_id": target_budget_id,
+                    "category_id": new_cat_id,
+                    "description": li["description"],
+                    "quantity": li.get("quantity"),
+                    "rate": li.get("rate"),
+                    "unit": li.get("unit"),
+                    "sort_order": li.get("sort_order", 0),
+                    "notes": li.get("notes"),
+                    "source_type": li.get("source_type"),
+                    "source_id": li.get("source_id"),
+                    "actual_total": 0,
+                }
+                client.table("backlot_budget_line_items").insert(new_li).execute()
+
+    logger.info(f"[BudgetActuals] Copied {len(categories.data)} categories from budget {source_budget_id} to {target_budget_id} (line_items={include_line_items})")
 
 
 def get_or_create_category(
@@ -676,6 +721,153 @@ def record_invoice_line_items(
 # ============================================================================
 # Hot Set Labor Cost Recording
 # ============================================================================
+
+def preview_session_labor_costs(
+    session_id: str,
+    day_type: str,
+    actual_call_time: str,
+    actual_wrap_time: str,
+) -> Dict[str, Any]:
+    """
+    Preview labor costs for a Hot Set session WITHOUT recording.
+    Returns per-crew breakdown for the WrapCostReviewModal.
+    """
+    from datetime import datetime as dt
+
+    client = get_client()
+
+    # Parse times
+    try:
+        if "T" in actual_call_time:
+            call_time = dt.fromisoformat(actual_call_time.replace("Z", "+00:00"))
+        else:
+            call_time = dt.strptime(actual_call_time, "%Y-%m-%d %H:%M:%S")
+
+        if "T" in actual_wrap_time:
+            wrap_time = dt.fromisoformat(actual_wrap_time.replace("Z", "+00:00"))
+        else:
+            wrap_time = dt.strptime(actual_wrap_time, "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError) as e:
+        return {"error": str(e), "crew": [], "total_cost": 0}
+
+    total_hours = (wrap_time - call_time).total_seconds() / 3600
+    if total_hours <= 0:
+        return {"error": "Invalid work hours", "crew": [], "total_cost": 0}
+
+    OT_THRESHOLDS = {
+        '4hr':     {'ot1_after': 4,  'ot2_after': 6},
+        '8hr':     {'ot1_after': 8,  'ot2_after': 10},
+        '10hr':    {'ot1_after': 10, 'ot2_after': 12},
+        '12hr':    {'ot1_after': 12, 'ot2_after': 14},
+        '6th_day': {'ot1_after': 8,  'ot2_after': 12},
+        '7th_day': {'ot1_after': 0,  'ot2_after': 0},
+    }
+
+    thresholds = OT_THRESHOLDS.get(day_type, OT_THRESHOLDS['10hr'])
+    ot1_after = thresholds['ot1_after']
+    ot2_after = thresholds['ot2_after']
+
+    if day_type == '7th_day':
+        regular_hours = 0
+        ot1_hours = 0
+        ot2_hours = total_hours
+    else:
+        if total_hours <= ot1_after:
+            regular_hours = total_hours
+            ot1_hours = 0
+            ot2_hours = 0
+        elif total_hours <= ot2_after:
+            regular_hours = ot1_after
+            ot1_hours = total_hours - ot1_after
+            ot2_hours = 0
+        else:
+            regular_hours = ot1_after
+            ot1_hours = ot2_after - ot1_after
+            ot2_hours = total_hours - ot2_after
+
+    crew_result = client.table("backlot_hot_set_crew").select(
+        "id, user_id, display_name, rate_type, rate_amount, department"
+    ).eq("session_id", session_id).execute()
+
+    crew_breakdown = []
+    total_cost = 0.0
+    skipped_no_rate = 0
+
+    for crew in (crew_result.data or []):
+        if not crew.get("rate_amount"):
+            skipped_no_rate += 1
+            crew_breakdown.append({
+                "crew_id": crew["id"],
+                "display_name": crew.get("display_name", "Unknown"),
+                "department": crew.get("department"),
+                "rate_type": crew.get("rate_type"),
+                "rate_amount": 0,
+                "regular_hours": round(regular_hours, 2),
+                "regular_cost": 0,
+                "ot1_hours": round(ot1_hours, 2),
+                "ot1_cost": 0,
+                "ot2_hours": round(ot2_hours, 2),
+                "ot2_cost": 0,
+                "total_cost": 0,
+                "has_rate": False,
+            })
+            continue
+
+        rate_type = crew.get("rate_type", "hourly")
+        rate_amount = float(crew.get("rate_amount", 0))
+
+        if rate_type == "hourly":
+            regular_cost = regular_hours * rate_amount
+            ot1_cost = ot1_hours * rate_amount * 1.5
+            ot2_cost = ot2_hours * rate_amount * 2.0
+        elif rate_type == "daily":
+            effective_hourly = rate_amount / 10.0
+            regular_cost = rate_amount
+            ot1_cost = ot1_hours * effective_hourly * 1.5
+            ot2_cost = ot2_hours * effective_hourly * 2.0
+        elif rate_type == "weekly":
+            daily_rate = rate_amount / 5.0
+            effective_hourly = daily_rate / 10.0
+            regular_cost = daily_rate
+            ot1_cost = ot1_hours * effective_hourly * 1.5
+            ot2_cost = ot2_hours * effective_hourly * 2.0
+        else:
+            regular_cost = rate_amount
+            ot1_cost = 0
+            ot2_cost = 0
+
+        crew_total = round(regular_cost + ot1_cost + ot2_cost, 2)
+        total_cost += crew_total
+
+        crew_breakdown.append({
+            "crew_id": crew["id"],
+            "display_name": crew.get("display_name", "Unknown"),
+            "department": crew.get("department"),
+            "rate_type": rate_type,
+            "rate_amount": rate_amount,
+            "regular_hours": round(regular_hours, 2),
+            "regular_cost": round(regular_cost, 2),
+            "ot1_hours": round(ot1_hours, 2),
+            "ot1_cost": round(ot1_cost, 2),
+            "ot2_hours": round(ot2_hours, 2),
+            "ot2_cost": round(ot2_cost, 2),
+            "total_cost": crew_total,
+            "has_rate": True,
+        })
+
+    return {
+        "session_id": session_id,
+        "day_type": day_type,
+        "total_hours": round(total_hours, 2),
+        "regular_hours": round(regular_hours, 2),
+        "ot1_hours": round(ot1_hours, 2),
+        "ot2_hours": round(ot2_hours, 2),
+        "crew": crew_breakdown,
+        "crew_with_rates": len(crew_breakdown) - skipped_no_rate,
+        "skipped_no_rate": skipped_no_rate,
+        "total_cost": round(total_cost, 2),
+    }
+
 
 def record_session_labor_to_budget(
     project_id: str,

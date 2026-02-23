@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { useFormDraft } from '@/hooks/useFormDraft';
+import { buildDraftKey } from '@/lib/formDraftStorage';
 
 const CONTENT_TYPES = [
   { value: 'social_media_video', label: 'Social Media Video' },
@@ -23,57 +25,81 @@ interface ContentRequestFormProps {
   initialData?: any;
   isLoading?: boolean;
   platforms?: any[];
+  /** Called after successful submit so parent can clear draft */
+  onDraftClear?: () => void;
 }
 
-const ContentRequestForm = ({ onSubmit, initialData, isLoading, platforms }: ContentRequestFormProps) => {
-  const [title, setTitle] = useState('');
-  const [contentType, setContentType] = useState('social_media_video');
-  const [priority, setPriority] = useState('normal');
-  const [description, setDescription] = useState('');
-  const [dueDate, setDueDate] = useState('');
-  const [platformIds, setPlatformIds] = useState<string[]>([]);
-  const [referenceLinks, setReferenceLinks] = useState('');
+const formDefaults = {
+  title: '',
+  contentType: 'social_media_video',
+  priority: 'normal',
+  description: '',
+  dueDate: '',
+  platformIds: [] as string[],
+  referenceLinks: '',
+};
+
+const ContentRequestForm = ({ onSubmit, initialData, isLoading, platforms, onDraftClear }: ContentRequestFormProps) => {
+  const isCreate = !initialData;
+  const draftKey = buildDraftKey('media', 'content-request', 'new');
+
+  // Draft persistence for create mode
+  const draft = useFormDraft({
+    key: draftKey,
+    initialData: formDefaults,
+    enabled: isCreate,
+  });
+
+  // For edit mode, use plain state seeded from initialData
+  const [editForm, setEditForm] = useState(formDefaults);
 
   useEffect(() => {
     if (initialData) {
-      setTitle(initialData.title || '');
-      setContentType(initialData.content_type || 'social_media_video');
-      setPriority(initialData.priority || 'normal');
-      setDescription(initialData.description || '');
-      setDueDate(initialData.due_date || '');
-      setPlatformIds(initialData.platform_ids || []);
-      setReferenceLinks(
-        Array.isArray(initialData.reference_links)
+      setEditForm({
+        title: initialData.title || '',
+        contentType: initialData.content_type || 'social_media_video',
+        priority: initialData.priority || 'normal',
+        description: initialData.description || '',
+        dueDate: initialData.due_date || '',
+        platformIds: initialData.platform_ids || [],
+        referenceLinks: Array.isArray(initialData.reference_links)
           ? initialData.reference_links.join('\n')
-          : initialData.reference_links || ''
-      );
+          : initialData.reference_links || '',
+      });
     }
   }, [initialData]);
 
+  // Unified accessors
+  const form = isCreate ? draft.formData : editForm;
+  const setForm = isCreate ? draft.setFormData : setEditForm;
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) return;
+    if (!form.title.trim()) return;
 
-    const links = referenceLinks
+    const links = form.referenceLinks
       .split('\n')
       .map((l) => l.trim())
       .filter(Boolean);
 
     onSubmit({
-      title: title.trim(),
-      content_type: contentType,
-      priority,
-      description: description.trim() || null,
-      due_date: dueDate || null,
-      platform_ids: platformIds,
+      title: form.title.trim(),
+      content_type: form.contentType,
+      priority: form.priority,
+      description: form.description.trim() || null,
+      due_date: form.dueDate || null,
+      platform_ids: form.platformIds,
       reference_links: links.length > 0 ? links : null,
     });
   };
 
   const togglePlatform = (id: string) => {
-    setPlatformIds((prev) =>
-      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
-    );
+    setForm((prev) => ({
+      ...prev,
+      platformIds: prev.platformIds.includes(id)
+        ? prev.platformIds.filter((p) => p !== id)
+        : [...prev.platformIds, id],
+    }));
   };
 
   const inputClass =
@@ -89,8 +115,8 @@ const ContentRequestForm = ({ onSubmit, initialData, isLoading, platforms }: Con
         </label>
         <input
           type="text"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
+          value={form.title}
+          onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
           placeholder="e.g. Instagram Reel for Product Launch"
           required
           className={inputClass}
@@ -102,8 +128,8 @@ const ContentRequestForm = ({ onSubmit, initialData, isLoading, platforms }: Con
         <div>
           <label className={labelClass}>Content Type</label>
           <select
-            value={contentType}
-            onChange={(e) => setContentType(e.target.value)}
+            value={form.contentType}
+            onChange={(e) => setForm((f) => ({ ...f, contentType: e.target.value }))}
             className={inputClass}
           >
             {CONTENT_TYPES.map((t) => (
@@ -117,8 +143,8 @@ const ContentRequestForm = ({ onSubmit, initialData, isLoading, platforms }: Con
         <div>
           <label className={labelClass}>Priority</label>
           <select
-            value={priority}
-            onChange={(e) => setPriority(e.target.value)}
+            value={form.priority}
+            onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))}
             className={inputClass}
           >
             {PRIORITIES.map((p) => (
@@ -134,8 +160,8 @@ const ContentRequestForm = ({ onSubmit, initialData, isLoading, platforms }: Con
       <div>
         <label className={labelClass}>Description</label>
         <textarea
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
+          value={form.description}
+          onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
           placeholder="Describe what you need, any creative direction, brand guidelines, etc."
           rows={4}
           className={`${inputClass} resize-none`}
@@ -147,8 +173,8 @@ const ContentRequestForm = ({ onSubmit, initialData, isLoading, platforms }: Con
         <label className={labelClass}>Due Date</label>
         <input
           type="date"
-          value={dueDate}
-          onChange={(e) => setDueDate(e.target.value)}
+          value={form.dueDate}
+          onChange={(e) => setForm((f) => ({ ...f, dueDate: e.target.value }))}
           className={inputClass}
         />
       </div>
@@ -165,7 +191,7 @@ const ContentRequestForm = ({ onSubmit, initialData, isLoading, platforms }: Con
               >
                 <input
                   type="checkbox"
-                  checked={platformIds.includes(platform.id)}
+                  checked={form.platformIds.includes(platform.id)}
                   onChange={() => togglePlatform(platform.id)}
                   className="w-4 h-4 rounded border-muted-gray/50 bg-charcoal-black accent-accent-yellow"
                 />
@@ -186,8 +212,8 @@ const ContentRequestForm = ({ onSubmit, initialData, isLoading, platforms }: Con
       <div>
         <label className={labelClass}>Reference Links</label>
         <textarea
-          value={referenceLinks}
-          onChange={(e) => setReferenceLinks(e.target.value)}
+          value={form.referenceLinks}
+          onChange={(e) => setForm((f) => ({ ...f, referenceLinks: e.target.value }))}
           placeholder="Paste reference URLs, one per line"
           rows={3}
           className={`${inputClass} resize-none`}
@@ -199,7 +225,7 @@ const ContentRequestForm = ({ onSubmit, initialData, isLoading, platforms }: Con
       <div className="pt-2">
         <button
           type="submit"
-          disabled={!title.trim() || isLoading}
+          disabled={!form.title.trim() || isLoading}
           className="w-full sm:w-auto px-6 py-2.5 bg-accent-yellow text-charcoal-black text-sm font-semibold rounded-lg hover:bg-accent-yellow/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {isLoading ? 'Saving...' : initialData ? 'Update Request' : 'Submit Request'}

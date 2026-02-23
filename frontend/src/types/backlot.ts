@@ -2090,6 +2090,91 @@ export interface CallSheetSyncResponse {
 // Budget Status Enum
 export type BacklotBudgetStatus = 'draft' | 'pending_approval' | 'approved' | 'locked' | 'archived';
 
+// Typed Budgets Response
+export interface TypedBudgets {
+  estimate: BacklotBudget | null;
+  actual: BacklotBudget | null;
+  drafts: BacklotBudget[];
+}
+
+// Budget Diff Types
+export interface BudgetDiffItem {
+  category: string;
+  description: string;
+  budget_a_estimated: number;
+  budget_b_estimated: number;
+  delta: number;
+  delta_pct: number;
+}
+
+export interface BudgetCategorySummary {
+  category: string;
+  budget_a_total: number;
+  budget_b_total: number;
+  delta: number;
+  delta_pct: number;
+}
+
+export interface BudgetDiffResult {
+  budget_a: { id: string; name: string; budget_type: string; estimated_total: number };
+  budget_b: { id: string; name: string; budget_type: string; estimated_total: number };
+  total_delta: number;
+  total_delta_pct: number;
+  category_summaries: BudgetCategorySummary[];
+  line_items: BudgetDiffItem[];
+}
+
+// DOOD Cost Summary Types
+export interface DoodCostItem {
+  subject_id: string;
+  display_name: string;
+  department: string | null;
+  rate_type: string;
+  rate_amount: number;
+  w_days: number;
+  daily_equivalent?: number;
+  estimated_total: number;
+  has_rate: boolean;
+}
+
+export interface DoodCostSummary {
+  items: DoodCostItem[];
+  total_estimated: number;
+  subjects_with_rates: number;
+  subjects_without_rates: number;
+}
+
+// Wrap Cost Preview Types
+export interface WrapCostCrewItem {
+  crew_id: string;
+  display_name: string;
+  department: string | null;
+  rate_type: string;
+  rate_amount: number;
+  regular_hours: number;
+  regular_cost: number;
+  ot1_hours: number;
+  ot1_cost: number;
+  ot2_hours: number;
+  ot2_cost: number;
+  total_cost: number;
+  has_rate: boolean;
+}
+
+export interface WrapCostPreview {
+  session_id: string;
+  day_type: string;
+  total_hours: number;
+  regular_hours: number;
+  ot1_hours: number;
+  ot2_hours: number;
+  crew: WrapCostCrewItem[];
+  crew_with_rates: number;
+  skipped_no_rate: number;
+  total_cost: number;
+  error?: string;
+}
+
 // Receipt OCR Status Enum
 export type BacklotReceiptOcrStatus = 'pending' | 'processing' | 'succeeded' | 'failed';
 
@@ -2193,6 +2278,8 @@ export interface BacklotTopSheetCategorySummary {
 }
 
 // Main Budget
+export type BacklotBudgetType = 'estimate' | 'actual' | 'draft' | 'estimated';
+
 export interface BacklotBudget {
   id: string;
   project_id: string;
@@ -2200,6 +2287,7 @@ export interface BacklotBudget {
   description: string | null;
   currency: string;
   status: BacklotBudgetStatus;
+  budget_type?: BacklotBudgetType;
   approved_by: string | null;
   approved_at: string | null;
   locked_at: string | null;

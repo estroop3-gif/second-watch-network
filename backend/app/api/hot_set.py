@@ -100,6 +100,7 @@ class HotSetSessionUpdate(BaseModel):
 
 class WrapSessionRequest(BaseModel):
     record_to_budget: bool = False  # If True, record all labor costs to budget actuals
+    wrap_cost_mode_override: Optional[str] = None  # Optional override: 'auto' or 'review'
 
 
 class HotSetSessionProductionDay(BaseModel):
@@ -2078,15 +2079,27 @@ async def wrap_session(
         "actual_end_time": now,
     }).eq("session_id", session_id).eq("status", "in_progress").execute()
 
-    # Record labor costs to budget if requested
+    # Determine wrap cost mode
+    # Priority: request override > project setting > default 'review'
+    wrap_cost_mode = "review"
+    if request and request.wrap_cost_mode_override:
+        wrap_cost_mode = request.wrap_cost_mode_override
+    else:
+        project_result = client.table("backlot_projects").select("wrap_cost_mode").eq(
+            "id", project_id
+        ).execute()
+        if project_result.data:
+            wrap_cost_mode = project_result.data[0].get("wrap_cost_mode") or "review"
+
+    actual_call_time = session_data.get("actual_call_time") or session_data.get("created_at")
+
     labor_result = None
-    if request and request.record_to_budget:
+    labor_preview = None
+
+    if wrap_cost_mode == "auto" or (request and request.record_to_budget):
+        # Auto mode: record immediately to Actual Budget
         try:
             from app.services.budget_actuals import record_session_labor_to_budget
-
-            # Get actual call time (use actual_call_time or created_at as fallback)
-            actual_call_time = session_data.get("actual_call_time") or session_data.get("created_at")
-
             labor_result = record_session_labor_to_budget(
                 project_id=project_id,
                 session_id=session_id,
@@ -2097,12 +2110,99 @@ async def wrap_session(
                 created_by_user_id=user["id"]
             )
         except Exception as e:
-            # Don't fail the wrap if labor recording fails
             labor_result = {"error": str(e)}
+    elif wrap_cost_mode == "review":
+        # Review mode: return preview for the WrapCostReviewModal
+        try:
+            from app.services.budget_actuals import preview_session_labor_costs
+            labor_preview = preview_session_labor_costs(
+                session_id=session_id,
+                day_type=session_data.get("day_type", "10hr"),
+                actual_call_time=actual_call_time,
+                actual_wrap_time=now,
+            )
+        except Exception as e:
+            labor_preview = {"error": str(e)}
 
     response = result.data[0] if result.data else {}
     response["labor_recorded"] = labor_result
+    response["labor_preview"] = labor_preview
+    response["wrap_cost_mode"] = wrap_cost_mode
     return response
+
+
+@router.get("/hot-set/sessions/{session_id}/wrap-cost-preview")
+async def get_wrap_cost_preview(
+    session_id: str,
+    authorization: str = Header(None)
+):
+    """Get per-crew labor cost preview for a session. Used by WrapCostReviewModal."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    session = client.table("backlot_hot_set_sessions").select("*").eq(
+        "id", session_id
+    ).execute()
+
+    if not session.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session_data = session.data[0]
+    project_id = session_data["project_id"]
+    if not await verify_project_edit(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    actual_call_time = session_data.get("actual_call_time") or session_data.get("created_at")
+    actual_wrap_time = session_data.get("actual_wrap_time") or session_data.get("wrapped_at") or datetime.utcnow().isoformat() + "Z"
+
+    from app.services.budget_actuals import preview_session_labor_costs
+    preview = preview_session_labor_costs(
+        session_id=session_id,
+        day_type=session_data.get("day_type", "10hr"),
+        actual_call_time=actual_call_time,
+        actual_wrap_time=actual_wrap_time,
+    )
+    return preview
+
+
+@router.post("/hot-set/sessions/{session_id}/record-labor")
+async def record_session_labor(
+    session_id: str,
+    authorization: str = Header(None)
+):
+    """Record labor costs to Actual Budget after PM review. Separate from wrap."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    session = client.table("backlot_hot_set_sessions").select("*").eq(
+        "id", session_id
+    ).execute()
+
+    if not session.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session_data = session.data[0]
+    project_id = session_data["project_id"]
+    if not await verify_project_edit(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    actual_call_time = session_data.get("actual_call_time") or session_data.get("created_at")
+    actual_wrap_time = session_data.get("actual_wrap_time") or session_data.get("wrapped_at")
+
+    if not actual_wrap_time:
+        raise HTTPException(status_code=400, detail="Session has not been wrapped yet")
+
+    from app.services.budget_actuals import record_session_labor_to_budget
+    result = record_session_labor_to_budget(
+        project_id=project_id,
+        session_id=session_id,
+        production_day_id=session_data.get("production_day_id"),
+        day_type=session_data.get("day_type", "10hr"),
+        actual_call_time=actual_call_time,
+        actual_wrap_time=actual_wrap_time,
+        created_by_user_id=user["id"]
+    )
+    return result
 
 
 @router.post("/hot-set/sessions/{session_id}/resume")

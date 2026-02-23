@@ -96,6 +96,7 @@ import { api } from '@/lib/api';
 import { format } from 'date-fns';
 import { parseLocalDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 
 interface ClearancesViewProps {
   projectId: string;
@@ -375,6 +376,26 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({
     file_is_sensitive: false,
   });
 
+  // Draft persistence for clearance creation form
+  const draftKey = useMemo(() => buildDraftKey('backlot', 'clearance', 'new'), []);
+  const draftSaveTimer = useRef<ReturnType<typeof setTimeout>>();
+  const draftInitialized = useRef(false);
+
+  // Auto-save draft when creating a new clearance (not editing)
+  useEffect(() => {
+    if (!draftInitialized.current) return;
+    if (!showForm || editingItem) return; // Only save drafts for new clearances
+    clearTimeout(draftSaveTimer.current);
+    const hasContent = formData.title || formData.description || formData.related_person_name ||
+      formData.contact_email || formData.contact_phone || formData.notes ||
+      formData.related_asset_label || formData.requested_date;
+    if (!hasContent) return;
+    draftSaveTimer.current = setTimeout(() => {
+      saveDraft(draftKey, formData);
+    }, 500);
+    return () => clearTimeout(draftSaveTimer.current);
+  }, [formData, showForm, editingItem, draftKey]);
+
   // Filter clearances by active tab and person filter
   const filteredClearances = useMemo(() => {
     let filtered = clearances;
@@ -493,9 +514,16 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({
           file_is_sensitive: false,
         });
       } else {
-        resetForm();
+        // Try to restore draft for new clearance
+        const draft = loadDraft<ClearanceItemInput>(draftKey);
+        if (draft) {
+          setFormData(draft.data);
+        } else {
+          resetForm();
+        }
       }
     }
+    draftInitialized.current = true;
     setPendingFile(null);
     setPendingRecipients([]);
     setSendAfterSave(false);
@@ -592,6 +620,8 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({
       }
       setShowForm(false);
       resetForm();
+      clearDraftStorage(draftKey);
+      draftInitialized.current = false;
       setPendingFile(null);
       setPendingRecipients([]);
       setSendAfterSave(false);
@@ -1152,7 +1182,7 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({
             )}
 
             <div className="flex justify-end gap-3 pt-4">
-              <Button type="button" variant="ghost" onClick={() => setShowForm(false)}>
+              <Button type="button" variant="ghost" onClick={() => { draftInitialized.current = false; setShowForm(false); }}>
                 Cancel
               </Button>
               <Button

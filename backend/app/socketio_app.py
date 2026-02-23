@@ -533,6 +533,62 @@ async def broadcast_project_update(project_id: str, update: dict, exclude_user_i
 
 
 # ============================================================================
+# BUDGET REAL-TIME UPDATES
+# ============================================================================
+
+@sio.event
+async def join_budget_updates(sid: str, data: dict):
+    """Join a budget updates room for real-time budget notifications."""
+    project_id = data.get('project_id')
+    if not project_id:
+        return
+
+    session = socket_sessions.get(sid)
+    if not session:
+        return
+
+    room_name = f"budget_updates:{project_id}"
+    await sio.enter_room(sid, room_name)
+    logger.info(f"[Socket] {session['user_id']} joined budget updates room {room_name}")
+
+
+@sio.event
+async def leave_budget_updates(sid: str, data: dict):
+    """Leave a budget updates room."""
+    project_id = data.get('project_id')
+    if not project_id:
+        return
+
+    session = socket_sessions.get(sid)
+    if not session:
+        return
+
+    room_name = f"budget_updates:{project_id}"
+    await sio.leave_room(sid, room_name)
+    logger.info(f"[Socket] {session['user_id']} left budget updates room {room_name}")
+
+
+async def broadcast_budget_update(project_id: str, event_type: str, data: dict, exclude_user_id: str = None):
+    """
+    Broadcast a budget update to all members subscribed to the project.
+    event_type: actual_recorded | line_item_changed | budget_locked | dood_synced
+    """
+    room_name = f"budget_updates:{project_id}"
+
+    exclude_sids = []
+    if exclude_user_id and exclude_user_id in connected_users:
+        exclude_sids = list(connected_users[exclude_user_id])
+
+    await sio.emit('budget_update', {
+        'project_id': project_id,
+        'event_type': event_type,
+        'data': data,
+    }, room=room_name, skip_sid=exclude_sids[0] if exclude_sids else None)
+
+    logger.info(f"[Socket] Broadcasted budget {event_type} to room {room_name}")
+
+
+# ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 

@@ -4,7 +4,7 @@
  * Used by both LocationsView and CallSheetCreateEditModal
  * Uses AWS Location Service for address autocomplete
  */
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -30,6 +30,7 @@ import { useGeolocation } from '@/hooks/useGeolocation';
 import { Globe, Link2, EyeOff, Loader2, MapPin, Navigation, ChevronDown } from 'lucide-react';
 import { BacklotLocation, BacklotLocationInput } from '@/types/backlot';
 import { cn } from '@/lib/utils';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 
 export interface CreateLocationModalProps {
   isOpen: boolean;
@@ -53,6 +54,10 @@ export const CreateLocationModal: React.FC<CreateLocationModalProps> = ({
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const addressInputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Draft persistence for create mode
+  const draftKey = useMemo(() => buildDraftKey('backlot', 'location', 'new'), []);
+  const draftSaveTimer = useRef<ReturnType<typeof setTimeout>>();
 
   // AWS Address Autocomplete
   const {
@@ -231,40 +236,65 @@ export const CreateLocationModal: React.FC<CreateLocationModalProps> = ({
         amenities: editingLocation.amenities || [],
       });
     } else {
-      setAddressInput('');
-      setFormData({
-        name: '',
-        description: '',
-        scene_description: '',
-        address: '',
-        city: '',
-        state: '',
-        zip: '',
-        latitude: undefined,
-        longitude: undefined,
-        contact_name: '',
-        contact_phone: '',
-        contact_email: '',
-        parking_notes: '',
-        power_available: true,
-        restrooms_available: true,
-        permit_required: false,
-        permit_obtained: false,
-        location_fee: undefined,
-        is_public: true,
-        visibility: 'public' as 'public' | 'unlisted' | 'private',
-        region_tag: '',
-        location_type: '',
-        amenities: [],
-      });
+      // Create mode: try to restore from draft
+      const envelope = isOpen ? loadDraft<{
+        formData: BacklotLocationInput & { latitude?: number; longitude?: number };
+        addressInput: string;
+      }>(draftKey) : null;
+      if (envelope) {
+        setFormData(envelope.data.formData);
+        setAddressInput(envelope.data.addressInput || '');
+      } else {
+        setAddressInput('');
+        setFormData({
+          name: '',
+          description: '',
+          scene_description: '',
+          address: '',
+          city: '',
+          state: '',
+          zip: '',
+          latitude: undefined,
+          longitude: undefined,
+          contact_name: '',
+          contact_phone: '',
+          contact_email: '',
+          parking_notes: '',
+          power_available: true,
+          restrooms_available: true,
+          permit_required: false,
+          permit_obtained: false,
+          location_fee: undefined,
+          is_public: true,
+          visibility: 'public' as 'public' | 'unlisted' | 'private',
+          region_tag: '',
+          location_type: '',
+          amenities: [],
+        });
+      }
     }
-  }, [editingLocation, isOpen]);
+  }, [editingLocation, isOpen, draftKey]);
+
+  // Debounced draft save for create mode
+  useEffect(() => {
+    if (editingLocation || !isOpen) return;
+    const hasContent = formData.name || formData.address || formData.description || formData.contact_name || addressInput;
+    if (!hasContent) return;
+    clearTimeout(draftSaveTimer.current);
+    draftSaveTimer.current = setTimeout(() => {
+      saveDraft(draftKey, { formData, addressInput });
+    }, 500);
+    return () => clearTimeout(draftSaveTimer.current);
+  }, [draftKey, formData, addressInput, editingLocation, isOpen]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
     try {
       const result = await onSubmit(formData);
+      if (!editingLocation) {
+        clearDraftStorage(draftKey);
+      }
       if (result && onLocationCreated) {
         onLocationCreated(result);
       }

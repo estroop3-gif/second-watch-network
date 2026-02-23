@@ -119,6 +119,7 @@ import {
   SessionTasksCard,
   AdNotesHistoryCard,
   AdNoteDetailModal,
+  WrapCostReviewModal,
 } from './hot-set';
 import { AdNoteEntry } from '@/hooks/backlot/useAdNotes';
 import { useTaskLists, useCreateTaskFromSource } from '@/hooks/backlot/useTaskLists';
@@ -343,6 +344,8 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
   // Wrap modal state
   const [showWrapModal, setShowWrapModal] = useState(false);
   const [pendingWrapBlockId, setPendingWrapBlockId] = useState<string | null>(null);
+  const [showWrapCostReview, setShowWrapCostReview] = useState(false);
+  const [wrapLaborPreview, setWrapLaborPreview] = useState<any>(null);
 
   // Resume modal state (for accidentally wrapped sessions)
   const [showResumeModal, setShowResumeModal] = useState(false);
@@ -553,9 +556,15 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
       }
     }
 
-    await wrapSession.mutateAsync({ sessionId: selectedSessionId, recordToBudget });
+    const wrapResult = await wrapSession.mutateAsync({ sessionId: selectedSessionId, recordToBudget });
     setShowWrapModal(false);
     setPendingWrapBlockId(null);
+
+    // If wrap returned a labor preview (review mode), show the review modal
+    if (wrapResult?.labor_preview && !wrapResult?.labor_preview?.error && wrapResult?.wrap_cost_mode === 'review') {
+      setWrapLaborPreview(wrapResult.labor_preview);
+      setShowWrapCostReview(true);
+    }
   };
 
   const handleOpenResumeModal = () => {
@@ -1939,6 +1948,19 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
           sessionId={selectedSessionId}
           onConfirmWrap={handleConfirmWrap}
           isWrapping={wrapSession.isPending || completeScheduleBlock.isPending}
+        />
+      )}
+
+      {/* Wrap Cost Review Modal (shown after wrap in review mode) */}
+      {selectedSessionId && (
+        <WrapCostReviewModal
+          open={showWrapCostReview}
+          onClose={() => {
+            setShowWrapCostReview(false);
+            setWrapLaborPreview(null);
+          }}
+          sessionId={selectedSessionId}
+          preview={wrapLaborPreview}
         />
       )}
 

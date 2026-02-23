@@ -10,6 +10,8 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { useFormDraftRHF } from '@/hooks/useFormDraftRHF';
+import { buildDraftKey } from '@/lib/formDraftStorage';
 
 const dealSchema = z.object({
   title: z.string().min(1, 'Title is required'),
@@ -53,10 +55,7 @@ interface DealFormProps {
 }
 
 const DealForm = ({ initialData, contacts, onSubmit: onSubmitProp, isLoading, onCancel }: DealFormProps) => {
-  const onSubmit = (data: DealFormValues) => {
-    const { amount, ...rest } = data;
-    onSubmitProp({ ...rest, amount_cents: Math.round(amount * 100) } as any);
-  };
+  const isEditMode = !!initialData?.id;
 
   const form = useForm<DealFormValues>({
     resolver: zodResolver(dealSchema),
@@ -71,6 +70,17 @@ const DealForm = ({ initialData, contacts, onSubmit: onSubmitProp, isLoading, on
       competitor: initialData?.competitor || '',
     },
   });
+
+  const { clearDraft } = useFormDraftRHF(form, {
+    key: buildDraftKey('crm', 'deal', initialData?.id || 'new'),
+    enabled: !isEditMode,
+  });
+
+  const onSubmit = (data: DealFormValues) => {
+    const { amount, ...rest } = data;
+    clearDraft();
+    onSubmitProp({ ...rest, amount_cents: Math.round(amount * 100) } as any);
+  };
 
   return (
     <Form {...form}>

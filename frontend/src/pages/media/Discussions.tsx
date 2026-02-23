@@ -9,6 +9,8 @@ import {
   useMediaDiscussionThreads,
   useCreateMediaDiscussionThread,
 } from '@/hooks/media';
+import { useFormDraft } from '@/hooks/useFormDraft';
+import { buildDraftKey } from '@/lib/formDraftStorage';
 import DiscussionCategoryTabs from '@/components/media/DiscussionCategoryTabs';
 import ThreadCard from '@/components/media/ThreadCard';
 
@@ -17,6 +19,8 @@ const SORT_OPTIONS = [
   { value: 'popular', label: 'Most Popular' },
   { value: 'oldest', label: 'Oldest' },
 ];
+
+const threadDraftInitial = { category_id: '', title: '', content: '' };
 
 const Discussions = () => {
   const { toast } = useToast();
@@ -27,7 +31,11 @@ const Discussions = () => {
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('recent');
   const [showNewThread, setShowNewThread] = useState(false);
-  const [newThread, setNewThread] = useState({ category_id: '', title: '', content: '' });
+
+  const { formData: newThread, setFormData: setNewThread, clearDraft } = useFormDraft({
+    key: buildDraftKey('media', 'discussion', 'new'),
+    initialData: threadDraftInitial,
+  });
 
   const { data: catData } = useMediaDiscussionCategories();
   const categories = catData?.categories || [];
@@ -46,9 +54,10 @@ const Discussions = () => {
     if (!newThread.title || !newThread.content || !newThread.category_id) return;
     try {
       await createThread.mutateAsync(newThread);
+      clearDraft();
+      setNewThread(threadDraftInitial);
       toast({ title: 'Thread created' });
       setShowNewThread(false);
-      setNewThread({ category_id: '', title: '', content: '' });
     } catch {
       toast({ title: 'Failed to create thread', variant: 'destructive' });
     }

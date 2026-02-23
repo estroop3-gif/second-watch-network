@@ -64,6 +64,7 @@ import {
 } from '@/hooks/backlot';
 import { cn } from '@/lib/utils';
 import { parseLocalDate } from '@/lib/dateUtils';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 
 interface PerDiemViewProps {
   projectId: string;
@@ -487,12 +488,37 @@ function PerDiemFormModal({
   const budgetId = budget?.id || null;
   const claimPerDiem = useClaimPerDiem(projectId);
 
+  // --- Draft persistence ---
+  const draftKey = buildDraftKey('backlot', 'per-diem', 'new');
+
+  // Restore draft when opening
   React.useEffect(() => {
     if (isOpen) {
+      const saved = loadDraft<CreatePerDiemData>(draftKey);
+      if (saved) {
+        setFormData(prev => ({ ...prev, ...saved.data }));
+      } else {
+        const amount = getMealAmount(formData.meal_type);
+        setFormData(prev => ({ ...prev, amount }));
+      }
+    }
+  }, [isOpen]);
+
+  // Auto-save draft (debounced)
+  React.useEffect(() => {
+    if (!isOpen) return;
+    const timer = setTimeout(() => {
+      saveDraft(draftKey, formData);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [formData, isOpen]);
+
+  React.useEffect(() => {
+    if (isOpen && settings) {
       const amount = getMealAmount(formData.meal_type);
       setFormData(prev => ({ ...prev, amount }));
     }
-  }, [isOpen, settings]);
+  }, [settings]);
 
   const getMealAmount = (mealType: string) => {
     switch (mealType) {
@@ -513,6 +539,7 @@ function PerDiemFormModal({
     e.preventDefault();
     try {
       await claimPerDiem.mutateAsync(formData);
+      clearDraftStorage(draftKey);
       onClose();
       setFormData({
         date: new Date().toISOString().split('T')[0],
@@ -648,6 +675,28 @@ function BulkPerDiemModal({
   const budgetId = budget?.id || null;
   const bulkClaimPerDiem = useBulkClaimPerDiem(projectId);
 
+  // --- Draft persistence ---
+  const bulkDraftKey = buildDraftKey('backlot', 'per-diem-bulk', 'new');
+
+  // Restore draft when opening
+  React.useEffect(() => {
+    if (isOpen) {
+      const saved = loadDraft<BulkPerDiemData>(bulkDraftKey);
+      if (saved) {
+        setFormData(prev => ({ ...prev, ...saved.data }));
+      }
+    }
+  }, [isOpen]);
+
+  // Auto-save draft (debounced)
+  React.useEffect(() => {
+    if (!isOpen) return;
+    const timer = setTimeout(() => {
+      saveDraft(bulkDraftKey, formData);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [formData, isOpen]);
+
   const getMealAmount = (mealType: string) => {
     switch (mealType) {
       case 'breakfast': return settings?.per_diem_breakfast ?? 15;
@@ -667,6 +716,7 @@ function BulkPerDiemModal({
     e.preventDefault();
     try {
       const result = await bulkClaimPerDiem.mutateAsync(formData);
+      clearDraftStorage(bulkDraftKey);
       alert(`Created ${result.created_count} claims, skipped ${result.skipped_count} (already existed)`);
       onClose();
     } catch (error) {

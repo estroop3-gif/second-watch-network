@@ -9,7 +9,7 @@
  * - Import source options (Hour Schedule, Call Sheet, Start Fresh)
  * - Configure tracking mode
  */
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -59,6 +59,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { parseLocalDate } from '@/lib/dateUtils';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 import {
   BacklotProductionDay,
   BacklotCallSheet,
@@ -141,6 +142,45 @@ export const CreateHotSetSessionModal: React.FC<CreateHotSetSessionModalProps> =
   const [autoStart, setAutoStart] = useState<boolean>(defaultAutoStart);
   const [autoStartMinutesBefore, setAutoStartMinutesBefore] = useState<number>(autoStartMinutes);
 
+  // --- Draft persistence ---
+  const draftKey = buildDraftKey('hotset', 'create-session', projectId);
+  const draftLoaded = useRef(false);
+
+  // Restore draft when dialog opens
+  useEffect(() => {
+    if (!open) { draftLoaded.current = false; return; }
+    const saved = loadDraft<{
+      dayType: HotSetDayType;
+      importHourSchedule: boolean;
+      importScenes: boolean;
+      trackingMode: HotSetScheduleTrackingMode;
+      autoStart: boolean;
+      autoStartMinutesBefore: number;
+    }>(draftKey);
+    if (saved) {
+      setDayType(saved.data.dayType);
+      setImportHourSchedule(saved.data.importHourSchedule);
+      setImportScenes(saved.data.importScenes);
+      setTrackingMode(saved.data.trackingMode);
+      setAutoStart(saved.data.autoStart);
+      setAutoStartMinutesBefore(saved.data.autoStartMinutesBefore);
+    }
+    draftLoaded.current = true;
+  }, [open, draftKey]);
+
+  // Save draft on field changes (skip the initial load)
+  useEffect(() => {
+    if (!open || !draftLoaded.current) return;
+    saveDraft(draftKey, {
+      dayType,
+      importHourSchedule,
+      importScenes,
+      trackingMode,
+      autoStart,
+      autoStartMinutesBefore,
+    });
+  }, [open, draftKey, dayType, importHourSchedule, importScenes, trackingMode, autoStart, autoStartMinutesBefore]);
+
   // Fetch day preview data
   const { data: dayPreview, isLoading: isLoadingPreview } = useHotSetDayPreview(
     projectId,
@@ -196,6 +236,8 @@ export const CreateHotSetSessionModal: React.FC<CreateHotSetSessionModalProps> =
       auto_start: autoStart,
       auto_start_minutes: autoStart ? autoStartMinutesBefore : undefined,
     });
+
+    clearDraftStorage(draftKey);
 
     // Reset form
     setSelectedDayId('');

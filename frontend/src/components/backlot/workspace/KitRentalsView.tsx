@@ -67,6 +67,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { ExternalLink, Building2, User, Boxes } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { parseLocalDate } from '@/lib/dateUtils';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 
 interface KitRentalsViewProps {
   projectId: string;
@@ -630,6 +631,28 @@ function KitRentalFormModal({
   const isEditing = !!rental;
   const isPending = createRental.isPending || updateRental.isPending;
 
+  // --- Draft persistence (create mode only) ---
+  const draftKey = buildDraftKey('backlot', 'kit-rental', 'new');
+
+  // Restore draft when opening create form
+  React.useEffect(() => {
+    if (isOpen && !rental) {
+      const saved = loadDraft<CreateKitRentalData>(draftKey);
+      if (saved) {
+        setFormData(prev => ({ ...prev, ...saved.data }));
+      }
+    }
+  }, [isOpen, rental]);
+
+  // Auto-save draft (debounced, create mode only)
+  React.useEffect(() => {
+    if (!isOpen || isEditing) return;
+    const timer = setTimeout(() => {
+      saveDraft(draftKey, formData);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [formData, isOpen, isEditing]);
+
   // Reset gear selection state when modal opens/closes or rental changes
   React.useEffect(() => {
     if (rental) {
@@ -768,6 +791,7 @@ function KitRentalFormModal({
         });
       } else {
         await createRental.mutateAsync(formData);
+        clearDraftStorage(draftKey);
       }
       onClose();
     } catch (error) {

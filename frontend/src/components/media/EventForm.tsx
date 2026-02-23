@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
+import { useFormDraft } from '@/hooks/useFormDraft';
+import { buildDraftKey } from '@/lib/formDraftStorage';
 
 const EVENT_TYPES = [
   { value: 'content_shoot', label: 'Content Shoot' },
@@ -19,25 +21,37 @@ interface EventFormProps {
   submitLabel?: string;
 }
 
+const eventFormDefaults = {
+  title: '',
+  description: '',
+  event_type: 'meetup',
+  start_date: '',
+  end_date: '',
+  duration_minutes: '',
+  venue_name: '',
+  address: '',
+  virtual_link: '',
+  is_virtual: false,
+  color: '',
+  notes: '',
+};
+
 const EventForm = ({ initial, onSubmit, isPending, submitLabel = 'Create Event' }: EventFormProps) => {
-  const [form, setForm] = useState({
-    title: '',
-    description: '',
-    event_type: 'meetup',
-    start_date: '',
-    end_date: '',
-    duration_minutes: '',
-    venue_name: '',
-    address: '',
-    virtual_link: '',
-    is_virtual: false,
-    color: '',
-    notes: '',
+  const isCreate = !initial;
+
+  // Draft persistence for create mode
+  const draft = useFormDraft({
+    key: buildDraftKey('media', 'event', 'new'),
+    initialData: eventFormDefaults,
+    enabled: isCreate,
   });
+
+  // For edit mode, use plain state seeded from initial
+  const [editForm, setEditForm] = useState(eventFormDefaults);
 
   useEffect(() => {
     if (initial) {
-      setForm({
+      setEditForm({
         title: initial.title || '',
         description: initial.description || '',
         event_type: initial.event_type || 'meetup',
@@ -54,6 +68,10 @@ const EventForm = ({ initial, onSubmit, isPending, submitLabel = 'Create Event' 
     }
   }, [initial]);
 
+  // Unified accessors
+  const form = isCreate ? draft.formData : editForm;
+  const setForm = isCreate ? draft.setFormData : setEditForm;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.title || !form.start_date || !form.event_type) return;
@@ -67,6 +85,8 @@ const EventForm = ({ initial, onSubmit, isPending, submitLabel = 'Create Event' 
       color: form.color || null,
       notes: form.notes || null,
     });
+    // Clear draft on successful submit (only runs if onSubmit didn't throw)
+    if (isCreate) draft.clearDraft();
   };
 
   const inputClass = 'w-full mt-1 px-3 py-2 rounded bg-charcoal-black border border-muted-gray/50 text-bone-white text-sm focus:border-accent-yellow focus:outline-none';

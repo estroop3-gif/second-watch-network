@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   useDiscussionCategories,
   useCreateDiscussionCategory,
@@ -18,6 +18,12 @@ import {
 import { usePermissions } from '@/hooks/usePermissions';
 import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
 import { useToast } from '@/hooks/use-toast';
+import {
+  saveDraft as saveDraftStorage,
+  loadDraft,
+  clearDraft as clearDraftStorage,
+  buildDraftKey,
+} from '@/lib/formDraftStorage';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -121,6 +127,24 @@ const Discussions = () => {
   const [newThreadTitle, setNewThreadTitle] = useState('');
   const [newThreadContent, setNewThreadContent] = useState('');
 
+  // ---- Draft persistence for new thread form ----
+  const threadDraftKey = buildDraftKey('crm', 'discussion', 'new');
+  const threadDraftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const getThreadFormSnapshot = useCallback(() => ({
+    newThreadCategoryId, newThreadTitle, newThreadContent,
+  }), [newThreadCategoryId, newThreadTitle, newThreadContent]);
+
+  // Persist new thread form changes when dialog is open
+  useEffect(() => {
+    if (!showNewThread) return;
+    if (threadDraftTimerRef.current) clearTimeout(threadDraftTimerRef.current);
+    threadDraftTimerRef.current = setTimeout(() => {
+      saveDraftStorage(threadDraftKey, getThreadFormSnapshot());
+    }, 500);
+    return () => { if (threadDraftTimerRef.current) clearTimeout(threadDraftTimerRef.current); };
+  }, [showNewThread, threadDraftKey, getThreadFormSnapshot]);
+
   // ---- Reply form ----
   const [replyContent, setReplyContent] = useState('');
 
@@ -180,6 +204,19 @@ const Discussions = () => {
   const isReplyAuthor = (r: any) => {
     if (!profile?.id || !r) return false;
     return r.author_id === profile.id || r.profile_id === profile.id;
+  };
+
+  // ---- Helpers ----
+
+  const openNewThreadDialog = () => {
+    // Restore draft for new thread
+    const draft = loadDraft<any>(threadDraftKey);
+    if (draft?.data) {
+      if (draft.data.newThreadCategoryId) setNewThreadCategoryId(draft.data.newThreadCategoryId);
+      if (draft.data.newThreadTitle) setNewThreadTitle(draft.data.newThreadTitle);
+      if (draft.data.newThreadContent) setNewThreadContent(draft.data.newThreadContent);
+    }
+    setShowNewThread(true);
   };
 
   // ---- Handlers ----
@@ -242,6 +279,7 @@ const Discussions = () => {
         title: newThreadTitle.trim(),
         content: newThreadContent.trim(),
       });
+      clearDraftStorage(threadDraftKey);
       toast({ title: 'Thread created' });
       setShowNewThread(false);
       setNewThreadCategoryId('');
@@ -712,7 +750,7 @@ const Discussions = () => {
             </Button>
           )}
           <Button
-            onClick={() => setShowNewThread(true)}
+            onClick={openNewThreadDialog}
             className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
           >
             <Plus className="h-4 w-4 mr-2" />

@@ -2,7 +2,7 @@
  * CrewRatesTab - Integrated crew rates with booked people
  */
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Card,
   CardContent,
@@ -75,6 +75,7 @@ import {
 } from 'lucide-react';
 import { formatDate } from '@/lib/dateUtils';
 import { parseBookingRate, formatRate } from '@/lib/rateUtils';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 
 interface CrewRatesTabProps {
   projectId: string;
@@ -646,7 +647,12 @@ function RateDialog({
   const [effectiveEnd, setEffectiveEnd] = useState(rate?.effective_end || '');
   const [notes, setNotes] = useState(rate?.notes || '');
 
-  // Reset form when rate changes
+  // Draft persistence for new rate creation
+  const draftKey = useMemo(() => buildDraftKey('backlot', 'crew-rate', 'new'), []);
+  const draftSaveTimer = useRef<ReturnType<typeof setTimeout>>();
+  const draftInitialized = useRef(false);
+
+  // Reset form when rate changes, restore draft for new rates
   useState(() => {
     if (rate) {
       setUserId(rate.user_id);
@@ -662,20 +668,61 @@ function RateDialog({
       setEffectiveEnd(rate.effective_end || '');
       setNotes(rate.notes || '');
     } else {
-      setUserId(null);
-      setRoleId(null);
-      setRateType('daily');
-      setRateAmount('');
-      setOvertimeMultiplier('1.5');
-      setDoubleTimeMultiplier('2.0');
-      setKitRentalRate('');
-      setCarAllowance('');
-      setPhoneAllowance('');
-      setEffectiveStart('');
-      setEffectiveEnd('');
-      setNotes('');
+      // Try restoring draft for new rate
+      const draft = loadDraft<{
+        userId: string | null; roleId: string | null; rateType: CrewRateType;
+        rateAmount: string; overtimeMultiplier: string; doubleTimeMultiplier: string;
+        kitRentalRate: string; carAllowance: string; phoneAllowance: string;
+        effectiveStart: string; effectiveEnd: string; notes: string;
+      }>(draftKey);
+      if (draft) {
+        setUserId(draft.data.userId);
+        setRoleId(draft.data.roleId);
+        setRateType(draft.data.rateType);
+        setRateAmount(draft.data.rateAmount);
+        setOvertimeMultiplier(draft.data.overtimeMultiplier);
+        setDoubleTimeMultiplier(draft.data.doubleTimeMultiplier);
+        setKitRentalRate(draft.data.kitRentalRate);
+        setCarAllowance(draft.data.carAllowance);
+        setPhoneAllowance(draft.data.phoneAllowance);
+        setEffectiveStart(draft.data.effectiveStart);
+        setEffectiveEnd(draft.data.effectiveEnd);
+        setNotes(draft.data.notes);
+      } else {
+        setUserId(null);
+        setRoleId(null);
+        setRateType('daily');
+        setRateAmount('');
+        setOvertimeMultiplier('1.5');
+        setDoubleTimeMultiplier('2.0');
+        setKitRentalRate('');
+        setCarAllowance('');
+        setPhoneAllowance('');
+        setEffectiveStart('');
+        setEffectiveEnd('');
+        setNotes('');
+      }
     }
+    draftInitialized.current = true;
   });
+
+  // Auto-save draft when creating a new rate (not editing)
+  useEffect(() => {
+    if (!draftInitialized.current || rate) return;
+    clearTimeout(draftSaveTimer.current);
+    const hasContent = rateAmount || kitRentalRate || carAllowance || phoneAllowance ||
+      effectiveStart || effectiveEnd || notes || userId;
+    if (!hasContent) return;
+    draftSaveTimer.current = setTimeout(() => {
+      saveDraft(draftKey, {
+        userId, roleId, rateType, rateAmount, overtimeMultiplier, doubleTimeMultiplier,
+        kitRentalRate, carAllowance, phoneAllowance, effectiveStart, effectiveEnd, notes,
+      });
+    }, 500);
+    return () => clearTimeout(draftSaveTimer.current);
+  }, [userId, roleId, rateType, rateAmount, overtimeMultiplier, doubleTimeMultiplier,
+    kitRentalRate, carAllowance, phoneAllowance, effectiveStart, effectiveEnd, notes,
+    rate, draftKey]);
 
   const handleSubmit = async () => {
     const input: CrewRateInput = {
@@ -694,6 +741,11 @@ function RateDialog({
     };
 
     await onSave(input);
+    // Clear draft on successful save (onSave throws on error)
+    if (!rate) {
+      clearDraftStorage(draftKey);
+      draftInitialized.current = false;
+    }
   };
 
   // Get unique crew roles (non-cast)

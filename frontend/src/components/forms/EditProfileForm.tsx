@@ -8,6 +8,8 @@ import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { Loader2, PlusCircle, Trash2, Check, AlertCircle } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
+import { useFormDraftRHF } from '@/hooks/useFormDraftRHF';
+import { buildDraftKey } from '@/lib/formDraftStorage';
 
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage, FormDescription } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
@@ -106,6 +108,12 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
     mode: 'onBlur',
   });
 
+  const { clearDraft } = useFormDraftRHF(form, {
+    key: buildDraftKey('profile', 'edit', profileId || 'unknown'),
+    serverTimestamp: profile?.updated_at,
+    enabled: !!profileId,
+  });
+
   // Initialize lastPersisted with initial defaults
   useEffect(() => {
     lastPersisted.current = form.getValues();
@@ -174,6 +182,7 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
       }
 
       // Success!
+      clearDraft();
       setLastSavedAt(now);
       setSaveState('success');
       setAriaMessage('Profile saved successfully.');

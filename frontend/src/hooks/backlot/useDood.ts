@@ -366,3 +366,61 @@ export function calculateSubjectTotals(
 export function getCodeInfo(code: string) {
   return DOOD_CODES.find((c) => c.code === code);
 }
+
+
+// =====================================================
+// DOOD → BUDGET INTEGRATION
+// =====================================================
+
+const RAW_API_URL = import.meta.env.VITE_API_URL || '';
+const API_BASE = RAW_API_URL.endsWith('/api/v1') ? RAW_API_URL : `${RAW_API_URL}/api/v1`;
+
+function getAuthToken(): string {
+  const token = api.getToken();
+  if (!token) throw new Error('Not authenticated');
+  return token;
+}
+
+/**
+ * Get DOOD cost summary (per-subject cost projection)
+ */
+export function useDoodCostSummary(projectId: string | null) {
+  return useQuery({
+    queryKey: ['dood-cost-summary', projectId],
+    queryFn: async () => {
+      if (!projectId) return null;
+      const token = getAuthToken();
+      const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/dood/cost-summary`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error('Failed to fetch DOOD cost summary');
+      return response.json();
+    },
+    enabled: !!projectId,
+  });
+}
+
+/**
+ * Sync all DOOD subjects to the Active Estimate budget
+ */
+export function useSyncDoodToBudget(projectId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      if (!projectId) throw new Error('No project ID');
+      const token = getAuthToken();
+      const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/dood/sync-to-budget`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error('Failed to sync DOOD to budget');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dood-cost-summary', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-typed-budgets', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', projectId] });
+    },
+  });
+}

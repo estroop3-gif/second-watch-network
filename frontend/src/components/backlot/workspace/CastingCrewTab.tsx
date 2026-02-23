@@ -2,7 +2,7 @@
  * CastingCrewTab - Main tab for managing project roles (cast & crew)
  */
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import {
@@ -123,6 +123,7 @@ import {
 import { format, formatDistanceToNow } from 'date-fns';
 import { parseLocalDate } from '@/lib/dateUtils';
 import { POSITIONS } from '@/components/shared/PositionSelector';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 import SearchableCombobox from '@/components/shared/SearchableCombobox';
 
 interface CastingCrewTabProps {
@@ -2440,6 +2441,38 @@ function CommunicationSection({ projectId }: CommunicationSectionProps) {
   const [announcementContent, setAnnouncementContent] = useState('');
   const [announcementPriority, setAnnouncementPriority] = useState<'normal' | 'high' | 'urgent'>('normal');
 
+  // Draft persistence for announcement form
+  const announcementDraftKey = useMemo(() => buildDraftKey('backlot', 'announcement', projectId), [projectId]);
+  const announcementDraftTimer = useRef<ReturnType<typeof setTimeout>>();
+  const announcementDraftInit = useRef(false);
+
+  // Restore announcement draft on mount
+  useEffect(() => {
+    const draft = loadDraft<{ title: string; content: string; priority: 'normal' | 'high' | 'urgent' }>(announcementDraftKey);
+    if (draft) {
+      setAnnouncementTitle(draft.data.title);
+      setAnnouncementContent(draft.data.content);
+      setAnnouncementPriority(draft.data.priority);
+    }
+    announcementDraftInit.current = true;
+  }, [announcementDraftKey]);
+
+  // Auto-save announcement draft
+  useEffect(() => {
+    if (!announcementDraftInit.current) return;
+    clearTimeout(announcementDraftTimer.current);
+    const hasContent = announcementTitle || announcementContent;
+    if (!hasContent) return;
+    announcementDraftTimer.current = setTimeout(() => {
+      saveDraft(announcementDraftKey, {
+        title: announcementTitle,
+        content: announcementContent,
+        priority: announcementPriority,
+      });
+    }, 500);
+    return () => clearTimeout(announcementDraftTimer.current);
+  }, [announcementTitle, announcementContent, announcementPriority, announcementDraftKey]);
+
   // Fetch channels
   const { data: channels, isLoading: channelsLoading } = useQuery({
     queryKey: ['channels', projectId],
@@ -2542,6 +2575,7 @@ function CommunicationSection({ projectId }: CommunicationSectionProps) {
       setAnnouncementTitle('');
       setAnnouncementContent('');
       setAnnouncementPriority('normal');
+      clearDraftStorage(announcementDraftKey);
     },
   });
 

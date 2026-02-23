@@ -858,6 +858,7 @@ async def update_donation_settings(
 async def update_project_settings(
     project_id: str,
     allow_original_playback: Optional[bool] = None,
+    wrap_cost_mode: Optional[str] = None,
     authorization: str = Header(None)
 ):
     """
@@ -865,6 +866,7 @@ async def update_project_settings(
 
     Settings:
     - allow_original_playback: Allow users to access original quality files (default: false)
+    - wrap_cost_mode: 'auto' or 'review' — controls Hot Set wrap cost recording flow
     """
     user = await get_user_from_token(authorization)
     cognito_user_id = user.get("id")
@@ -877,7 +879,7 @@ async def update_project_settings(
 
     # Verify user is project owner
     project_result = client.table("backlot_projects").select(
-        "id, owner_id, settings"
+        "id, owner_id, settings, wrap_cost_mode"
     ).eq("id", project_id).single().execute()
 
     if not project_result.data:
@@ -894,16 +896,24 @@ async def update_project_settings(
     if allow_original_playback is not None:
         updated_settings["allow_original_playback"] = allow_original_playback
 
+    # Build update payload
+    update_payload = {"settings": updated_settings}
+
+    # Handle wrap_cost_mode (column-level, not JSON settings)
+    if wrap_cost_mode is not None:
+        if wrap_cost_mode not in ("auto", "review"):
+            raise HTTPException(status_code=400, detail="wrap_cost_mode must be 'auto' or 'review'")
+        update_payload["wrap_cost_mode"] = wrap_cost_mode
+
     # Update project
-    result = client.table("backlot_projects").update({
-        "settings": updated_settings
-    }).eq("id", project_id).execute()
+    result = client.table("backlot_projects").update(update_payload).eq("id", project_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to update settings")
 
     return {
         "settings": result.data[0].get("settings", {}),
+        "wrap_cost_mode": result.data[0].get("wrap_cost_mode", "review"),
     }
 
 
@@ -926,7 +936,7 @@ async def get_project_settings(
 
     # Get project settings
     project_result = client.table("backlot_projects").select(
-        "id, settings"
+        "id, settings, wrap_cost_mode"
     ).eq("id", project_id).single().execute()
 
     if not project_result.data:
@@ -937,6 +947,7 @@ async def get_project_settings(
     return {
         "settings": settings,
         "allow_original_playback": settings.get("allow_original_playback", False),
+        "wrap_cost_mode": project_result.data.get("wrap_cost_mode", "review"),
     }
 
 
@@ -4524,6 +4535,7 @@ class BudgetInput(BaseModel):
     description: Optional[str] = None
     currency: Optional[str] = "USD"
     status: Optional[str] = "draft"
+    budget_type: Optional[str] = "estimate"
     contingency_percent: Optional[float] = 10.0
     notes: Optional[str] = None
     # Professional budget fields
@@ -4637,6 +4649,7 @@ class Budget(BaseModel):
     post_days: Optional[int] = 0
     episode_count: Optional[int] = 1
     union_type: Optional[str] = "non_union"
+    budget_type: Optional[str] = "estimate"
 
 
 class BudgetCategory(BaseModel):
@@ -5004,7 +5017,20 @@ async def create_budget(
     client = get_client()
     await verify_budget_access(client, project_id, user_id)
 
-    # Check if budget already exists
+    # Validate budget_type
+    bt = budget_input.budget_type or "estimate"
+    if bt not in ("estimate", "actual", "draft"):
+        raise HTTPException(status_code=400, detail="budget_type must be 'estimate', 'actual', or 'draft'")
+
+    # If creating actual budget, ensure none exists
+    if bt == "actual":
+        existing_actual = client.table("backlot_budgets").select("id").eq(
+            "project_id", project_id
+        ).eq("budget_type", "actual").limit(1).execute()
+        if existing_actual.data:
+            raise HTTPException(status_code=400, detail="An actual budget already exists for this project")
+
+    # Check if budget already exists with this name
     existing = client.table("backlot_budgets").select("id").eq("project_id", project_id).eq("name", budget_input.name or "Main Budget").execute()
     if existing.data:
         raise HTTPException(status_code=400, detail="A budget with this name already exists for this project")
@@ -5013,6 +5039,7 @@ async def create_budget(
     budget_data = budget_input.model_dump(exclude_unset=True)
     budget_data["project_id"] = project_id
     budget_data["created_by"] = user_id
+    budget_data["budget_type"] = bt
 
     result = client.table("backlot_budgets").insert(budget_data).execute()
     if not result.data:
@@ -5542,6 +5569,252 @@ def recalculate_category_tax(client, category_id: str, budget_id: str):
             "created_at": datetime.utcnow().isoformat(),
             "updated_at": datetime.utcnow().isoformat()
         }).execute()
+
+
+# =====================================================
+# BUDGET TYPE ARCHITECTURE ENDPOINTS
+# =====================================================
+
+@router.get("/projects/{project_id}/budgets/typed")
+async def get_typed_budgets(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get all budgets grouped by type: estimate, actual, drafts."""
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
+
+    all_budgets = client.table("backlot_budgets").select("*").eq(
+        "project_id", project_id
+    ).order("created_at").execute()
+
+    estimate = None
+    actual = None
+    drafts = []
+
+    for b in (all_budgets.data or []):
+        bt = b.get("budget_type", "estimate")
+        if bt in ("estimate", "estimated") and estimate is None:
+            estimate = b
+        elif bt == "actual" and actual is None:
+            actual = b
+        elif bt == "draft":
+            drafts.append(b)
+        elif estimate is None:
+            # Legacy budgets without type default to estimate
+            estimate = b
+
+    return {"estimate": estimate, "actual": actual, "drafts": drafts}
+
+
+@router.post("/projects/{project_id}/budgets/ensure-actual")
+async def ensure_actual_budget(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Create Actual Budget if it doesn't exist, copying categories from estimate."""
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
+
+    from app.services.budget_actuals import get_or_create_actual_budget
+    actual = get_or_create_actual_budget(project_id)
+    if not actual:
+        raise HTTPException(status_code=500, detail="Failed to create actual budget")
+
+    # Fetch full budget data
+    full = client.table("backlot_budgets").select("*").eq("id", actual["id"]).execute()
+    return full.data[0] if full.data else actual
+
+
+class CloneBudgetInput(BaseModel):
+    name: Optional[str] = None
+    budget_type: Optional[str] = "draft"
+
+
+@router.post("/budgets/{budget_id}/clone")
+async def clone_budget(
+    budget_id: str,
+    input: CloneBudgetInput = CloneBudgetInput(),
+    authorization: str = Header(None)
+):
+    """Deep clone a budget (categories + line items). Actuals reset to 0."""
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    client = get_client()
+
+    # Get source budget
+    source = client.table("backlot_budgets").select("*").eq("id", budget_id).execute()
+    if not source.data:
+        raise HTTPException(status_code=404, detail="Budget not found")
+
+    source_budget = source.data[0]
+    project_id = source_budget["project_id"]
+    await verify_budget_access(client, project_id, user_id)
+
+    # Validate budget_type
+    clone_type = input.budget_type or "draft"
+    if clone_type not in ("estimate", "draft"):
+        raise HTTPException(status_code=400, detail="Clone type must be 'estimate' or 'draft'")
+
+    if clone_type == "actual":
+        raise HTTPException(status_code=400, detail="Cannot clone as actual budget — use ensure-actual endpoint")
+
+    # Create cloned budget
+    clone_name = input.name or f"{source_budget['name']} (Copy)"
+    new_budget_data = {
+        "project_id": project_id,
+        "name": clone_name,
+        "description": source_budget.get("description"),
+        "currency": source_budget.get("currency", "USD"),
+        "status": "draft",
+        "budget_type": clone_type,
+        "contingency_percent": source_budget.get("contingency_percent", 10.0),
+        "notes": source_budget.get("notes"),
+        "project_type_template": source_budget.get("project_type_template"),
+        "shoot_days": source_budget.get("shoot_days"),
+        "prep_days": source_budget.get("prep_days"),
+        "wrap_days": source_budget.get("wrap_days"),
+        "post_days": source_budget.get("post_days"),
+        "episode_count": source_budget.get("episode_count"),
+        "union_type": source_budget.get("union_type"),
+        "created_by": user_id,
+    }
+
+    result = client.table("backlot_budgets").insert(new_budget_data).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to clone budget")
+
+    cloned = result.data[0]
+
+    # Deep copy structure with line items
+    from app.services.budget_actuals import _copy_budget_structure
+    _copy_budget_structure(budget_id, cloned["id"], include_line_items=True)
+
+    # Recalculate estimated totals on the clone
+    categories = client.table("backlot_budget_categories").select("id, estimated_subtotal").eq(
+        "budget_id", cloned["id"]
+    ).execute()
+    est_total = sum(float(c.get("estimated_subtotal", 0)) for c in (categories.data or []))
+    client.table("backlot_budgets").update({
+        "estimated_total": est_total,
+        "actual_total": 0,
+        "updated_at": datetime.utcnow().isoformat()
+    }).eq("id", cloned["id"]).execute()
+
+    # Return full cloned budget
+    full = client.table("backlot_budgets").select("*").eq("id", cloned["id"]).execute()
+    return full.data[0] if full.data else cloned
+
+
+@router.get("/budgets/compare")
+async def compare_budgets(
+    budget_a_id: str,
+    budget_b_id: str,
+    authorization: str = Header(None)
+):
+    """Compare two budgets side by side. Matches line items by description within categories."""
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    client = get_client()
+
+    # Get both budgets
+    budget_a = client.table("backlot_budgets").select("*").eq("id", budget_a_id).execute()
+    budget_b = client.table("backlot_budgets").select("*").eq("id", budget_b_id).execute()
+
+    if not budget_a.data or not budget_b.data:
+        raise HTTPException(status_code=404, detail="One or both budgets not found")
+
+    ba = budget_a.data[0]
+    bb = budget_b.data[0]
+
+    # Verify access to both
+    await verify_budget_access(client, ba["project_id"], user_id)
+    if ba["project_id"] != bb["project_id"]:
+        await verify_budget_access(client, bb["project_id"], user_id)
+
+    # Get categories + line items for both
+    cats_a = client.table("backlot_budget_categories").select("*").eq("budget_id", budget_a_id).order("sort_order").execute()
+    cats_b = client.table("backlot_budget_categories").select("*").eq("budget_id", budget_b_id).order("sort_order").execute()
+    items_a = client.table("backlot_budget_line_items").select("*").eq("budget_id", budget_a_id).order("sort_order").execute()
+    items_b = client.table("backlot_budget_line_items").select("*").eq("budget_id", budget_b_id).order("sort_order").execute()
+
+    # Build lookup: category_name → {description → item}
+    def build_lookup(cats, items):
+        cat_map = {c["id"]: c["name"] for c in (cats.data or [])}
+        result = {}
+        for item in (items.data or []):
+            cat_name = cat_map.get(item.get("category_id"), "Uncategorized")
+            if cat_name not in result:
+                result[cat_name] = {}
+            result[cat_name][item.get("description", "").lower()] = item
+        return result, cat_map
+
+    lookup_a, cat_map_a = build_lookup(cats_a, items_a)
+    lookup_b, cat_map_b = build_lookup(cats_b, items_b)
+
+    all_categories = sorted(set(list(lookup_a.keys()) + list(lookup_b.keys())))
+
+    diff_items = []
+    category_summaries = []
+
+    for cat_name in all_categories:
+        items_in_a = lookup_a.get(cat_name, {})
+        items_in_b = lookup_b.get(cat_name, {})
+        all_descs = sorted(set(list(items_in_a.keys()) + list(items_in_b.keys())))
+
+        cat_a_total = 0.0
+        cat_b_total = 0.0
+
+        for desc in all_descs:
+            ia = items_in_a.get(desc)
+            ib = items_in_b.get(desc)
+
+            a_est = float(ia.get("estimated_total", 0) or 0) if ia else 0
+            b_est = float(ib.get("estimated_total", 0) or 0) if ib else 0
+            delta = b_est - a_est
+            delta_pct = round((delta / a_est * 100), 1) if a_est != 0 else (100.0 if b_est != 0 else 0)
+
+            cat_a_total += a_est
+            cat_b_total += b_est
+
+            diff_items.append({
+                "category": cat_name,
+                "description": (ia or ib or {}).get("description", desc),
+                "budget_a_estimated": round(a_est, 2),
+                "budget_b_estimated": round(b_est, 2),
+                "delta": round(delta, 2),
+                "delta_pct": delta_pct,
+            })
+
+        cat_delta = cat_b_total - cat_a_total
+        category_summaries.append({
+            "category": cat_name,
+            "budget_a_total": round(cat_a_total, 2),
+            "budget_b_total": round(cat_b_total, 2),
+            "delta": round(cat_delta, 2),
+            "delta_pct": round((cat_delta / cat_a_total * 100), 1) if cat_a_total != 0 else 0,
+        })
+
+    total_a = float(ba.get("estimated_total", 0) or 0)
+    total_b = float(bb.get("estimated_total", 0) or 0)
+    total_delta = total_b - total_a
+
+    return {
+        "budget_a": {"id": ba["id"], "name": ba["name"], "budget_type": ba.get("budget_type"), "estimated_total": total_a},
+        "budget_b": {"id": bb["id"], "name": bb["name"], "budget_type": bb.get("budget_type"), "estimated_total": total_b},
+        "total_delta": round(total_delta, 2),
+        "total_delta_pct": round((total_delta / total_a * 100), 1) if total_a != 0 else 0,
+        "category_summaries": category_summaries,
+        "line_items": diff_items,
+    }
 
 
 # =====================================================

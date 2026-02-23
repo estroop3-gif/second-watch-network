@@ -1,7 +1,7 @@
 /**
  * ProjectSettings - Project configuration, visibility, donations, and danger zone
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -56,6 +56,8 @@ import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
 import DonationProgress from '@/components/backlot/DonationProgress';
 import DonationsListModal from '@/components/backlot/DonationsListModal';
+import { useFormDraft } from '@/hooks/useFormDraft';
+import { buildDraftKey } from '@/lib/formDraftStorage';
 
 interface ProjectSettingsProps {
   project: BacklotProject;
@@ -122,18 +124,22 @@ const ProjectSettings: React.FC<ProjectSettingsProps> = ({ project, permission }
   const { data: expenseSettings } = useExpenseSettings(project.id);
   const updateExpenseSettings = useUpdateExpenseSettings(project.id);
 
-  const [formData, setFormData] = useState<ProjectInput>({
-    title: project.title,
-    logline: project.logline || '',
-    description: project.description || '',
-    project_type: project.project_type || 'film',
-    genre: project.genre || '',
-    format: project.format || '',
-    runtime_minutes: project.runtime_minutes || undefined,
-    status: project.status,
-    visibility: project.visibility,
-    target_start_date: project.target_start_date || '',
-    target_end_date: project.target_end_date || '',
+  const { formData, setFormData, clearDraft } = useFormDraft<ProjectInput>({
+    key: buildDraftKey('backlot', 'project-settings', project.id),
+    initialData: {
+      title: project.title,
+      logline: project.logline || '',
+      description: project.description || '',
+      project_type: project.project_type || 'film',
+      genre: project.genre || '',
+      format: project.format || '',
+      runtime_minutes: project.runtime_minutes || undefined,
+      status: project.status,
+      visibility: project.visibility,
+      target_start_date: project.target_start_date || '',
+      target_end_date: project.target_end_date || '',
+    },
+    serverTimestamp: project.updated_at,
   });
 
   const [isSaving, setIsSaving] = useState(false);
@@ -222,6 +228,7 @@ const ProjectSettings: React.FC<ProjectSettingsProps> = ({ project, permission }
         id: project.id,
         ...formData,
       });
+      clearDraft();
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {

@@ -10,7 +10,7 @@
  * - Filter by tag
  * - Export CSV and Print view
  */
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -109,6 +109,7 @@ import {
   MoodboardListView,
   MoodboardMasonryView,
 } from './moodboard';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 import { analyzeImage } from '@/lib/colorExtraction';
 
 interface MoodboardViewProps {
@@ -294,6 +295,19 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
     color_palette: [] as string[],
     aspect_ratio: null as AspectRatio | null,
   });
+
+  // ── Draft persistence for item create form ──
+  const itemDraftKey = buildDraftKey('backlot', 'moodboard-item', projectId);
+  const itemFormDefaults = { section_id: null, image_url: '', source_url: '', title: '', notes: '', tags: '', category: null, rating: null, color_palette: [] as string[], aspect_ratio: null };
+
+  // Auto-save item form draft when dialog is open in create mode
+  useEffect(() => {
+    if (!showItemDialog || editingItem) return;
+    const isDefault = JSON.stringify(itemFormData) === JSON.stringify(itemFormDefaults);
+    if (isDefault) { clearDraftStorage(itemDraftKey); return; }
+    const timer = setTimeout(() => saveDraft(itemDraftKey, itemFormData), 500);
+    return () => clearTimeout(timer);
+  }, [itemFormData, showItemDialog, editingItem]);
 
   // Filter states
   const [searchQuery, setSearchQuery] = useState('');
@@ -516,6 +530,7 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
       };
       console.log('[Moodboard] Creating item with data:', itemData);
       await createItem.mutateAsync(itemData);
+      clearDraftStorage(itemDraftKey);
       setShowItemDialog(false);
       setStagedUpload(null);
       setImageInputMode('url');
@@ -619,6 +634,7 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
           aspect_ratio: aspectRatio,
         },
       });
+      clearDraftStorage(itemDraftKey);
       setShowItemDialog(false);
       setEditingItem(null);
       setStagedUpload(null);
@@ -1026,7 +1042,9 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
                   setEditingItem(null);
                   setStagedUpload(null);
                   setImageInputMode('url');
-                  setItemFormData({
+                  // Restore draft if available, otherwise use defaults
+                  const draft = loadDraft<typeof itemFormData>(itemDraftKey);
+                  setItemFormData(draft ? { ...draft.data, section_id: selectedSectionFilter } : {
                     section_id: selectedSectionFilter,
                     image_url: '',
                     source_url: '',
@@ -1277,7 +1295,9 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
                           setEditingItem(null);
                           setStagedUpload(null);
                           setImageInputMode('url');
-                          setItemFormData({
+                          // Restore draft if available, otherwise use defaults
+                          const draft = loadDraft<typeof itemFormData>(itemDraftKey);
+                          setItemFormData(draft ? { ...draft.data, section_id: selectedSectionFilter } : {
                             section_id: selectedSectionFilter,
                             image_url: '',
                             source_url: '',

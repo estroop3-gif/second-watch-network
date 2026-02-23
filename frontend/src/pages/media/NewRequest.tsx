@@ -5,6 +5,7 @@ import { useCreateContentRequest } from '@/hooks/media';
 import { useMediaPlatforms } from '@/hooks/media';
 import ContentRequestForm from '@/components/media/ContentRequestForm';
 import { useToast } from '@/hooks/use-toast';
+import { clearDraft, buildDraftKey } from '@/lib/formDraftStorage';
 
 const NewRequest = () => {
   const navigate = useNavigate();
@@ -17,6 +18,7 @@ const NewRequest = () => {
   const handleSubmit = async (values: any) => {
     try {
       const result = await createRequest.mutateAsync(values);
+      clearDraft(buildDraftKey('media', 'content-request', 'new'));
       toast({
         title: 'Request submitted',
         description: 'Your content request has been created successfully.',

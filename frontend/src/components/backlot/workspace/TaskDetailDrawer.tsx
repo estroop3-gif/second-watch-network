@@ -2,7 +2,7 @@
  * TaskDetailDrawer - Side drawer for viewing and editing task details
  * Includes description, comments, assignees, labels, due dates, and linked entities
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -67,6 +67,7 @@ import { format, formatDistanceToNow } from 'date-fns';
 import { parseLocalDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 
 interface TaskDetailDrawerProps {
   taskId: string | null;
@@ -221,6 +222,49 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
     }
   }, [task]);
 
+  // --- Draft persistence for unsaved edits ---
+  const taskDraftKey = buildDraftKey('backlot', 'task-detail', taskId || 'none');
+  const taskDraftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Restore draft on mount / task change
+  useEffect(() => {
+    if (!taskId) return;
+    const draft = loadDraft<{ newComment?: string; editingTitle?: string; editingDescription?: string }>(taskDraftKey);
+    if (!draft) return;
+    const d = draft.data;
+    if (d.newComment) setNewComment(d.newComment);
+    if (d.editingTitle) {
+      setTitle(d.editingTitle);
+      setEditingTitle(true);
+    }
+    if (d.editingDescription) {
+      setDescription(d.editingDescription);
+      setEditingDescription(true);
+    }
+    toast({ title: 'Draft restored', description: 'Your unsaved task edits have been restored.' });
+  }, [taskId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Debounced save when comment, title (editing), or description (editing) changes
+  useEffect(() => {
+    if (!taskId) return;
+    const draftData: Record<string, string> = {};
+    if (newComment.trim()) draftData.newComment = newComment;
+    if (editingTitle && title !== task?.title) draftData.editingTitle = title;
+    if (editingDescription && description !== (task?.description || '')) draftData.editingDescription = description;
+
+    // Nothing to persist — clear any existing draft
+    if (Object.keys(draftData).length === 0) {
+      clearDraftStorage(taskDraftKey);
+      return;
+    }
+
+    if (taskDraftTimerRef.current) clearTimeout(taskDraftTimerRef.current);
+    taskDraftTimerRef.current = setTimeout(() => {
+      saveDraft(taskDraftKey, draftData);
+    }, 500);
+    return () => { if (taskDraftTimerRef.current) clearTimeout(taskDraftTimerRef.current); };
+  }, [newComment, title, description, editingTitle, editingDescription, taskId, taskDraftKey, task?.title, task?.description]);
+
   const handleTitleSave = async () => {
     if (!title.trim() || title === task?.title) {
       setEditingTitle(false);
@@ -229,6 +273,7 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
     try {
       await updateTask.mutateAsync({ title: title.trim() });
       setEditingTitle(false);
+      clearDraftStorage(taskDraftKey);
     } catch (error) {
       console.error('Error updating title:', error);
       toast({
@@ -247,6 +292,7 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
     try {
       await updateTask.mutateAsync({ description: description.trim() || null });
       setEditingDescription(false);
+      clearDraftStorage(taskDraftKey);
     } catch (error) {
       console.error('Error updating description:', error);
       toast({
@@ -312,6 +358,7 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
     try {
       await createComment.mutateAsync({ content: newComment.trim() });
       setNewComment('');
+      clearDraftStorage(taskDraftKey);
     } catch (error) {
       console.error('Error adding comment:', error);
       toast({

@@ -5,6 +5,8 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { toast } from 'sonner';
+import { useFormDraftRHF } from '@/hooks/useFormDraftRHF';
+import { buildDraftKey } from '@/lib/formDraftStorage';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -42,19 +44,6 @@ const SiteSettings = () => {
     queryFn: () => api.getSiteSettings(),
   });
 
-  const mutation = useMutation({
-    mutationFn: async (values: SettingsFormValues) => {
-      await api.updateSiteSettings(values);
-    },
-    onSuccess: () => {
-      toast.success('Site settings updated successfully!');
-      queryClient.invalidateQueries({ queryKey: ['siteSettings'] });
-    },
-    onError: (error: any) => {
-      toast.error(`Failed to update settings: ${error.message}`);
-    },
-  });
-
   const form = useForm<SettingsFormValues>({
     resolver: zodResolver(settingsSchema),
   });
@@ -68,6 +57,25 @@ const SiteSettings = () => {
       form.reset(settingsObject);
     }
   }, [settings, form]);
+
+  const { clearDraft } = useFormDraftRHF(form, {
+    key: buildDraftKey('admin', 'settings', 'global'),
+    enabled: !isLoading && !!settings,
+  });
+
+  const mutation = useMutation({
+    mutationFn: async (values: SettingsFormValues) => {
+      await api.updateSiteSettings(values);
+    },
+    onSuccess: () => {
+      clearDraft();
+      toast.success('Site settings updated successfully!');
+      queryClient.invalidateQueries({ queryKey: ['siteSettings'] });
+    },
+    onError: (error: any) => {
+      toast.error(`Failed to update settings: ${error.message}`);
+    },
+  });
 
   const onSubmit = (data: SettingsFormValues) => {
     mutation.mutate(data);

@@ -9,7 +9,7 @@
  * - Lock/unlock status
  * - Export CSV and Print view
  */
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -119,6 +119,7 @@ import {
   useMoodboards,
   useProject,
 } from '@/hooks/backlot';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 import { PanelImageUploader } from './storyboard/PanelImageUploader';
 import { generateStoryboardSummaryPdf } from './storyboard-summary-pdf';
 
@@ -662,6 +663,19 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
   // Delete targets
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
 
+  // ── Draft persistence for panel create form ──
+  const panelDraftKey = buildDraftKey('backlot', 'storyboard-panel', projectId);
+  const panelFormDefaults = { title: '', shot_size: '', camera_move: '', lens: '', framing: '', action: '', dialogue: '', audio: '', notes: '', duration_seconds: '', reference_image_url: '' };
+
+  // Auto-save panel form draft when dialog is open in create mode
+  useEffect(() => {
+    if (!showPanelDialog || editingPanel) return;
+    const isDefault = JSON.stringify(panelForm) === JSON.stringify(panelFormDefaults);
+    if (isDefault) { clearDraftStorage(panelDraftKey); return; }
+    const timer = setTimeout(() => saveDraft(panelDraftKey, panelForm), 500);
+    return () => clearTimeout(timer);
+  }, [panelForm, showPanelDialog, editingPanel]);
+
   // Queries
   const {
     data: storyboards,
@@ -899,6 +913,7 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
       }
 
       // Clean up
+      clearDraftStorage(panelDraftKey);
       setEditingPanel(null);
       setPanelSectionId(null);
       setPanelForm({
@@ -1035,7 +1050,9 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
   const openAddPanel = useCallback((sectionId: string) => {
     setPanelSectionId(sectionId);
     setEditingPanel(null);
-    setPanelForm({
+    // Restore draft if available, otherwise use defaults
+    const draft = loadDraft<typeof panelFormDefaults>(panelDraftKey);
+    setPanelForm(draft ? draft.data : {
       title: '',
       shot_size: '',
       camera_move: '',

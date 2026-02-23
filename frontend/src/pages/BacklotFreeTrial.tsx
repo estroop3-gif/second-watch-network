@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 import * as z from 'zod';
+import { useFormDraftRHF } from '@/hooks/useFormDraftRHF';
+import { buildDraftKey } from '@/lib/formDraftStorage';
 import { Button } from '@/components/ui/button';
 import {
   Form, FormControl, FormField, FormItem, FormLabel, FormMessage,
@@ -87,6 +89,11 @@ const BacklotFreeTrial = () => {
     mode: 'onBlur',
   });
 
+  const { clearDraft } = useFormDraftRHF(form, {
+    key: buildDraftKey('trial', 'signup', 'new'),
+    skipFields: ['consent_contact'],
+  });
+
   const selectedRepId = form.watch('referred_by_rep_id');
   const selectedRep = reps.find((r) => r.id === selectedRepId);
 
@@ -94,6 +101,7 @@ const BacklotFreeTrial = () => {
     setSubmitting(true);
     try {
       const result = await api.submitBacklotTrial(values);
+      clearDraft();
       setAutoProvisioned(result.auto_provisioned || false);
       setSubmitted(true);
     } catch (err: any) {

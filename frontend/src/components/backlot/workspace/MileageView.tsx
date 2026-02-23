@@ -64,6 +64,7 @@ import {
   calculateMileageTotal,
 } from '@/hooks/backlot';
 import { cn } from '@/lib/utils';
+import { saveDraft, loadDraft, clearDraft as clearDraftStorage, buildDraftKey } from '@/lib/formDraftStorage';
 
 interface MileageViewProps {
   projectId: string;
@@ -639,6 +640,28 @@ function MileageFormModal({
   const isEditing = !!entry;
   const isPending = createMileage.isPending || updateMileage.isPending;
 
+  // --- Draft persistence (create mode only) ---
+  const draftKey = buildDraftKey('backlot', 'mileage', 'new');
+
+  // Restore draft when opening create form
+  React.useEffect(() => {
+    if (isOpen && !entry) {
+      const saved = loadDraft<CreateMileageData>(draftKey);
+      if (saved) {
+        setFormData(prev => ({ ...prev, ...saved.data }));
+      }
+    }
+  }, [isOpen, entry]);
+
+  // Auto-save draft (debounced, create mode only)
+  React.useEffect(() => {
+    if (!isOpen || isEditing) return;
+    const timer = setTimeout(() => {
+      saveDraft(draftKey, formData);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [formData, isOpen, isEditing]);
+
   // Auto-calculate distance when both addresses are selected
   React.useEffect(() => {
     if (startPlace && endPlace && formData.start_location && formData.end_location) {
@@ -710,6 +733,7 @@ function MileageFormModal({
         });
       } else {
         await createMileage.mutateAsync(formData);
+        clearDraftStorage(draftKey);
       }
       onClose();
     } catch (error) {

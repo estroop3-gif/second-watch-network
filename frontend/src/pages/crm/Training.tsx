@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import {
   Play, FileText, Upload, Plus, Search, Eye, Pencil, Trash2,
   Loader2, Clock, Film, Presentation, GraduationCap, FolderOpen,
@@ -27,6 +27,12 @@ import {
 } from '@/hooks/crm/useTraining';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useToast } from '@/hooks/use-toast';
+import {
+  saveDraft as saveDraftStorage,
+  loadDraft,
+  clearDraft as clearDraftStorage,
+  buildDraftKey,
+} from '@/lib/formDraftStorage';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -145,6 +151,25 @@ const Training = () => {
   const [formFile, setFormFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ── Draft persistence for create/edit dialog ──
+  const trainingDraftKey = buildDraftKey('crm', 'training', editingResource?.id || 'new');
+  const trainingDraftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const getTrainingFormSnapshot = useCallback(() => ({
+    formTitle, formDescription, formCategory, formResourceType,
+    formUrl, formThumbnailUrl, formDurationMinutes,
+  }), [formTitle, formDescription, formCategory, formResourceType, formUrl, formThumbnailUrl, formDurationMinutes]);
+
+  // Persist form changes when dialog is open (create mode only)
+  useEffect(() => {
+    if (!showCreateDialog || editingResource) return;
+    if (trainingDraftTimerRef.current) clearTimeout(trainingDraftTimerRef.current);
+    trainingDraftTimerRef.current = setTimeout(() => {
+      saveDraftStorage(trainingDraftKey, getTrainingFormSnapshot());
+    }, 500);
+    return () => { if (trainingDraftTimerRef.current) clearTimeout(trainingDraftTimerRef.current); };
+  }, [showCreateDialog, editingResource, trainingDraftKey, getTrainingFormSnapshot]);
+
   // Data hooks
   const { data, isLoading } = useTrainingResources({
     type: activeTab === 'videos' ? 'video' : activeTab === 'presentations' ? 'presentation' : undefined,
@@ -186,6 +211,17 @@ const Training = () => {
   const openCreateDialog = () => {
     resetForm();
     setEditingResource(null);
+    // Restore draft for new resource
+    const draft = loadDraft<any>(buildDraftKey('crm', 'training', 'new'));
+    if (draft?.data) {
+      if (draft.data.formTitle) setFormTitle(draft.data.formTitle);
+      if (draft.data.formDescription) setFormDescription(draft.data.formDescription);
+      if (draft.data.formCategory) setFormCategory(draft.data.formCategory);
+      if (draft.data.formResourceType) setFormResourceType(draft.data.formResourceType);
+      if (draft.data.formUrl) setFormUrl(draft.data.formUrl);
+      if (draft.data.formThumbnailUrl) setFormThumbnailUrl(draft.data.formThumbnailUrl);
+      if (draft.data.formDurationMinutes) setFormDurationMinutes(draft.data.formDurationMinutes);
+    }
     setShowCreateDialog(true);
   };
 
@@ -256,6 +292,7 @@ const Training = () => {
         await updateResource.mutateAsync({ id: editingResource.id, ...payload });
         toast({ title: 'Resource updated', description: `${formTitle} has been updated.` });
       } else {
+        clearDraftStorage(buildDraftKey('crm', 'training', 'new'));
         await createResource.mutateAsync(payload);
         toast({ title: 'Resource created', description: `${formTitle} has been added.` });
       }

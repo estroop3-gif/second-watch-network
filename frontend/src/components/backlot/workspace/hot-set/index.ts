@@ -15,6 +15,7 @@ export { ADNotesPanel } from './ADNotesPanel';
 export { CallSheetQuickLink } from './CallSheetQuickLink';
 export { DayStatsCard } from './DayStatsCard';
 export { WrapDayModal } from './WrapDayModal';
+export { default as WrapCostReviewModal } from './WrapCostReviewModal';
 
 // Live Schedule Tracking components
 export { OTProjectionCard } from './OTProjectionCard';

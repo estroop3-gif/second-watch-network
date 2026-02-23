@@ -398,7 +398,16 @@ async def create_subject(
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create subject")
 
-    return result.data[0]
+    # Sync to budget estimate if subject has a rate
+    created = result.data[0]
+    if request.rate_amount and request.rate_amount > 0:
+        try:
+            from app.services.dood_budget_sync import sync_dood_subject_to_estimate
+            sync_dood_subject_to_estimate(created["id"], project_id)
+        except Exception as e:
+            logger.warning(f"[DOOD] Budget sync failed for new subject: {e}")
+
+    return created
 
 
 @router.get("/projects/{project_id}/dood/subjects")
@@ -459,6 +468,15 @@ async def update_subject(
     if update_data:
         update_data["updated_at"] = datetime.utcnow().isoformat()
         result = client.table("dood_subjects").update(update_data).eq("id", subject_id).execute()
+
+        # Sync to budget if rate or department changed
+        if any(k in update_data for k in ("rate_type", "rate_amount", "department", "display_name")):
+            try:
+                from app.services.dood_budget_sync import sync_dood_subject_to_estimate
+                sync_dood_subject_to_estimate(subject_id, project_id)
+            except Exception as e:
+                logger.warning(f"[DOOD] Budget sync failed for subject update: {e}")
+
         return result.data[0] if result.data else {}
 
     return existing.data[0]
@@ -480,6 +498,13 @@ async def delete_subject(
     existing = client.table("dood_subjects").select("id").eq("id", subject_id).eq("project_id", project_id).execute()
     if not existing.data:
         raise HTTPException(status_code=404, detail="Subject not found")
+
+    # Remove budget line item before deleting subject
+    try:
+        from app.services.dood_budget_sync import remove_dood_subject_line_item
+        remove_dood_subject_line_item(subject_id, project_id)
+    except Exception as e:
+        logger.warning(f"[DOOD] Budget cleanup failed for deleted subject: {e}")
 
     # Delete (assignments will cascade)
     client.table("dood_subjects").delete().eq("id", subject_id).execute()
@@ -514,6 +539,12 @@ async def upsert_assignment(
     # If code is empty, delete the assignment
     if not request.code or request.code.strip() == "":
         client.table("dood_assignments").delete().eq("subject_id", request.subject_id).eq("day_id", request.day_id).execute()
+        # Sync budget (W-day count changed)
+        try:
+            from app.services.dood_budget_sync import sync_dood_subject_to_estimate
+            sync_dood_subject_to_estimate(request.subject_id, project_id)
+        except Exception as e:
+            logger.warning(f"[DOOD] Budget sync failed after assignment delete: {e}")
         return {"success": True, "action": "deleted"}
 
     # Validate code
@@ -522,7 +553,8 @@ async def upsert_assignment(
         raise HTTPException(status_code=400, detail=f"Invalid code. Must be one of: {VALID_CODES}")
 
     # Check for existing assignment
-    existing = client.table("dood_assignments").select("id").eq("subject_id", request.subject_id).eq("day_id", request.day_id).execute()
+    existing = client.table("dood_assignments").select("id, code").eq("subject_id", request.subject_id).eq("day_id", request.day_id).execute()
+    old_code = existing.data[0].get("code") if existing.data else None
 
     if existing.data:
         # Update
@@ -532,7 +564,7 @@ async def upsert_assignment(
             "updated_at": datetime.utcnow().isoformat()
         }
         result = client.table("dood_assignments").update(update_data).eq("id", existing.data[0]["id"]).execute()
-        return {"success": True, "action": "updated", "assignment": result.data[0] if result.data else None}
+        response = {"success": True, "action": "updated", "assignment": result.data[0] if result.data else None}
     else:
         # Insert
         insert_data = {
@@ -543,7 +575,44 @@ async def upsert_assignment(
             "notes": request.notes
         }
         result = client.table("dood_assignments").insert(insert_data).execute()
-        return {"success": True, "action": "created", "assignment": result.data[0] if result.data else None}
+        response = {"success": True, "action": "created", "assignment": result.data[0] if result.data else None}
+
+    # Sync budget if W-day count could have changed
+    if code == "W" or old_code == "W":
+        try:
+            from app.services.dood_budget_sync import sync_dood_subject_to_estimate
+            sync_dood_subject_to_estimate(request.subject_id, project_id)
+        except Exception as e:
+            logger.warning(f"[DOOD] Budget sync failed after assignment upsert: {e}")
+
+    return response
+
+
+@router.post("/projects/{project_id}/dood/sync-to-budget")
+async def sync_dood_to_budget(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Manual full sync of all DOOD subjects to the Active Estimate budget."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+
+    from app.services.dood_budget_sync import sync_all_dood_subjects_to_estimate
+    stats = sync_all_dood_subjects_to_estimate(project_id)
+    return stats
+
+
+@router.get("/projects/{project_id}/dood/cost-summary")
+async def get_dood_cost_summary_endpoint(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Per-subject cost projection for UI display."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+
+    from app.services.dood_budget_sync import get_dood_cost_summary
+    return get_dood_cost_summary(project_id)
 
 
 @router.post("/projects/{project_id}/dood/publish")

@@ -11,6 +11,8 @@ import { Checkbox } from '@/components/ui/checkbox';
 import CampaignCard from '@/components/crm/CampaignCard';
 import { useCampaigns, useCreateCampaign } from '@/hooks/crm/useCampaigns';
 import { useEmailAccounts } from '@/hooks/crm/useEmail';
+import { useFormDraft } from '@/hooks/useFormDraft';
+import { buildDraftKey } from '@/lib/formDraftStorage';
 
 const STATUS_OPTIONS = [
   { value: 'all', label: 'All Statuses' },
@@ -33,7 +35,7 @@ const Campaigns = () => {
   const { data: accountsData } = useEmailAccounts();
   const accounts = accountsData?.accounts?.filter((a: any) => a.is_active) || [];
 
-  const [form, setForm] = useState({
+  const campaignInitial = {
     name: '',
     description: '',
     subject_template: '',
@@ -43,6 +45,11 @@ const Campaigns = () => {
     target_temperature: [] as string[],
     target_tags: [] as string[],
     sender_account_ids: [] as string[],
+  };
+
+  const { formData: form, setFormData: setForm, clearDraft } = useFormDraft({
+    key: buildDraftKey('crm', 'campaign', 'new'),
+    initialData: campaignInitial,
   });
 
   const toggleSender = (accountId: string) => {
@@ -57,6 +64,7 @@ const Campaigns = () => {
   const handleCreate = () => {
     createCampaign.mutate(form, {
       onSuccess: (result) => {
+        clearDraft();
         setShowCreate(false);
         setForm({
           name: '', description: '', subject_template: '', html_template: '',
