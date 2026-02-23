@@ -108,6 +108,29 @@ async def get_user_profile_id(user: Dict[str, Any]) -> str:
     raise HTTPException(status_code=401, detail="Could not determine user profile")
 
 
+async def check_org_backlot_member(organization_id: str, user_id: str) -> Dict[str, Any]:
+    """
+    Check if user is any active member of the organization.
+    Used for read-only endpoints like listing seats.
+    """
+    member = execute_single("""
+        SELECT om.*, o.backlot_enabled, o.backlot_billing_status
+        FROM organization_members om
+        JOIN organizations o ON om.organization_id = o.id
+        WHERE om.organization_id = :organization_id
+          AND om.user_id = :user_id
+          AND om.status = 'active'
+    """, {"organization_id": organization_id, "user_id": user_id})
+
+    if not member:
+        raise HTTPException(
+            status_code=403,
+            detail="You must be a member of this organization"
+        )
+
+    return member
+
+
 async def check_org_backlot_admin(organization_id: str, user_id: str) -> Dict[str, Any]:
     """
     Check if user has admin access to organization's Backlot settings.
@@ -266,7 +289,7 @@ async def list_backlot_seats(
 ):
     """List all Backlot seats in organization."""
     user_id = await get_user_profile_id(user)
-    await check_org_backlot_admin(organization_id, user_id)
+    await check_org_backlot_member(organization_id, user_id)
 
     seats = execute_query("""
         SELECT
