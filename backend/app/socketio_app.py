@@ -614,6 +614,19 @@ def is_user_online(user_id: str) -> bool:
     return user_id in connected_users and len(connected_users[user_id]) > 0
 
 
+async def broadcast_new_community_member(profile_id: str, full_name: str = None):
+    """
+    Broadcast that a new community member has joined.
+    Called from auth.py when a new profile is created via ensure_profile.
+    All connected clients can invalidate their directory cache.
+    """
+    await sio.emit('community_member_joined', {
+        'profile_id': profile_id,
+        'full_name': full_name,
+    })
+    logger.info(f"[Socket] Broadcasted new community member: {profile_id}")
+
+
 def get_user_online_status_preference(user_id: str) -> bool:
     """Check if user has online status visibility enabled."""
     try:

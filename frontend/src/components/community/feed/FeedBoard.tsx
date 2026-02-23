@@ -4,15 +4,17 @@
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { PenSquare, Loader2, Image, Link as LinkIcon } from 'lucide-react';
+import { PenSquare, Loader2, Image, Link as LinkIcon, Activity } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
 import { useFeed } from '@/hooks/useFeed';
+import { useFriendsActivity } from '@/hooks/useFriendsActivity';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import FeedSubTabs, { type FeedSubTab } from './FeedSubTabs';
 import PostCard from './PostCard';
 import PostForm from './PostForm';
+import ActivityCard from './ActivityCard';
 import AvailabilityQuickToggle from './AvailabilityQuickToggle';
 import type { CommunityPost, PostInput } from '@/types/community';
 
@@ -39,7 +41,7 @@ const FeedBoard: React.FC = () => {
   });
 
   // Get user display info for the composer
-  const userName = profile?.display_name || profile?.full_name || profile?.username || 'You';
+  const userName = profile?.full_name || profile?.display_name || profile?.username || 'You';
   const userInitials = userName.slice(0, 1).toUpperCase();
   const userAvatar = profile?.avatar_url;
 
@@ -58,6 +60,13 @@ const FeedBoard: React.FC = () => {
     type: activeTab,
     enabled: activeTab === 'public' || isAuthenticated,
   });
+
+  // Fetch friends activity for the connections sub-tab
+  const { data: friendsActivityData, isLoading: isLoadingActivity } = useFriendsActivity(
+    15,
+    activeTab === 'connections' && isAuthenticated,
+  );
+  const friendsActivities = friendsActivityData?.activities || [];
 
   const handleCreatePost = async (data: PostInput) => {
     await createPost.mutateAsync(data);
@@ -165,6 +174,30 @@ const FeedBoard: React.FC = () => {
             Sign in to see posts from your connections.
           </p>
         </div>
+      )}
+
+      {/* Friends Activity - shown on connections sub-tab */}
+      {activeTab === 'connections' && isAuthenticated && (
+        <>
+          {isLoadingActivity && (
+            <div className="flex justify-center py-6">
+              <Loader2 className="w-6 h-6 animate-spin text-muted-gray" />
+            </div>
+          )}
+          {!isLoadingActivity && friendsActivities.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 px-1">
+                <Activity className="w-4 h-4 text-accent-yellow" />
+                <h3 className="text-sm font-medium text-bone-white">Friends Activity</h3>
+              </div>
+              <div className="space-y-2">
+                {friendsActivities.map((activity, idx) => (
+                  <ActivityCard key={`${activity.user_id}-${activity.type}-${idx}`} activity={activity} />
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* Loading state */}

@@ -122,6 +122,31 @@ async def confirm_sign_up(request: ConfirmSignUpRequest):
         if result.get("error"):
             raise HTTPException(status_code=400, detail=result["error"]["message"])
 
+        # Send welcome email (non-blocking — don't fail confirm if email fails)
+        try:
+            from app.services.email_templates import build_welcome_email
+            from app.services.email_service import EmailService
+            from app.core.database import get_client
+
+            # Look up the user's name from their profile
+            client = get_client()
+            profile = client.table("profiles").select("full_name").eq(
+                "email", request.email
+            ).execute()
+            name = profile.data[0]["full_name"] if profile.data else ""
+
+            subject, html = build_welcome_email(name)
+            await EmailService.send_email(
+                to_emails=[request.email],
+                subject=subject,
+                html_content=html,
+                email_type="welcome",
+                source_service="auth",
+                source_action="confirm_signup",
+            )
+        except Exception as e:
+            print(f"Welcome email failed (non-blocking): {e}")
+
         return {"message": "Email confirmed successfully. You can now sign in."}
 
     except HTTPException:
@@ -452,6 +477,17 @@ async def ensure_profile(user=Depends(get_current_user)):
                 except Exception as e:
                     # Filmmaker profile creation is optional, log but don't fail
                     print(f"filmmaker_profiles creation error (non-fatal): {e}")
+
+        # Broadcast new member via WebSocket so directory updates in real-time
+        if newly_created and profile_id:
+            try:
+                from app.socketio_app import broadcast_new_community_member
+                await broadcast_new_community_member(
+                    profile_id=str(profile_id),
+                    full_name=profile.get("full_name"),
+                )
+            except Exception as e:
+                print(f"WebSocket broadcast failed (non-fatal): {e}")
 
         return {"profile": profile, "newly_created": newly_created}
 

@@ -341,7 +341,7 @@ interface UserCardProps {
 }
 
 function UserCard({ user, onConnect, isConnecting }: UserCardProps) {
-  const displayName = user.display_name || user.full_name || user.username || 'Anonymous';
+  const displayName = user.full_name || user.display_name || user.username || 'Anonymous';
   const initials = displayName
     .split(' ')
     .map((n) => n[0])

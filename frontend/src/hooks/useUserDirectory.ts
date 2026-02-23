@@ -5,10 +5,13 @@
  * - Search by name/username
  * - Filters for role, Order membership, partner status, location
  * - Connection status relative to current user
+ * - Real-time updates via WebSocket when new members join
  */
+import { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+import { useSocketOptional } from '@/hooks/useSocket';
 
 export type DirectoryUser = {
   id: string;
@@ -41,8 +44,9 @@ export type DirectoryResponse = {
 };
 
 export function useUserDirectory(filters: DirectoryFilters = {}) {
-  const { user } = useAuth();
+  const { profileId } = useAuth();
   const queryClient = useQueryClient();
+  const socket = useSocketOptional();
 
   const queryKey = ['user-directory', filters];
 
@@ -61,15 +65,30 @@ export function useUserDirectory(filters: DirectoryFilters = {}) {
       return response;
     },
     staleTime: 30000, // 30 seconds
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
     retry: 2,
     retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000),
   });
 
+  // Listen for new community members via WebSocket and invalidate directory cache
+  useEffect(() => {
+    const sock = socket?.socket;
+    if (!sock) return;
+
+    const handleNewMember = () => {
+      queryClient.invalidateQueries({ queryKey: ['user-directory'] });
+    };
+
+    sock.on('community_member_joined', handleNewMember);
+    return () => {
+      sock.off('community_member_joined', handleNewMember);
+    };
+  }, [socket?.socket, queryClient]);
+
   // Mutation to send connection request
   const sendConnectionRequest = useMutation({
     mutationFn: async (recipientId: string) => {
-      const response = await api.post(`/api/v1/connections/?requester_id=${user?.id}`, {
+      const response = await api.createConnectionRequest({
         recipient_id: recipientId,
       });
       return response;

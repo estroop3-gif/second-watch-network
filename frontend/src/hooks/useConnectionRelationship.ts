@@ -49,7 +49,7 @@ export function useConnectionRelationship(peerId: string | undefined) {
   const sendRequest = useMutation({
     mutationFn: async () => {
       if (!user || !peerId) throw new Error('Missing user or peer');
-      await api.createConnectionRequest(user.id, { recipient_id: peerId });
+      await api.createConnectionRequest({ recipient_id: peerId });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['connectionRelationship', user?.id, peerId] });

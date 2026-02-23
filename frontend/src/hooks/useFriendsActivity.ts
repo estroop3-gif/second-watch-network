@@ -35,17 +35,16 @@ export interface FriendsActivityResponse {
 /**
  * Fetch friends activity feed
  */
-export function useFriendsActivity(limit: number = 10) {
-  const { profile } = useAuth();
-  const userId = profile?.id;
+export function useFriendsActivity(limit: number = 10, enabled: boolean = true) {
+  const { profileId } = useAuth();
 
   return useQuery({
-    queryKey: ['friends-activity', userId, limit],
+    queryKey: ['friends-activity', profileId, limit],
     queryFn: async (): Promise<FriendsActivityResponse> => {
-      if (!userId) return { activities: [], total: 0 };
-      return api.request<FriendsActivityResponse>(`/api/v1/connections/activity?user_id=${userId}&limit=${limit}`);
+      if (!profileId) return { activities: [], total: 0 };
+      return api.request<FriendsActivityResponse>(`/api/v1/connections/activity?user_id=${profileId}&limit=${limit}`);
     },
-    enabled: !!userId,
+    enabled: !!profileId && enabled,
     staleTime: 2 * 60 * 1000, // 2 minutes
     gcTime: 5 * 60 * 1000, // 5 minutes
     refetchOnWindowFocus: true,

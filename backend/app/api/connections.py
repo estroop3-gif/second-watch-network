@@ -1,25 +1,61 @@
 """
 Connections API Routes
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Optional
 from app.core.database import get_client
+from app.core.deps import get_user_profile
 from app.schemas.connections import Connection, ConnectionCreate, ConnectionUpdate
 
 router = APIRouter()
 
 
 @router.post("/", response_model=Connection)
-async def create_connection_request(connection: ConnectionCreate, requester_id: str):
-    """Send connection request"""
+async def create_connection_request(
+    connection: ConnectionCreate,
+    profile=Depends(get_user_profile),
+):
+    """Send connection request. Requester is extracted from auth token."""
     try:
         client = get_client()
+        requester_id = str(profile["id"])
+        recipient_id = connection.recipient_id
+
+        if requester_id == recipient_id:
+            raise HTTPException(status_code=400, detail="Cannot connect with yourself")
+
+        # Check if a connection already exists between the two users (either direction)
+        existing = client.table("connections").select("*").or_(
+            f"and(requester_id.eq.{requester_id},recipient_id.eq.{recipient_id}),"
+            f"and(requester_id.eq.{recipient_id},recipient_id.eq.{requester_id})"
+        ).order("created_at", desc=True).limit(1).execute()
+
+        if existing.data:
+            conn = existing.data[0]
+            current_status = conn.get("status")
+
+            # If pending or accepted, return existing connection (idempotent)
+            if current_status in ("pending", "accepted"):
+                return conn
+
+            # If denied or blocked, update status back to pending (re-request)
+            if current_status in ("denied", "blocked"):
+                updated = client.table("connections").update({
+                    "status": "pending",
+                    "requester_id": requester_id,
+                    "recipient_id": recipient_id,
+                }).eq("id", conn["id"]).execute()
+                return updated.data[0]
+
+        # No existing connection — create new
         data = connection.model_dump()
         data["requester_id"] = requester_id
         data["status"] = "pending"
-        
+
         response = client.table("connections").insert(data).execute()
         return response.data[0]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -37,10 +73,10 @@ async def list_connections(
         query = client.table("connections").select("*").or_(
             f"requester_id.eq.{user_id},recipient_id.eq.{user_id}"
         )
-        
+
         if status:
             query = query.eq("status", status)
-        
+
         response = query.range(skip, skip + limit - 1).order("created_at", desc=True).execute()
         return response.data
     except Exception as e:
@@ -202,7 +238,7 @@ async def get_friends_activity(user_id: str, limit: int = 10):
 
             for activity in activities:
                 profile = profiles_by_id.get(activity["user_id"], {})
-                activity["user_name"] = profile.get("display_name") or profile.get("full_name") or "Friend"
+                activity["user_name"] = profile.get("full_name") or profile.get("display_name") or "Friend"
                 activity["user_avatar"] = profile.get("avatar_url")
 
         return {"activities": activities, "total": len(activities)}

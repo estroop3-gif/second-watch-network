@@ -1098,8 +1098,8 @@ class APIClient {
   // CONNECTIONS
   // ============================================================================
 
-  async createConnectionRequest(requesterId: string, data: any) {
-    return this.request<any>(`/api/v1/connections/?requester_id=${requesterId}`, {
+  async createConnectionRequest(data: { recipient_id: string }) {
+    return this.request<any>(`/api/v1/connections/`, {
       method: 'POST',
       body: JSON.stringify(data),
     })
