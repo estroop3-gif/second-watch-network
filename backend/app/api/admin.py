@@ -241,6 +241,8 @@ async def delete_user(user_id: str):
         safe_delete("backlot_projects", "created_by", user_id)
 
         # Community/Forum related
+        safe_delete("community_topic_replies", "user_id", user_id)
+        safe_delete("community_topic_threads", "user_id", user_id)
         safe_delete("community_replies", "user_id", user_id)
         safe_delete("community_threads", "user_id", user_id)
 

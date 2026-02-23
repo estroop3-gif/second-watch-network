@@ -46,6 +46,9 @@ const AlertDialogContent = React.forwardRef<
       <VisuallyHidden.Root asChild>
         <AlertDialogPrimitive.Title>{ariaLabel || "Alert"}</AlertDialogPrimitive.Title>
       </VisuallyHidden.Root>
+      <VisuallyHidden.Root asChild>
+        <AlertDialogPrimitive.Description>Alert dialog</AlertDialogPrimitive.Description>
+      </VisuallyHidden.Root>
       {children}
     </AlertDialogPrimitive.Content>
   </AlertDialogPortal>
