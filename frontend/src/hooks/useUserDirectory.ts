@@ -72,18 +72,17 @@ export function useUserDirectory(filters: DirectoryFilters = {}) {
 
   // Listen for new community members via WebSocket and invalidate directory cache
   useEffect(() => {
-    const sock = socket?.socket;
-    if (!sock) return;
+    if (!socket?.on) return;
 
     const handleNewMember = () => {
       queryClient.invalidateQueries({ queryKey: ['user-directory'] });
     };
 
-    sock.on('community_member_joined', handleNewMember);
+    socket.on('community_member_joined' as any, handleNewMember);
     return () => {
-      sock.off('community_member_joined', handleNewMember);
+      socket.off('community_member_joined' as any, handleNewMember);
     };
-  }, [socket?.socket, queryClient]);
+  }, [socket, queryClient]);
 
   // Mutation to send connection request
   const sendConnectionRequest = useMutation({
