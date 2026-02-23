@@ -31275,11 +31275,10 @@ async def export_project_breakdown_pdf(
 
     except HTTPException:
         raise
-    except ImportError as e:
-        raise HTTPException(status_code=500, detail="PDF generation not available - WeasyPrint not installed")
     except Exception as e:
-        print(f"Error generating breakdown PDF: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to generate breakdown PDF: {str(e)}")
 
 
 @router.get("/scenes/{scene_id}/breakdown/pdf")
@@ -31339,11 +31338,10 @@ async def export_scene_breakdown_pdf(
 
     except HTTPException:
         raise
-    except ImportError as e:
-        raise HTTPException(status_code=500, detail="PDF generation not available - WeasyPrint not installed")
     except Exception as e:
-        print(f"Error generating scene breakdown PDF: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to generate scene breakdown PDF: {str(e)}")
 
 
 # =====================================================

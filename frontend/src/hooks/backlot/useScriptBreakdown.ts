@@ -396,8 +396,16 @@ export function useBreakdownPdfExport(options: UseBreakdownPdfExportOptions) {
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || "Failed to generate PDF");
+        let detail = `Export failed (${response.status})`;
+        try {
+          const error = await response.json();
+          detail = error.detail || detail;
+        } catch {
+          const text = await response.text().catch(() => "");
+          if (text) detail = text.slice(0, 200);
+        }
+        console.error("[Breakdown PDF] Export error:", detail);
+        throw new Error(detail);
       }
 
       // Get filename from Content-Disposition header or use default
@@ -440,8 +448,16 @@ export function useBreakdownPdfExport(options: UseBreakdownPdfExportOptions) {
       );
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || "Failed to generate PDF");
+        let detail = `Export failed (${response.status})`;
+        try {
+          const error = await response.json();
+          detail = error.detail || detail;
+        } catch {
+          const text = await response.text().catch(() => "");
+          if (text) detail = text.slice(0, 200);
+        }
+        console.error("[Breakdown PDF] Scene export error:", detail);
+        throw new Error(detail);
       }
 
       // Get filename from Content-Disposition header
