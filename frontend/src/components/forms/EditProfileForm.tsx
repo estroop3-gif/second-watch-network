@@ -299,7 +299,25 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
               <AvatarUploader
                 avatarUrl={profile?.avatar_url || session?.user?.user_metadata?.avatar_url}
                 onUploadSuccess={(newAvatarUrl) => {
-                  // Update cached profile in localStorage so UserNav/header picks it up
+                  // Directly patch avatar_url into the profile query cache.
+                  // useProfile's query is disabled when authProfile exists, so
+                  // invalidateQueries won't trigger a refetch — setQueryData
+                  // directly updates the cached data and triggers re-renders.
+                  qc.setQueryData(['profile', user?.id], (old: any) =>
+                    old ? { ...old, avatar_url: newAvatarUrl } : old
+                  );
+                  qc.setQueryData(['account-profile', user?.id], (old: any) =>
+                    old ? { ...old, avatar_url: newAvatarUrl } : old
+                  );
+                  qc.setQueryData(['my-profile-data'], (old: any) => {
+                    if (!old) return old;
+                    return {
+                      ...old,
+                      profile: old.profile ? { ...old.profile, avatar_url: newAvatarUrl } : old.profile,
+                    };
+                  });
+
+                  // Update localStorage cached profile as backup
                   try {
                     const cachedRaw = localStorage.getItem('swn_cached_profile');
                     if (cachedRaw) {
@@ -309,11 +327,6 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
                     }
                   } catch { /* ignore */ }
 
-                  // Invalidate all profile caches so avatar updates everywhere
-                  qc.invalidateQueries({ queryKey: ['profile'] });
-                  qc.invalidateQueries({ queryKey: ['account-profile'] });
-                  qc.invalidateQueries({ queryKey: ['filmmaker-profile'] });
-                  qc.invalidateQueries({ queryKey: ['my-profile-data'] });
                   onProfileUpdate();
                 }}
               />
