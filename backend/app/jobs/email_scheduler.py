@@ -433,59 +433,183 @@ async def process_campaign_sends():
                 )
 
                 if existing_sends["cnt"] == 0:
-                    # Run initial targeting — find matching contacts
-                    conditions = ["c.do_not_email IS NOT TRUE", "c.email IS NOT NULL"]
-                    params = {"cid": campaign_id}
+                    # Run initial targeting — process all 3 sources with dedup
+                    import json as _json
+                    seen_emails = set()
+                    total_inserted = 0
 
-                    if campaign.get("target_temperature") and len(campaign["target_temperature"]) > 0:
-                        conditions.append("c.temperature = ANY(:temps)")
-                        params["temps"] = campaign["target_temperature"]
+                    # --- Source 1: CRM Contacts ---
+                    if campaign.get("source_crm_contacts", True):
+                        conditions = ["c.do_not_email IS NOT TRUE", "c.email IS NOT NULL"]
+                        tgt_params = {"cid": campaign_id}
 
-                    if campaign.get("target_tags") and len(campaign["target_tags"]) > 0:
-                        conditions.append("c.tags && :tags")
-                        params["tags"] = campaign["target_tags"]
+                        if campaign.get("target_temperature") and len(campaign["target_temperature"]) > 0:
+                            conditions.append("c.temperature = ANY(:temps)")
+                            tgt_params["temps"] = campaign["target_temperature"]
 
-                    where_clause = " AND ".join(conditions)
-                    contacts = execute_query(
-                        f"""
-                        SELECT c.id, c.email, c.first_name, c.last_name, c.company
-                        FROM crm_contacts c
-                        WHERE {where_clause}
-                        ORDER BY c.created_at ASC
-                        """,
-                        params,
-                    )
+                        if campaign.get("target_tags") and len(campaign["target_tags"]) > 0:
+                            conditions.append("c.tags && :tags")
+                            tgt_params["tags"] = campaign["target_tags"]
 
-                    if not contacts:
-                        # No matching contacts — mark as sent immediately
+                        where_clause = " AND ".join(conditions)
+                        contacts = execute_query(
+                            f"""
+                            SELECT c.id, c.email, c.first_name, c.last_name, c.company
+                            FROM crm_contacts c
+                            WHERE {where_clause}
+                            ORDER BY c.created_at ASC
+                            """,
+                            tgt_params,
+                        )
+
+                        for contact in contacts:
+                            email_lower = (contact.get("email") or "").lower().strip()
+                            if email_lower in seen_emails:
+                                continue
+                            seen_emails.add(email_lower)
+                            execute_insert(
+                                """
+                                INSERT INTO crm_email_sends (campaign_id, contact_id, status, recipient_email, recipient_name, recipient_source)
+                                VALUES (:cid, :contact_id, 'pending', :email, :name, 'crm_contact')
+                                RETURNING id
+                                """,
+                                {
+                                    "cid": campaign_id,
+                                    "contact_id": contact["id"],
+                                    "email": contact.get("email"),
+                                    "name": f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip(),
+                                },
+                            )
+                            total_inserted += 1
+
+                        logger.info(f"Campaign {campaign_id}: CRM source → {total_inserted} contacts")
+
+                    # --- Source 2: Manual Emails ---
+                    if campaign.get("source_manual_emails"):
+                        raw = campaign.get("manual_recipients") or []
+                        if isinstance(raw, str):
+                            raw = _json.loads(raw)
+
+                        manual_count = 0
+                        for entry in raw:
+                            email = (entry.get("email") or "").lower().strip()
+                            if not email or email in seen_emails:
+                                continue
+                            # DNC check
+                            dnc = execute_single(
+                                "SELECT id FROM crm_contacts WHERE LOWER(email) = :email AND (do_not_email = true OR status = 'do_not_contact')",
+                                {"email": email},
+                            )
+                            if dnc:
+                                continue
+                            seen_emails.add(email)
+                            name = f"{entry.get('first_name', '')} {entry.get('last_name', '')}".strip()
+                            execute_insert(
+                                """
+                                INSERT INTO crm_email_sends (campaign_id, contact_id, status, recipient_email, recipient_name, recipient_source)
+                                VALUES (:cid, NULL, 'pending', :email, :name, 'manual')
+                                RETURNING id
+                                """,
+                                {"cid": campaign_id, "email": email, "name": name},
+                            )
+                            total_inserted += 1
+                            manual_count += 1
+
+                        logger.info(f"Campaign {campaign_id}: manual source → {manual_count} emails")
+
+                    # --- Source 3: Site Users ---
+                    if campaign.get("source_site_users"):
+                        ALLOWED_ROLE_FIELDS = {
+                            "is_filmmaker", "is_partner", "is_order_member", "is_premium",
+                            "is_sales_agent", "is_sales_rep", "is_media_team", "is_admin",
+                        }
+                        su_conditions = ["p.email IS NOT NULL"]
+                        su_params = {"cid": campaign_id}
+
+                        target_roles = campaign.get("target_roles") or []
+                        role_conds = []
+                        for role in target_roles:
+                            if role in ALLOWED_ROLE_FIELDS:
+                                role_conds.append(f"p.{role} = true")
+                        if role_conds:
+                            su_conditions.append(f"({' OR '.join(role_conds)})")
+
+                        target_tiers = campaign.get("target_subscription_tiers") or []
+                        if target_tiers:
+                            su_conditions.append("""
+                                EXISTS (
+                                    SELECT 1 FROM organization_members om
+                                    JOIN organizations o ON o.id = om.organization_id
+                                    JOIN organization_tiers ot ON ot.id = o.tier_id
+                                    WHERE om.profile_id = p.id AND LOWER(ot.name) = ANY(:tiers)
+                                )
+                            """)
+                            su_params["tiers"] = [t.lower() for t in target_tiers]
+
+                        su_conditions.append("""
+                            NOT EXISTS (
+                                SELECT 1 FROM crm_contacts dnc
+                                WHERE LOWER(dnc.email) = LOWER(p.email)
+                                AND (dnc.do_not_email = true OR dnc.status = 'do_not_contact')
+                            )
+                        """)
+
+                        su_where = " AND ".join(su_conditions)
+                        site_users = execute_query(
+                            f"""
+                            SELECT p.id, p.full_name, p.email
+                            FROM profiles p
+                            WHERE {su_where}
+                            ORDER BY p.created_at ASC
+                            """,
+                            su_params,
+                        )
+
+                        su_count = 0
+                        for user in site_users:
+                            email_lower = (user.get("email") or "").lower().strip()
+                            if email_lower in seen_emails:
+                                continue
+                            seen_emails.add(email_lower)
+                            execute_insert(
+                                """
+                                INSERT INTO crm_email_sends (campaign_id, contact_id, status, recipient_email, recipient_name, recipient_source, profile_id)
+                                VALUES (:cid, NULL, 'pending', :email, :name, 'site_user', :pid)
+                                RETURNING id
+                                """,
+                                {
+                                    "cid": campaign_id,
+                                    "email": user.get("email"),
+                                    "name": user.get("full_name") or "",
+                                    "pid": user["id"],
+                                },
+                            )
+                            total_inserted += 1
+                            su_count += 1
+
+                        logger.info(f"Campaign {campaign_id}: site users source → {su_count} users")
+
+                    if total_inserted == 0:
                         execute_single(
                             "UPDATE crm_email_campaigns SET status = 'sent', updated_at = NOW() WHERE id = :cid RETURNING id",
                             {"cid": campaign_id},
                         )
-                        logger.info(f"Campaign {campaign_id}: no matching contacts, marked as sent")
+                        logger.info(f"Campaign {campaign_id}: no matching recipients across all sources, marked as sent")
                         continue
 
-                    # Batch insert pending sends
-                    for contact in contacts:
-                        execute_insert(
-                            """
-                            INSERT INTO crm_email_sends (campaign_id, contact_id, status)
-                            VALUES (:cid, :contact_id, 'pending')
-                            RETURNING id
-                            """,
-                            {"cid": campaign_id, "contact_id": contact["id"]},
-                        )
+                    logger.info(f"Campaign {campaign_id}: targeted {total_inserted} total recipients")
 
-                    logger.info(f"Campaign {campaign_id}: targeted {len(contacts)} contacts")
-
-                # Step 3b: Process pending sends in batches
+                # Step 3b: Process pending sends in batches (LEFT JOIN for non-contact sends)
                 pending_sends = execute_query(
                     """
-                    SELECT s.id as send_id, s.contact_id,
-                           c.email as contact_email, c.first_name, c.last_name, c.company,
+                    SELECT s.id as send_id, s.contact_id, s.recipient_source, s.profile_id,
+                           COALESCE(c.email, s.recipient_email) as contact_email,
+                           COALESCE(c.first_name, SPLIT_PART(s.recipient_name, ' ', 1)) as first_name,
+                           COALESCE(c.last_name, NULLIF(SUBSTRING(s.recipient_name FROM POSITION(' ' IN s.recipient_name) + 1), '')) as last_name,
+                           COALESCE(c.company, '') as company,
                            c.assigned_rep_id
                     FROM crm_email_sends s
-                    JOIN crm_contacts c ON c.id = s.contact_id
+                    LEFT JOIN crm_contacts c ON c.id = s.contact_id
                     WHERE s.campaign_id = :cid AND s.status = 'pending'
                     ORDER BY s.created_at ASC
                     LIMIT :batch_size
@@ -660,16 +784,17 @@ async def process_campaign_sends():
                             {"cs_id": sender["cs_id"]},
                         )
 
-                        # Auto-increment interaction counter + create activity
+                        # Auto-increment interaction counter + create activity (only for CRM contacts)
                         from app.api.crm_email_helpers import increment_email_interaction, create_email_activity
                         increment_email_interaction(sender["profile_id"], "campaign_emails")
-                        create_email_activity(
-                            contact_id=send["contact_id"],
-                            rep_id=sender["profile_id"],
-                            activity_type="email_campaign",
-                            subject=f"Campaign: {subject}",
-                            description=f"Campaign email sent to {send['contact_email']}",
-                        )
+                        if send.get("contact_id"):
+                            create_email_activity(
+                                contact_id=send["contact_id"],
+                                rep_id=sender["profile_id"],
+                                activity_type="email_campaign",
+                                subject=f"Campaign: {subject}",
+                                description=f"Campaign email sent to {send['contact_email']}",
+                            )
 
                         logger.info(f"Campaign {campaign_id}: sent to {send['contact_email']} via {sender['email_address']}")
 
