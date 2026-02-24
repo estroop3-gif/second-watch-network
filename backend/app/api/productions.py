@@ -239,7 +239,7 @@ async def search_all_productions(
         # Also search public backlot projects (skip ones already linked)
         if q.strip():
             backlot_rows = execute_query("""
-                SELECT id, title, slug, production_type
+                SELECT id, title, slug
                 FROM backlot_projects
                 WHERE (title ILIKE :pattern)
                   AND visibility IN ('public', 'unlisted')
@@ -248,7 +248,7 @@ async def search_all_productions(
             """, {"pattern": f"%{q}%", "lim": limit})
         else:
             backlot_rows = execute_query("""
-                SELECT id, title, slug, production_type
+                SELECT id, title, slug
                 FROM backlot_projects
                 WHERE visibility IN ('public', 'unlisted')
                 ORDER BY updated_at DESC NULLS LAST
@@ -262,7 +262,7 @@ async def search_all_productions(
             results.append({
                 "id": f"backlot:{bid}",
                 "name": row.get("title") or "Untitled",
-                "production_type": row.get("production_type"),
+                "production_type": None,
                 "slug": row.get("slug"),
                 "source": "backlot",
             })
