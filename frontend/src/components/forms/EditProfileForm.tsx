@@ -51,6 +51,7 @@ const profileSchema = z.object({
   fullName: z.string().min(2, "Full name is required."),
   displayName: z.string().optional(),
   location: z.string().optional(),
+  birthdate: z.string().optional(),
   location_visible: z.boolean().default(true),
   portfolio_website: flexibleUrl.optional().or(z.literal('')),
   reel_links: z.array(z.object({ value: flexibleUrl.optional().or(z.literal('')) })).optional(),
@@ -92,6 +93,7 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
       fullName: profile?.full_name || '',
       displayName: profile?.display_name || '',
       location: profile?.location || '',
+      birthdate: profile?.birthdate || '',
       location_visible: profile?.location_visible ?? true,
       portfolio_website: profile?.portfolio_website || '',
       reel_links: profile?.reel_links?.map((link: string) => ({ value: link })) || [],
@@ -157,6 +159,7 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
         full_name: data.fullName || null,
         display_name: data.displayName || null,
         location_visible: true,
+        birthdate: data.birthdate || null,
       });
 
       // Step 2: Update filmmaker_profiles table (extended data)
@@ -280,9 +283,14 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
               <AvatarUploader
                 avatarUrl={profile?.avatar_url || session?.user?.user_metadata?.avatar_url}
                 onUploadSuccess={async (newAvatarUrl) => {
-                  // Re-fetch profile from server and update AuthContext state directly.
-                  // This is the only reliable way to propagate the avatar change because
-                  // AuthContext.profile is the source of truth for useProfile → EnrichedProfileContext → all UI.
+                  // Invalidate all profile-related React Query caches first so
+                  // stale data doesn't overwrite the new avatar URL on re-render.
+                  if (user?.id) {
+                    qc.invalidateQueries({ queryKey: ['account-profile', user.id] });
+                    qc.invalidateQueries({ queryKey: ['profile', user.id] });
+                    qc.invalidateQueries({ queryKey: ['filmmaker-profile', user.id] });
+                  }
+                  // Update AuthContext state with fresh server data
                   await refreshProfile();
                   onProfileUpdate();
                 }}
@@ -311,6 +319,15 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
                 </FormItem>
               )} />
             </div>
+          </div>
+          <div className="pt-6">
+            <FormField control={form.control} name="birthdate" render={({ field }) => (
+              <FormItem>
+                <FormLabel>Date of Birth</FormLabel>
+                <FormControl><Input type="date" {...field} /></FormControl>
+                <FormMessage />
+              </FormItem>
+            )} />
           </div>
            <div className="pt-6">
             <FormField control={form.control} name="location" render={({ field }) => (

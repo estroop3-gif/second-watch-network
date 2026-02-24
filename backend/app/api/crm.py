@@ -2932,6 +2932,39 @@ def add_email_inline_styles(html: str) -> str:
     return html
 
 
+def wrap_email_html(body_html: str, subject: str = "") -> str:
+    """Wrap an HTML body fragment in a proper email document structure.
+
+    CRM compose emails come as raw TipTap HTML fragments. Sending these without
+    a proper DOCTYPE / <html> / <head> / <body> wrapper is a significant spam
+    signal for Gmail, Outlook, and other providers.
+    """
+    return f"""<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="x-apple-disable-message-reformatting">
+    <meta name="format-detection" content="telephone=no, date=no, address=no, email=no">
+    <title>{subject}</title>
+    <!--[if mso]>
+    <noscript>
+        <xml>
+            <o:OfficeDocumentSettings>
+                <o:PixelsPerInch>96</o:PixelsPerInch>
+            </o:OfficeDocumentSettings>
+        </xml>
+    </noscript>
+    <![endif]-->
+</head>
+<body style="margin: 0; padding: 0; background-color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #1a1a1a; -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%;">
+    <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+        {body_html}
+    </div>
+</body>
+</html>"""
+
+
 # ============================================================================
 # CRM Email — Send
 # ============================================================================
@@ -2986,8 +3019,9 @@ async def send_crm_email(
         )
         thread_id = thread["id"]
 
-    # Build reply-to: sender's real address first, routing address for inbound webhook second
-    reply_to = [account["email_address"], f"reply+{thread_id}@theswn.com"]
+    # Reply-to uses only the routing address for inbound webhook routing.
+    # Having multiple reply-to addresses (especially across domains) hurts spam scores.
+    reply_to_address = f"reply+{thread_id}@theswn.com"
 
     # Append signature if exists
     body_html = data.body_html
@@ -3172,13 +3206,25 @@ async def send_crm_email(
     # Replace inline-image API URLs with long-lived presigned URLs for outbound delivery
     outbound_html = _resolve_inline_images_for_send(body_html)
 
+    # Wrap in proper HTML document structure (critical for deliverability)
+    styled_html = add_email_inline_styles(outbound_html)
+    full_html = wrap_email_html(styled_html, subject=data.subject)
+
+    # Build Resend headers for deliverability
+    import uuid as _uuid
+    send_headers = {
+        # Unique per-message ID prevents Gmail from collapsing unrelated emails into threads
+        "X-Entity-Ref-ID": str(_uuid.uuid4()),
+    }
+
     send_params = {
-        "from": f"{account['display_name']} <{account['email_address']}>",
+        "from": f'"{account["display_name"]}" <{account["email_address"]}>',
         "to": external_recipients,
         "subject": data.subject,
-        "html": add_email_inline_styles(outbound_html),
+        "html": full_html,
         "text": plain_text,
-        "reply_to": reply_to,
+        "reply_to": [f"reply+{thread_id}@theswn.com"],
+        "headers": send_headers,
     }
     if data.cc:
         send_params["cc"] = data.cc

@@ -3,7 +3,7 @@ Profile Schemas
 """
 from pydantic import BaseModel, EmailStr
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, date
 
 
 class ProfileBase(BaseModel):
@@ -26,12 +26,14 @@ class ProfileUpdate(ProfileBase):
     phone: Optional[str] = None
     department: Optional[str] = None
     job_title: Optional[str] = None
+    birthdate: Optional[date] = None
 
 
 class Profile(ProfileBase):
     id: str
     email: str
     display_name: Optional[str] = None
+    birthdate: Optional[date] = None
     cognito_user_id: Optional[str] = None
     is_admin: Optional[bool] = False
     is_superadmin: Optional[bool] = False

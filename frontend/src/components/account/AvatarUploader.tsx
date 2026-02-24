@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { toast } from 'sonner';
@@ -37,7 +37,17 @@ export const AvatarUploader: React.FC<AvatarUploaderProps> = ({ avatarUrl, onUpl
   const [isUploading, setIsUploading] = useState(false);
   // Local state to show the new avatar immediately after upload
   const [localAvatarUrl, setLocalAvatarUrl] = useState<string | null>(null);
+  // Track whether we have a confirmed upload so stale props can't override it
+  const confirmedUploadRef = useRef(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
+
+  // Once the prop catches up to the confirmed upload, clear local override
+  useEffect(() => {
+    if (confirmedUploadRef.current && avatarUrl && localAvatarUrl && avatarUrl === localAvatarUrl) {
+      confirmedUploadRef.current = false;
+      setLocalAvatarUrl(null);
+    }
+  }, [avatarUrl, localAvatarUrl]);
 
   const displayUrl = localAvatarUrl || avatarUrl;
 
@@ -99,8 +109,10 @@ export const AvatarUploader: React.FC<AvatarUploaderProps> = ({ avatarUrl, onUpl
         console.warn('[AvatarUploader] Image not immediately accessible at:', result.avatar_url);
       }
 
-      // Update local preview to the actual S3 URL
+      // Update local preview to the actual S3 URL and mark as confirmed
+      // so stale prop data from cache can't override it
       setLocalAvatarUrl(result.avatar_url);
+      confirmedUploadRef.current = true;
 
       // Revoke the blob URL
       URL.revokeObjectURL(localPreview);

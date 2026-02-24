@@ -15,7 +15,8 @@ router = APIRouter()
 class SignUpRequest(BaseModel):
     email: EmailStr
     password: str
-    full_name: str | None = None
+    full_name: str
+    birthdate: str | None = None  # ISO date string YYYY-MM-DD
 
 
 class SignInRequest(BaseModel):
@@ -79,14 +80,15 @@ async def sign_up(request: SignUpRequest):
         # Create profile in database
         try:
             profile = execute_insert("""
-                INSERT INTO profiles (cognito_user_id, email, full_name, display_name)
-                VALUES (:cognito_user_id, :email, :full_name, :display_name)
+                INSERT INTO profiles (cognito_user_id, email, full_name, display_name, birthdate)
+                VALUES (:cognito_user_id, :email, :full_name, :display_name, :birthdate)
                 RETURNING *
             """, {
                 "cognito_user_id": cognito_user["id"],
                 "email": request.email,
                 "full_name": request.full_name,
                 "display_name": request.full_name,
+                "birthdate": request.birthdate,
             })
         except Exception as e:
             print(f"Profile creation error: {e}")

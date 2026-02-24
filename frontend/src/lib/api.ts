@@ -325,10 +325,10 @@ class APIClient {
   // AUTHENTICATION
   // ============================================================================
 
-  async signUp(email: string, password: string, fullName?: string) {
+  async signUp(email: string, password: string, fullName: string, birthdate?: string) {
     const response = await this.request<{ access_token: string; user: any }>('/api/v1/auth/signup', {
       method: 'POST',
-      body: JSON.stringify({ email, password, full_name: fullName }),
+      body: JSON.stringify({ email, password, full_name: fullName, birthdate }),
     })
     if (response.access_token) {
       this.setToken(response.access_token)

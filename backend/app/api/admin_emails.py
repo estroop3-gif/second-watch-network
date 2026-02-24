@@ -1007,13 +1007,23 @@ async def send_admin_email(
         reply_to_address = f"reply+{thread_id}@theswn.com"
         from_header = f'"{account["display_name"]}" <{account["email_address"]}>'
 
+        import uuid as _uuid
+        from app.api.crm import wrap_email_html, add_email_inline_styles
+
+        # Wrap in proper HTML document structure for deliverability
+        styled_html = add_email_inline_styles(body_html)
+        full_html = wrap_email_html(styled_html, subject=data.subject)
+
         send_params = {
             "from": from_header,
             "to": data.to_emails,
             "subject": data.subject,
-            "html": body_html,
+            "html": full_html,
             "text": plain_text,
-            "reply_to": [account["email_address"], reply_to_address],
+            "reply_to": [reply_to_address],
+            "headers": {
+                "X-Entity-Ref-ID": str(_uuid.uuid4()),
+            },
         }
         if data.cc:
             send_params["cc"] = data.cc

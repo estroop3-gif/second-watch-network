@@ -6,6 +6,8 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import CampaignStatusBadge from '@/components/crm/CampaignStatusBadge';
 import {
   useCampaign,
@@ -47,6 +49,7 @@ const CampaignDetail = () => {
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<any>(null);
   const [editSenderIds, setEditSenderIds] = useState<string[]>([]);
+  const [editSenderMode, setEditSenderMode] = useState<'rotate_all' | 'single' | 'select' | 'rep_match'>('select');
 
   if (isLoading) return <div className="text-muted-gray">Loading campaign...</div>;
   if (!campaign) return <div className="text-muted-gray">Campaign not found</div>;
@@ -57,7 +60,7 @@ const CampaignDetail = () => {
   const canCancel = campaign.status === 'draft' || campaign.status === 'scheduled';
   const canDelete = campaign.status === 'draft';
   const senders = campaign.senders || [];
-  const hasSenders = senders.length > 0;
+  const hasSenders = campaign.sender_mode === 'rotate_all' || campaign.sender_mode === 'rep_match' || senders.length > 0;
 
   const startEdit = () => {
     setEditForm({
@@ -68,14 +71,16 @@ const CampaignDetail = () => {
       text_template: campaign.text_template || '',
     });
     setEditSenderIds(senders.map((s: any) => s.account_id));
+    setEditSenderMode(campaign.sender_mode || 'select');
     setEditing(true);
   };
 
   const saveEdit = () => {
-    updateCampaign.mutate({ id: id!, data: editForm }, {
+    updateCampaign.mutate({ id: id!, data: { ...editForm, sender_mode: editSenderMode } }, {
       onSuccess: () => {
-        // Also update senders
-        updateSenders.mutate({ id: id!, accountIds: editSenderIds });
+        // Also update senders (for single/select modes; rotate_all/rep_match clears them)
+        const ids = (editSenderMode === 'rotate_all' || editSenderMode === 'rep_match') ? [] : editSenderIds;
+        updateSenders.mutate({ id: id!, accountIds: ids });
         setEditing(false);
       },
     });
@@ -217,24 +222,88 @@ const CampaignDetail = () => {
             />
           </div>
 
-          {/* Sender selection in edit mode */}
+          {/* Sender mode selection in edit mode */}
           {allAccounts.length > 0 && (
             <div>
-              <Label className="mb-2 block">Sender Accounts</Label>
-              <div className="space-y-2 max-h-40 overflow-y-auto border border-muted-gray/20 rounded-md p-3">
-                {allAccounts.map((acct: any) => (
-                  <label key={acct.id} className="flex items-center gap-3 cursor-pointer">
-                    <Checkbox
-                      checked={editSenderIds.includes(acct.id)}
-                      onCheckedChange={() => toggleEditSender(acct.id)}
-                    />
-                    <div className="text-sm">
-                      <span className="text-bone-white">{acct.display_name}</span>
-                      <span className="text-muted-gray ml-2">{acct.email_address}</span>
-                    </div>
-                  </label>
-                ))}
-              </div>
+              <Label className="mb-2 block">Sender Mode</Label>
+              <RadioGroup
+                value={editSenderMode}
+                onValueChange={(v) => {
+                  const mode = v as typeof editSenderMode;
+                  setEditSenderMode(mode);
+                  if (mode === 'rotate_all' || mode === 'rep_match') setEditSenderIds([]);
+                }}
+                className="space-y-3"
+              >
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <RadioGroupItem value="rotate_all" className="mt-0.5" />
+                  <div className="text-sm">
+                    <span className="text-bone-white">Rotate All Active Accounts</span>
+                    <span className="text-muted-gray ml-1">({allAccounts.length} accounts)</span>
+                    <p className="text-xs text-muted-gray mt-0.5">Distributes evenly across all active email accounts.</p>
+                  </div>
+                </label>
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <RadioGroupItem value="single" className="mt-0.5" />
+                  <div className="text-sm">
+                    <span className="text-bone-white">Single Account</span>
+                    <p className="text-xs text-muted-gray mt-0.5">Every email sent from one specific address.</p>
+                  </div>
+                </label>
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <RadioGroupItem value="select" className="mt-0.5" />
+                  <div className="text-sm">
+                    <span className="text-bone-white">Select Specific Accounts</span>
+                    <p className="text-xs text-muted-gray mt-0.5">Manually choose which accounts to rotate across.</p>
+                  </div>
+                </label>
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <RadioGroupItem value="rep_match" className="mt-0.5" />
+                  <div className="text-sm">
+                    <span className="text-bone-white">Rep Match</span>
+                    <p className="text-xs text-muted-gray mt-0.5">Each contact receives the email from their assigned rep's email account. Contacts without an assigned rep are skipped.</p>
+                  </div>
+                </label>
+              </RadioGroup>
+
+              {/* Single account dropdown */}
+              {editSenderMode === 'single' && (
+                <div className="mt-3">
+                  <Select
+                    value={editSenderIds[0] || ''}
+                    onValueChange={(v) => setEditSenderIds([v])}
+                  >
+                    <SelectTrigger className="bg-charcoal-black border-muted-gray/30">
+                      <SelectValue placeholder="Choose an account..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {allAccounts.map((acct: any) => (
+                        <SelectItem key={acct.id} value={acct.id}>
+                          {acct.display_name} — {acct.email_address}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              {/* Multi-select checkboxes */}
+              {editSenderMode === 'select' && (
+                <div className="mt-3 space-y-2 max-h-40 overflow-y-auto border border-muted-gray/20 rounded-md p-3">
+                  {allAccounts.map((acct: any) => (
+                    <label key={acct.id} className="flex items-center gap-3 cursor-pointer">
+                      <Checkbox
+                        checked={editSenderIds.includes(acct.id)}
+                        onCheckedChange={() => toggleEditSender(acct.id)}
+                      />
+                      <div className="text-sm">
+                        <span className="text-bone-white">{acct.display_name}</span>
+                        <span className="text-muted-gray ml-2">{acct.email_address}</span>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -267,9 +336,21 @@ const CampaignDetail = () => {
           )}
 
           {/* Sender Accounts */}
-          {senders.length > 0 && (
-            <div className="bg-charcoal-black border border-muted-gray/30 rounded-lg p-6 mb-6">
-              <h2 className="text-lg font-medium text-bone-white mb-3">Sender Accounts</h2>
+          <div className="bg-charcoal-black border border-muted-gray/30 rounded-lg p-6 mb-6">
+            <h2 className="text-lg font-medium text-bone-white mb-3">Sender Accounts</h2>
+            <div className="text-sm text-muted-gray mb-3">
+              Mode:{' '}
+              <span className="text-bone-white">
+                {campaign.sender_mode === 'rotate_all'
+                  ? 'Rotate All Active Accounts'
+                  : campaign.sender_mode === 'single'
+                    ? `Single Account${senders[0] ? `: ${senders[0].email_address}` : ''}`
+                    : campaign.sender_mode === 'rep_match'
+                      ? "Rep Match (each contact's assigned rep)"
+                      : `${senders.length} Selected Account${senders.length !== 1 ? 's' : ''}`}
+              </span>
+            </div>
+            {senders.length > 0 && (
               <div className="space-y-2">
                 {senders.map((sender: any) => (
                   <div key={sender.id} className="flex items-center justify-between text-sm">
@@ -286,8 +367,8 @@ const CampaignDetail = () => {
                   </div>
                 ))}
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           {/* Preview Targeting */}
           {canEdit && targeting && (

@@ -62,7 +62,7 @@ interface AuthContextType {
   bootstrapError: string | null;
   signIn: (email: string, password: string) => Promise<SignInResult>;
   completeNewPassword: (email: string, newPassword: string, session: string) => Promise<void>;
-  signUp: (email: string, password: string, fullName?: string) => Promise<SignUpResult>;
+  signUp: (email: string, password: string, fullName: string, birthdate?: string) => Promise<SignUpResult>;
   confirmSignUp: (email: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
   retryBootstrap: () => Promise<boolean>;
@@ -530,9 +530,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const signUp = async (email: string, password: string, fullName?: string): Promise<SignUpResult> => {
+  const signUp = async (email: string, password: string, fullName: string, birthdate?: string): Promise<SignUpResult> => {
     try {
-      const data = await api.signUp(email, password, fullName);
+      const data = await api.signUp(email, password, fullName, birthdate);
 
       // Check if Cognito requires email confirmation
       if (data.access_token === 'pending_confirmation') {

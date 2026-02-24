@@ -34,6 +34,140 @@ const PRODUCTION_TYPE_LABELS: Record<string, string> = {
   news_eng: 'News/ENG',
 };
 
+// ─── Department Sort Order (IMDB-style hierarchy) ───────────────────────────
+
+const DEPARTMENT_SORT_ORDER: Record<string, number> = {
+  // Talent / Cast (1–9)
+  'Actor': 1,
+  'Voice Actor': 2,
+  'Background Actor / Extra': 3,
+  'Stand-In': 4,
+  'Photo Double': 5,
+  'Stunt Performer': 6,
+  'Stunt Double': 7,
+  'Stunt Coordinator': 8,
+  'Fight Choreographer': 9,
+
+  // Direction (10–14)
+  'Director': 10,
+  '1st Assistant Director': 11,
+  '2nd Assistant Director': 12,
+  '2nd 2nd Assistant Director': 13,
+  'Script Supervisor': 14,
+
+  // Writing (15–19)
+  'Screenwriter': 15,
+  'Staff Writer': 16,
+  'Story Editor': 17,
+  'Script Doctor': 18,
+
+  // Production (20–29)
+  'Producer': 20,
+  'Executive Producer': 21,
+  'Line Producer': 22,
+  'Co-Producer': 23,
+  'Associate Producer': 24,
+  'Unit Production Manager (UPM)': 25,
+  'Production Supervisor': 26,
+  'Production Coordinator': 27,
+  'Production Secretary': 28,
+  'Production Assistant (PA)': 29,
+  'Office PA': 29,
+  'Set PA': 29,
+
+  // Camera (30–39)
+  'Director of Photography (DP)': 30,
+  'Cinematographer': 31,
+  'Camera Operator': 32,
+  '1st Assistant Camera (Focus Puller)': 33,
+  '2nd Assistant Camera (Clapper/Loader)': 34,
+  'Digital Imaging Technician (DIT)': 35,
+  'Steadicam Operator': 36,
+  'Drone Operator': 37,
+  'Camera Trainee': 38,
+
+  // Lighting & Grip (40–49)
+  'Gaffer': 40,
+  'Best Boy Electric': 41,
+  'Electrician': 42,
+  'Lamp Operator': 43,
+  'Rigging Gaffer': 44,
+  'Key Grip': 45,
+  'Best Boy Grip': 46,
+  'Dolly Grip': 47,
+  'Grip': 48,
+  'Rigging Grip': 49,
+
+  // Post-Production (50–54)
+  'Editor': 50,
+  'Assistant Editor': 51,
+  'Post-Production Supervisor': 52,
+  'Post-Production Coordinator': 53,
+  'Colorist': 54,
+  'Online Editor': 55,
+  'Dailies Operator': 56,
+
+  // Sound (57–64)
+  'Production Sound Mixer': 57,
+  'Sound Mixer': 58,
+  'Boom Operator': 59,
+  'Sound Utility': 60,
+  'Sound Assistant': 61,
+  'Sound Designer': 62,
+  'Supervising Sound Editor': 63,
+  'Dialogue Editor': 64,
+  'Sound Effects Editor': 65,
+  'Foley Artist': 66,
+  'Foley Mixer': 67,
+  'ADR Supervisor': 68,
+  'Re-Recording Mixer': 69,
+  'Playback Operator': 70,
+
+  // VFX (71–79)
+  'VFX Supervisor': 71,
+  'VFX Producer': 72,
+  'VFX Coordinator': 73,
+  'VFX Artist': 74,
+  'Compositor': 75,
+  'Roto Artist': 76,
+  'Matchmove Artist': 77,
+  '3D Artist': 78,
+  'Matte Painter': 79,
+
+  // Art Department (80–84)
+  'Production Designer': 80,
+  'Art Director': 81,
+  'Assistant Art Director': 82,
+  'Set Designer': 83,
+  'Set Decorator': 84,
+  'Leadman': 85,
+  'Set Dresser': 86,
+  'Property Master': 87,
+  'Property Assistant': 88,
+  'Buyer': 89,
+  'Art Department Coordinator': 90,
+  'Scenic Artist': 91,
+  'Graphic Designer': 92,
+
+  // Wardrobe (93–95)
+  'Costume Designer': 93,
+  'Assistant Costume Designer': 94,
+  'Costume Supervisor': 95,
+  'Key Costumer': 96,
+  'Costumer': 97,
+  'Wardrobe Assistant': 98,
+
+  // Music (100–103)
+  'Composer': 100,
+  'Music Supervisor': 101,
+  'Music Editor': 102,
+  'Music Coordinator': 103,
+};
+
+function getPositionSortKey(position: string): number {
+  return DEPARTMENT_SORT_ORDER[position] ?? 99;
+}
+
 // ─── Loading Skeleton ────────────────────────────────────────────────────────
 
 const LoadingSkeleton: React.FC = () => (
@@ -63,12 +197,25 @@ const LoadingSkeleton: React.FC = () => (
           <Skeleton key={i} className="h-20 rounded-lg" />
         ))}
       </div>
-      {/* Filmography skeleton */}
-      <div className="space-y-3">
-        {[...Array(5)].map((_, i) => (
-          <Skeleton key={i} className="h-14 w-full rounded-lg" />
-        ))}
-      </div>
+      {/* Filmography skeleton — IMDB poster row style */}
+      {[...Array(3)].map((_, g) => (
+        <div key={g} className="mb-8">
+          <div className="flex items-center gap-3 py-2 border-b-2 border-muted-gray/20 mb-2">
+            <Skeleton className="h-6 w-28" />
+            <Skeleton className="h-4 w-16" />
+          </div>
+          {[...Array(3)].map((_, r) => (
+            <div key={r} className="flex items-start gap-3 py-3 px-2">
+              <Skeleton className="w-[46px] h-[68px] rounded flex-shrink-0" />
+              <div className="flex-1 space-y-2 py-0.5">
+                <Skeleton className="h-4 w-3/4" />
+                <Skeleton className="h-3 w-20" />
+                <Skeleton className="h-3 w-1/2" />
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
     </div>
   </div>
 );
@@ -102,6 +249,7 @@ interface KnownForCredit {
   production_slug: string;
   year: number | null;
   poster_url: string | null;
+  description?: string | null;
 }
 
 const PosterCard: React.FC<{ credit: KnownForCredit }> = ({ credit }) => {
@@ -127,6 +275,9 @@ const PosterCard: React.FC<{ credit: KnownForCredit }> = ({ credit }) => {
         <p className="text-xs text-muted-gray">{credit.year}</p>
       )}
       <p className="text-xs text-muted-gray/70 truncate">{credit.position}</p>
+      {credit.description && (
+        <p className="text-xs text-muted-gray/50 truncate">{credit.description}</p>
+      )}
     </div>
   );
 
@@ -140,33 +291,106 @@ const PosterCard: React.FC<{ credit: KnownForCredit }> = ({ credit }) => {
   return card;
 };
 
-// ─── Filmography Group (Collapsible) ─────────────────────────────────────────
+// ─── IMDB-Style Filmography Credit Row ──────────────────────────────────────
 
-interface FilmographyGroupProps {
+const FilmographyCreditRow: React.FC<{ credit: any }> = ({ credit }) => {
+  const inner = (
+    <div className="flex items-start gap-3 py-3 px-2 hover:bg-muted-gray/5 rounded transition-colors group">
+      {/* Poster thumbnail — like IMDB's redesigned name page */}
+      <div className="w-[46px] h-[68px] flex-shrink-0 rounded overflow-hidden bg-muted-gray/10">
+        {credit.poster_url ? (
+          <img
+            src={credit.poster_url}
+            alt={credit.production_name}
+            className="w-full h-full object-cover"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <Film className="w-5 h-5 text-muted-gray/20" />
+          </div>
+        )}
+      </div>
+
+      {/* Credit info */}
+      <div className="flex-1 min-w-0 py-0.5">
+        {/* Title */}
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-bone-white group-hover:text-accent-yellow transition-colors truncate">
+            {credit.production_name}
+          </span>
+          {credit.source === 'backlot' && (
+            <Badge className="text-[10px] px-1.5 py-0 h-4 bg-accent-yellow/15 text-accent-yellow border-accent-yellow/30 font-medium flex-shrink-0">
+              Backlot
+            </Badge>
+          )}
+        </div>
+
+        {/* Year + production type */}
+        <div className="flex items-center gap-2 mt-0.5">
+          {credit.year && (
+            <span className="text-sm tabular-nums text-muted-gray">{credit.year}</span>
+          )}
+          {credit.production_type && (
+            <span className="text-xs text-muted-gray/60">
+              {PRODUCTION_TYPE_LABELS[credit.production_type] || credit.production_type}
+            </span>
+          )}
+        </div>
+
+        {/* Character / role description */}
+        {credit.description && (
+          <p className="text-sm text-muted-gray/80 mt-0.5 truncate">
+            {credit.description}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+
+  if (credit.production_slug) {
+    return (
+      <Link to={`/slate/${credit.production_slug}`} className="block">
+        {inner}
+      </Link>
+    );
+  }
+  return inner;
+};
+
+// ─── IMDB-Style Filmography Group (Collapsible) ─────────────────────────────
+
+interface IMDBFilmographyGroupProps {
   position: string;
   credits: any[];
   defaultOpen: boolean;
 }
 
-const FilmographyGroup: React.FC<FilmographyGroupProps> = ({ position, credits, defaultOpen }) => {
+const IMDBFilmographyGroup: React.FC<IMDBFilmographyGroupProps> = ({ position, credits, defaultOpen }) => {
   const [isOpen, setIsOpen] = useState(defaultOpen);
 
+  // Sort: year desc, backlot (no year) to bottom
   const sorted = useMemo(
-    () => [...credits].sort((a, b) => (b.year || 0) - (a.year || 0)),
+    () => [...credits].sort((a, b) => {
+      if (a.year && b.year) return b.year - a.year;
+      if (a.year && !b.year) return -1;
+      if (!a.year && b.year) return 1;
+      return a.production_name.localeCompare(b.production_name);
+    }),
     [credits]
   );
 
   return (
-    <div className="border border-muted-gray/20 rounded-lg overflow-hidden">
+    <div className="mb-8">
+      {/* Group header — IMDB style: bold category with yellow accent bar */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between px-4 py-3 bg-muted-gray/5 hover:bg-muted-gray/10 transition-colors"
+        className="w-full flex items-center justify-between py-2 border-b-2 border-accent-yellow/40 hover:border-accent-yellow transition-colors"
       >
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <span className="text-bone-white font-heading text-lg">{position}</span>
-          <Badge variant="outline" className="text-xs border-muted-gray/30 text-muted-gray">
-            {credits.length}
-          </Badge>
+          <span className="text-sm text-muted-gray">
+            {credits.length} {credits.length === 1 ? 'credit' : 'credits'}
+          </span>
         </div>
         {isOpen ? (
           <ChevronUp className="w-5 h-5 text-muted-gray" />
@@ -175,51 +399,12 @@ const FilmographyGroup: React.FC<FilmographyGroupProps> = ({ position, credits, 
         )}
       </button>
 
+      {/* Credit rows with poster thumbnails */}
       {isOpen && (
-        <div className="divide-y divide-muted-gray/10">
-          {sorted.map((credit) => {
-            const row = (
-              <div
-                key={credit.id}
-                className="flex items-center justify-between px-4 py-3 hover:bg-muted-gray/5 transition-colors group"
-              >
-                <span className="text-bone-white group-hover:text-accent-yellow transition-colors truncate flex-1 mr-4 flex items-center gap-2">
-                  {credit.production_name}
-                  {credit.source === 'backlot' && (
-                    <Badge className="text-[10px] px-1.5 py-0 h-4 bg-accent-yellow/15 text-accent-yellow border-accent-yellow/30 font-medium">
-                      Backlot
-                    </Badge>
-                  )}
-                </span>
-                <div className="flex items-center gap-3 flex-shrink-0">
-                  {credit.production_type && (
-                    <Badge
-                      variant="outline"
-                      className="text-[10px] px-2 py-0 h-5 border-primary-red/30 text-primary-red hidden sm:inline-flex"
-                    >
-                      {PRODUCTION_TYPE_LABELS[credit.production_type] || credit.production_type}
-                    </Badge>
-                  )}
-                  {credit.year && (
-                    <span className="text-sm text-muted-gray tabular-nums">{credit.year}</span>
-                  )}
-                </div>
-              </div>
-            );
-
-            if (credit.production_slug) {
-              return (
-                <Link
-                  key={credit.id}
-                  to={`/slate/${credit.production_slug}`}
-                  className="block"
-                >
-                  {row}
-                </Link>
-              );
-            }
-            return <div key={credit.id}>{row}</div>;
-          })}
+        <div className="mt-1">
+          {sorted.map((credit) => (
+            <FilmographyCreditRow key={credit.id} credit={credit} />
+          ))}
         </div>
       )}
     </div>
@@ -249,6 +434,7 @@ const SlatePersonPage: React.FC = () => {
       production_type: null,
       year: null,
       poster_url: null,
+      description: c.description || null,
       source: 'backlot',
     }));
 
@@ -289,9 +475,9 @@ const SlatePersonPage: React.FC = () => {
       if (!groupedByPosition[pos]) groupedByPosition[pos] = [];
       groupedByPosition[pos].push(c);
     });
-    // Sort groups by count (largest first)
+    // Sort groups by IMDB department hierarchy (talent first, then direction, etc.)
     const positionGroups = Object.entries(groupedByPosition).sort(
-      ([, a], [, b]) => b.length - a.length
+      ([posA], [posB]) => getPositionSortKey(posA) - getPositionSortKey(posB)
     );
 
     return {
@@ -426,13 +612,13 @@ const SlatePersonPage: React.FC = () => {
               <Film className="w-5 h-5" />
               Filmography
             </h2>
-            <div className="space-y-3">
+            <div>
               {positionGroups.map(([position, groupCredits], index) => (
-                <FilmographyGroup
+                <IMDBFilmographyGroup
                   key={position}
                   position={position}
                   credits={groupCredits}
-                  defaultOpen={index === 0}
+                  defaultOpen={index < 3}
                 />
               ))}
             </div>

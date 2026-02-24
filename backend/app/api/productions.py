@@ -74,10 +74,20 @@ class Production(BaseModel):
 
 
 def _generate_slug(name: str) -> str:
-    """Generate a URL-safe slug from a production name."""
+    """Generate a unique URL-safe slug from a production name."""
     import re
-    slug = re.sub(r'[^a-zA-Z0-9]+', '-', name.lower()).strip('-')
-    return slug or 'untitled'
+    base = re.sub(r'[^a-zA-Z0-9]+', '-', name.lower()).strip('-') or 'untitled'
+    slug = base
+    counter = 0
+    while True:
+        existing = execute_single(
+            "SELECT id FROM productions WHERE slug = :slug",
+            {"slug": slug}
+        )
+        if not existing:
+            return slug
+        counter += 1
+        slug = f"{base}-{counter}"
 
 
 @router.get("")

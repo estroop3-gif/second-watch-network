@@ -19,7 +19,6 @@ import { api } from "@/lib/api";
 import { useState, useMemo, useRef } from "react";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import PasswordStrengthMeter from "../PasswordStrengthMeter";
-import { useSettings } from "@/context/SettingsContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { track } from "@/utils/telemetry";
 import { Separator } from "@/components/ui/separator";
@@ -29,9 +28,10 @@ import { useAuth } from "@/context/AuthContext";
 import { LocationAutocomplete, LocationData } from "@/components/ui/location-autocomplete";
 
 const baseSchema = z.object({
-  fullName: z.string(),
+  fullName: z.string().min(2, "Please enter your full name."),
   displayName: z.string().optional(),
   location: z.string().min(2, "Please enter your city & state."),
+  birthdate: z.string().min(1, "Please enter your date of birth."),
   email: z.string().email("Please enter a valid email address."),
   password: z.string()
     .min(8, "Password must be at least 8 characters.")
@@ -60,20 +60,13 @@ export function SignupForm() {
 
   const { signUp, confirmSignUp, signIn } = useAuth();
   const navigate = useNavigate();
-  const { settings } = useSettings();
 
   const formSchema = useMemo(() => {
-    let schema = baseSchema;
-    if (settings?.required_signup_fields?.includes('fullName')) {
-      schema = schema.extend({
-        fullName: z.string().min(2, "Please enter your full name."),
-      });
-    }
-    return schema.refine((data) => data.password === data.confirmPassword, {
+    return baseSchema.refine((data) => data.password === data.confirmPassword, {
       message: "Passwords don't match",
       path: ["confirmPassword"],
     });
-  }, [settings]);
+  }, []);
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -81,6 +74,7 @@ export function SignupForm() {
       fullName: "",
       displayName: "",
       location: "",
+      birthdate: "",
       email: "",
       password: "",
       confirmPassword: "",
@@ -165,7 +159,7 @@ export function SignupForm() {
     setOpenLoading(true);
 
     try {
-      const result = await signUp(values.email, values.password, values.fullName);
+      const result = await signUp(values.email, values.password, values.fullName, values.birthdate);
 
       setIsLoading(false);
       setOpenLoading(false);
@@ -253,6 +247,19 @@ export function SignupForm() {
                     placeholder="Start typing a city..."
                     mode="city"
                   />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="birthdate"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel className="font-heading uppercase text-bone-white">Date of Birth</FormLabel>
+                <FormControl>
+                  <Input type="date" {...field} className="bg-charcoal-black border-muted-gray focus:border-accent-yellow" />
                 </FormControl>
                 <FormMessage />
               </FormItem>

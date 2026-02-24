@@ -39,6 +39,7 @@ import PublicLayout from "./components/PublicLayout";
 import OnboardingGate from "./components/OnboardingGate";
 import PlatformStatusGate from "./components/PlatformStatusGate";
 import PermissionRoute from "./components/PermissionRoute";
+import ProfileRequiredGate from "./components/ProfileRequiredGate";
 
 // --- Lazy imports (code-split by feature area) ---
 
@@ -435,7 +436,7 @@ const App = () => (
                     <Route path="/applications-received" element={<ApplicationsReceived />} />
                     <Route path="/messages" element={<Messages />} />
                     <Route path="/my-profile" element={<MyProfile />} />
-                    <Route path="/filmmakers" element={<Filmmakers />} />
+                    <Route path="/filmmakers" element={<ProfileRequiredGate><Filmmakers /></ProfileRequiredGate>} />
                     <Route path="/the-backlot" element={<TheBacklot />} />
                     <Route path="/the-backlot/threads/:threadId" element={<ThreadPage />} />
 

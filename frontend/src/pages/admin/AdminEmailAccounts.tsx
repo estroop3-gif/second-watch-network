@@ -10,8 +10,6 @@ import {
   useGrantAdminEmailAccess,
   useRevokeAdminEmailAccess,
 } from '@/hooks/useAdminEmail';
-import { useFormDraft } from '@/hooks/useFormDraft';
-import { buildDraftKey } from '@/lib/formDraftStorage';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -139,22 +137,20 @@ const AdminEmailAccounts = () => {
 // ============================================================================
 
 const CreateAccountDialog = ({ onClose }: { onClose: () => void }) => {
-  const { formData, setFormData, clearDraft } = useFormDraft({
-    key: buildDraftKey('admin', 'email-account', 'new'),
-    initialData: { email: '', displayName: '', accountType: 'admin' },
-  });
+  const [email, setEmail] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [accountType, setAccountType] = useState('admin');
   const create = useCreateAdminEmailAccount();
 
   const handleSubmit = () => {
-    if (!formData.email || !formData.displayName) {
+    if (!email || !displayName) {
       toast.error('Email address and display name are required');
       return;
     }
     create.mutate(
-      { email_address: formData.email, display_name: formData.displayName, account_type: formData.accountType },
+      { email_address: email, display_name: displayName, account_type: accountType },
       {
         onSuccess: () => {
-          clearDraft();
           toast.success('Email account created');
           onClose();
         },
@@ -172,19 +168,19 @@ const CreateAccountDialog = ({ onClose }: { onClose: () => void }) => {
         <div className="space-y-4">
           <div>
             <Label className="text-bone-white/70 text-xs">Email Address</Label>
-            <Input value={formData.email} onChange={e => setFormData(prev => ({ ...prev, email: e.target.value }))}
+            <Input value={email} onChange={e => setEmail(e.target.value)}
               placeholder="admin@theswn.com"
               className="bg-charcoal-black border-muted-gray/50 text-bone-white" />
           </div>
           <div>
             <Label className="text-bone-white/70 text-xs">Display Name</Label>
-            <Input value={formData.displayName} onChange={e => setFormData(prev => ({ ...prev, displayName: e.target.value }))}
+            <Input value={displayName} onChange={e => setDisplayName(e.target.value)}
               placeholder="SWN Admin"
               className="bg-charcoal-black border-muted-gray/50 text-bone-white" />
           </div>
           <div>
             <Label className="text-bone-white/70 text-xs">Account Type</Label>
-            <Select value={formData.accountType} onValueChange={v => setFormData(prev => ({ ...prev, accountType: v }))}>
+            <Select value={accountType} onValueChange={setAccountType}>
               <SelectTrigger className="bg-charcoal-black border-muted-gray/50 text-bone-white">
                 <SelectValue />
               </SelectTrigger>

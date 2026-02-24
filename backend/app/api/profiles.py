@@ -439,6 +439,69 @@ async def get_filmmaker_profile_by_username(username: str):
             pid = credit.get("production_id")
             credit["productions"] = productions_map.get(pid) if pid else None
 
+        # ---- Backlot project credits (auto-populated) ----
+        try:
+            from app.core.database import execute_query
+
+            # Fetch from backlot_project_credits (public credits)
+            backlot_credit_rows = execute_query("""
+                SELECT bpc.id, bpc.credit_role as position, bpc.department, bpc.is_primary,
+                       bp.title as project_title, bp.slug as project_slug,
+                       bp.project_type as production_type, bp.cover_image_url as poster_url,
+                       bp.actual_start_date, bp.target_start_date
+                FROM backlot_project_credits bpc
+                JOIN backlot_projects bp ON bp.id = bpc.project_id
+                WHERE bpc.user_id = :user_id AND bpc.is_public = true
+                ORDER BY bp.updated_at DESC NULLS LAST
+            """, {"user_id": user_id})
+
+            # Fetch from backlot_project_members (crew roles)
+            backlot_member_rows = execute_query("""
+                SELECT bpm.id, bpm.role as position, bpm.department,
+                       bp.title as project_title, bp.slug as project_slug,
+                       bp.project_type as production_type, bp.cover_image_url as poster_url,
+                       bp.actual_start_date, bp.target_start_date
+                FROM backlot_project_members bpm
+                JOIN backlot_projects bp ON bp.id = bpm.project_id
+                WHERE bpm.user_id = :user_id
+                  AND bpm.role IS NOT NULL
+                  AND bp.visibility IN ('public', 'unlisted')
+                ORDER BY bp.updated_at DESC NULLS LAST
+            """, {"user_id": user_id})
+
+            # Build a set of existing manual credits (by slug+position) for dedup
+            seen_keys = set()
+            for c in credits_data:
+                prod = c.get("productions")
+                if prod and prod.get("slug"):
+                    key = (prod["slug"], (c.get("position") or "").lower())
+                    seen_keys.add(key)
+
+            # Normalize backlot rows and append (deduped)
+            for row in (backlot_credit_rows or []) + (backlot_member_rows or []):
+                slug = row.get("project_slug")
+                position = row.get("position") or ""
+                dedup_key = (slug, position.lower())
+                if dedup_key in seen_keys:
+                    continue
+                seen_keys.add(dedup_key)
+
+                credits_data.append({
+                    "id": str(row["id"]),
+                    "position": position,
+                    "production_date": str(row["actual_start_date"]) if row.get("actual_start_date")
+                        else str(row["target_start_date"]) if row.get("target_start_date") else None,
+                    "is_featured": row.get("is_primary", False),
+                    "status": "approved",
+                    "source": "backlot",
+                    "productions": {
+                        "title": row.get("project_title"),
+                        "slug": slug,
+                    },
+                })
+        except Exception as e:
+            print(f"Error fetching backlot credits for filmmaker profile: {e}")
+
         # Get Order membership info if member and showing publicly
         order_info = None
         if base_profile.get("is_order_member") and base_profile.get("show_order_membership", True):

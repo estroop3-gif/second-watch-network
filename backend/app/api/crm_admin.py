@@ -1279,6 +1279,7 @@ class CampaignCreate(BaseModel):
     scheduled_at: Optional[str] = None
     drip_delay_days: Optional[int] = None
     sender_account_ids: Optional[List[str]] = None
+    sender_mode: Optional[str] = "select"
     batch_size: Optional[int] = None
     send_delay_seconds: Optional[int] = None
 
@@ -1296,6 +1297,7 @@ class CampaignUpdate(BaseModel):
     drip_delay_days: Optional[int] = None
     status: Optional[str] = None
     sender_account_ids: Optional[List[str]] = None
+    sender_mode: Optional[str] = None
     batch_size: Optional[int] = None
     send_delay_seconds: Optional[int] = None
 
@@ -1408,6 +1410,7 @@ async def create_campaign(
         "drip_delay_days": data.drip_delay_days,
         "batch_size": data.batch_size,
         "send_delay_seconds": data.send_delay_seconds,
+        "sender_mode": data.sender_mode,
         "created_by": profile["id"],
         "status": "draft",
     }
@@ -1421,7 +1424,7 @@ async def create_campaign(
         campaign_data,
     )
 
-    # Insert sender accounts if provided
+    # Insert sender accounts if provided (for 'single' and 'select' modes)
     if data.sender_account_ids and result:
         for account_id in data.sender_account_ids:
             execute_insert(
@@ -1452,6 +1455,7 @@ async def update_campaign(
     sender_account_ids = data.sender_account_ids
     update_data = data.dict(exclude_none=True)
     update_data.pop("sender_account_ids", None)
+    # sender_mode IS a column, so keep it in update_data
 
     if update_data:
         set_clauses = []
@@ -1568,7 +1572,7 @@ async def send_campaign_now(
 ):
     """Immediately start sending a campaign (sets status to 'sending')."""
     existing = execute_single(
-        "SELECT status FROM crm_email_campaigns WHERE id = :id",
+        "SELECT status, sender_mode FROM crm_email_campaigns WHERE id = :id",
         {"id": campaign_id},
     )
     if not existing:
@@ -1576,17 +1580,32 @@ async def send_campaign_now(
     if existing["status"] not in ("draft", "scheduled"):
         raise HTTPException(400, "Can only send draft or scheduled campaigns")
 
-    # Validate at least one active sender is assigned
-    senders = execute_query(
-        """
-        SELECT cs.id FROM crm_campaign_senders cs
-        JOIN crm_email_accounts a ON a.id = cs.account_id
-        WHERE cs.campaign_id = :cid AND a.is_active = true
-        """,
-        {"cid": campaign_id},
-    )
-    if not senders:
-        raise HTTPException(400, "No active sender accounts assigned to this campaign")
+    # Validate senders: rotate_all/rep_match use dynamic accounts, others need assigned senders
+    if existing.get("sender_mode") == "rotate_all":
+        active_accounts = execute_query(
+            "SELECT id FROM crm_email_accounts WHERE is_active = true",
+            {},
+        )
+        if not active_accounts:
+            raise HTTPException(400, "No active email accounts exist for rotate_all mode")
+    elif existing.get("sender_mode") == "rep_match":
+        active_rep_accounts = execute_query(
+            "SELECT id FROM crm_email_accounts WHERE is_active = true AND account_type = 'rep'",
+            {},
+        )
+        if not active_rep_accounts:
+            raise HTTPException(400, "No active rep email accounts exist for rep_match mode")
+    else:
+        senders = execute_query(
+            """
+            SELECT cs.id FROM crm_campaign_senders cs
+            JOIN crm_email_accounts a ON a.id = cs.account_id
+            WHERE cs.campaign_id = :cid AND a.is_active = true
+            """,
+            {"cid": campaign_id},
+        )
+        if not senders:
+            raise HTTPException(400, "No active sender accounts assigned to this campaign")
 
     result = execute_single(
         """

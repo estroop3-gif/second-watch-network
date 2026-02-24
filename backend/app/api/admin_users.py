@@ -645,6 +645,76 @@ async def delete_user(user_id: str, authorization: str = Header(None)):
                         f'DELETE FROM "{tbl}" WHERE "{col}" = :uid'
                     ), {"uid": user_id})
 
+            # Clean up transitive FK references: tables that reference CASCADE-deleted
+            # children of profiles (e.g. worlds.creator_id ON DELETE CASCADE means worlds
+            # will be deleted, but payout_line_items references worlds with NO CASCADE).
+            # Find all worlds owned by this user and clean up their dependents.
+            cascade_tables = db.execute(text("""
+                SELECT tc.table_name AS parent_table, kcu.column_name AS parent_col
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                JOIN information_schema.referential_constraints rc
+                    ON tc.constraint_name = rc.constraint_name
+                JOIN information_schema.constraint_column_usage ccu
+                    ON tc.constraint_name = ccu.constraint_name
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                    AND ccu.table_name = 'profiles'
+                    AND ccu.column_name = 'id'
+                    AND rc.delete_rule = 'CASCADE'
+            """)).fetchall()
+
+            for cascade_ref in cascade_tables:
+                parent_tbl = cascade_ref[0]
+                parent_col = cascade_ref[1]
+
+                # Find tables with non-CASCADE FKs pointing at this cascade-deleted table
+                child_refs = db.execute(text("""
+                    SELECT tc.table_name, kcu.column_name, c.is_nullable
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                        ON tc.constraint_name = kcu.constraint_name
+                    JOIN information_schema.referential_constraints rc
+                        ON tc.constraint_name = rc.constraint_name
+                    JOIN information_schema.constraint_column_usage ccu
+                        ON tc.constraint_name = ccu.constraint_name
+                    JOIN information_schema.columns c
+                        ON c.table_name = tc.table_name
+                        AND c.column_name = kcu.column_name
+                        AND c.table_schema = tc.table_schema
+                    WHERE tc.constraint_type = 'FOREIGN KEY'
+                        AND ccu.table_name = :parent_tbl
+                        AND ccu.column_name = 'id'
+                        AND rc.delete_rule IN ('NO ACTION', 'RESTRICT')
+                """), {"parent_tbl": parent_tbl}).fetchall()
+
+                if not child_refs:
+                    continue
+
+                # Get IDs of rows that will be cascade-deleted
+                parent_ids = db.execute(text(
+                    f'SELECT id FROM "{parent_tbl}" WHERE "{parent_col}" = :uid'
+                ), {"uid": user_id}).fetchall()
+
+                if not parent_ids:
+                    continue
+
+                parent_id_list = [str(r[0]) for r in parent_ids]
+
+                for child in child_refs:
+                    child_tbl = child[0]
+                    child_col = child[1]
+                    child_nullable = child[2] == "YES"
+                    for pid in parent_id_list:
+                        if child_nullable:
+                            db.execute(text(
+                                f'UPDATE "{child_tbl}" SET "{child_col}" = NULL WHERE "{child_col}" = :pid'
+                            ), {"pid": pid})
+                        else:
+                            db.execute(text(
+                                f'DELETE FROM "{child_tbl}" WHERE "{child_col}" = :pid'
+                            ), {"pid": pid})
+
             # Delete the profile in the same transaction
             db.execute(text('DELETE FROM profiles WHERE id = :uid'), {"uid": user_id})
             db.commit()

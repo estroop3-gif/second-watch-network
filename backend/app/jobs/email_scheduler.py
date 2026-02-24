@@ -100,14 +100,18 @@ async def process_scheduled_emails():
                     logger.info(f"Delivered scheduled email {msg['id']} internally to {[a for a, _ in internal_recipients]}")
                     continue
 
-                from app.api.crm import add_email_inline_styles
+                from app.api.crm import add_email_inline_styles, wrap_email_html
+                import uuid as _uuid
+                styled_html = add_email_inline_styles(body_html)
+                full_html = wrap_email_html(styled_html, subject=msg["subject"])
                 send_params = {
-                    "from": f"{msg['display_name']} <{msg['email_address']}>",
+                    "from": f'"{msg["display_name"]}" <{msg["email_address"]}>',
                     "to": external_recipients,
                     "subject": msg["subject"],
-                    "html": add_email_inline_styles(body_html),
+                    "html": full_html,
                     "text": plain_text,
-                    "reply_to": reply_to,
+                    "reply_to": [f"reply+{msg['thread_id']}@theswn.com"],
+                    "headers": {"X-Entity-Ref-ID": str(_uuid.uuid4())},
                 }
                 if msg.get("cc_addresses"):
                     send_params["cc"] = msg["cc_addresses"]
@@ -297,16 +301,27 @@ async def process_sequence_sends():
                     )
                     thread_id = new_thread["id"]
 
-                reply_to = [enrollment["rep_email"], f"reply+{thread_id}@theswn.com"]
-
                 # Send
-                from app.api.crm import add_email_inline_styles
+                from app.api.crm import add_email_inline_styles, wrap_email_html
+                import uuid as _uuid
+                styled_html = add_email_inline_styles(body_html)
+                full_html = wrap_email_html(styled_html, subject=subject)
+
+                # Generate plain text fallback
+                import re as _re
+                _plain = _re.sub(r'</p>\s*<p[^>]*>', '\n\n', body_html)
+                _plain = _re.sub(r'<br\s*/?>', '\n', _plain)
+                _plain = _re.sub(r'</(div|h[1-6]|li|tr)>', '\n', _plain)
+                _plain = _re.sub(r'<[^>]+>', '', _plain).strip()
+
                 send_params = {
-                    "from": f"{enrollment['rep_name']} <{enrollment['rep_email']}>",
+                    "from": f'"{enrollment["rep_name"]}" <{enrollment["rep_email"]}>',
                     "to": [enrollment["contact_email"]],
                     "subject": subject,
-                    "html": add_email_inline_styles(body_html),
-                    "reply_to": reply_to,
+                    "html": full_html,
+                    "text": _plain,
+                    "reply_to": [f"reply+{thread_id}@theswn.com"],
+                    "headers": {"X-Entity-Ref-ID": str(_uuid.uuid4())},
                 }
 
                 result = resend_sdk.Emails.send(send_params)
@@ -467,7 +482,8 @@ async def process_campaign_sends():
                 pending_sends = execute_query(
                     """
                     SELECT s.id as send_id, s.contact_id,
-                           c.email as contact_email, c.first_name, c.last_name, c.company
+                           c.email as contact_email, c.first_name, c.last_name, c.company,
+                           c.assigned_rep_id
                     FROM crm_email_sends s
                     JOIN crm_contacts c ON c.id = s.contact_id
                     WHERE s.campaign_id = :cid AND s.status = 'pending'
@@ -486,21 +502,86 @@ async def process_campaign_sends():
                     logger.info(f"Campaign {campaign_id}: all sends complete, marked as sent")
                     continue
 
+                # For rotate_all mode, auto-populate crm_campaign_senders from all active accounts
+                if campaign.get("sender_mode") == "rotate_all":
+                    active_accounts = execute_query(
+                        "SELECT id FROM crm_email_accounts WHERE is_active = true",
+                        {},
+                    )
+                    for acct in active_accounts:
+                        execute_insert(
+                            "INSERT INTO crm_campaign_senders (campaign_id, account_id) VALUES (:cid, :aid) ON CONFLICT DO NOTHING RETURNING id",
+                            {"cid": campaign_id, "aid": acct["id"]},
+                        )
+
                 for send in pending_sends:
                     try:
-                        # Round-robin sender: pick the account with lowest send_count
-                        sender = execute_single(
-                            """
-                            SELECT cs.id as cs_id, cs.account_id, cs.send_count,
-                                   a.email_address, a.display_name, a.signature_html, a.profile_id
-                            FROM crm_campaign_senders cs
-                            JOIN crm_email_accounts a ON a.id = cs.account_id
-                            WHERE cs.campaign_id = :cid AND a.is_active = true
-                            ORDER BY cs.send_count ASC, cs.created_at ASC
-                            LIMIT 1
-                            """,
-                            {"cid": campaign_id},
-                        )
+                        sender = None
+
+                        # Rep match mode: find sender from contact's assigned rep
+                        if campaign.get("sender_mode") == "rep_match":
+                            rep_id = send.get("assigned_rep_id")
+                            if not rep_id:
+                                logger.warning(f"Campaign {campaign_id}: contact {send['contact_id']} has no assigned rep, skipping")
+                                execute_single(
+                                    "UPDATE crm_email_sends SET status = 'failed' WHERE id = :sid RETURNING id",
+                                    {"sid": send["send_id"]},
+                                )
+                                continue
+
+                            rep_account = execute_single(
+                                """
+                                SELECT a.id as account_id, a.email_address, a.display_name,
+                                       a.signature_html, a.profile_id
+                                FROM crm_email_accounts a
+                                WHERE a.profile_id = :rep_id AND a.is_active = true AND a.account_type = 'rep'
+                                LIMIT 1
+                                """,
+                                {"rep_id": rep_id},
+                            )
+
+                            if not rep_account:
+                                logger.warning(f"Campaign {campaign_id}: no active email account for rep {rep_id}, skipping contact {send['contact_id']}")
+                                execute_single(
+                                    "UPDATE crm_email_sends SET status = 'failed' WHERE id = :sid RETURNING id",
+                                    {"sid": send["send_id"]},
+                                )
+                                continue
+
+                            # Auto-populate campaign_senders for tracking
+                            cs_row = execute_insert(
+                                "INSERT INTO crm_campaign_senders (campaign_id, account_id) VALUES (:cid, :aid) ON CONFLICT DO NOTHING RETURNING id",
+                                {"cid": campaign_id, "aid": rep_account["account_id"]},
+                            )
+                            if not cs_row:
+                                cs_row = execute_single(
+                                    "SELECT id FROM crm_campaign_senders WHERE campaign_id = :cid AND account_id = :aid",
+                                    {"cid": campaign_id, "aid": rep_account["account_id"]},
+                                )
+
+                            sender = {
+                                "cs_id": cs_row["id"] if cs_row else None,
+                                "account_id": rep_account["account_id"],
+                                "send_count": 0,
+                                "email_address": rep_account["email_address"],
+                                "display_name": rep_account["display_name"],
+                                "signature_html": rep_account.get("signature_html"),
+                                "profile_id": rep_account["profile_id"],
+                            }
+                        else:
+                            # Round-robin sender: pick the account with lowest send_count
+                            sender = execute_single(
+                                """
+                                SELECT cs.id as cs_id, cs.account_id, cs.send_count,
+                                       a.email_address, a.display_name, a.signature_html, a.profile_id
+                                FROM crm_campaign_senders cs
+                                JOIN crm_email_accounts a ON a.id = cs.account_id
+                                WHERE cs.campaign_id = :cid AND a.is_active = true
+                                ORDER BY cs.send_count ASC, cs.created_at ASC
+                                LIMIT 1
+                                """,
+                                {"cid": campaign_id},
+                            )
 
                         if not sender:
                             logger.error(f"Campaign {campaign_id}: no active sender accounts assigned")
@@ -532,18 +613,32 @@ async def process_campaign_sends():
                         body_html += tracking_pixel
 
                         # Send via Resend
-                        from app.api.crm import add_email_inline_styles as _style
+                        from app.api.crm import add_email_inline_styles as _style, wrap_email_html as _wrap
+                        import uuid as _uuid
+                        _styled = _style(body_html)
+                        _full_html = _wrap(_styled, subject=subject)
+
+                        # Always generate plain text fallback for deliverability
+                        import re as _re
+                        _plain = body_html
+                        if campaign.get("text_template"):
+                            _plain = campaign["text_template"]
+                            for key, val in vars_map.items():
+                                _plain = _plain.replace(f"{{{{{key}}}}}", val)
+                        else:
+                            _plain = _re.sub(r'</p>\s*<p[^>]*>', '\n\n', _plain)
+                            _plain = _re.sub(r'<br\s*/?>', '\n', _plain)
+                            _plain = _re.sub(r'</(div|h[1-6]|li|tr)>', '\n', _plain)
+                            _plain = _re.sub(r'<[^>]+>', '', _plain).strip()
+
                         send_params = {
-                            "from": f"{sender['display_name']} <{sender['email_address']}>",
+                            "from": f'"{sender["display_name"]}" <{sender["email_address"]}>',
                             "to": [send["contact_email"]],
                             "subject": subject,
-                            "html": _style(body_html),
+                            "html": _full_html,
+                            "text": _plain,
+                            "headers": {"X-Entity-Ref-ID": str(_uuid.uuid4())},
                         }
-                        if campaign.get("text_template"):
-                            text_body = campaign["text_template"]
-                            for key, val in vars_map.items():
-                                text_body = text_body.replace(f"{{{{{key}}}}}", val)
-                            send_params["text"] = text_body
 
                         result = resend_sdk.Emails.send(send_params)
                         resend_id = result.get("id")
