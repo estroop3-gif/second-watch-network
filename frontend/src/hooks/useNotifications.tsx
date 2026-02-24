@@ -32,7 +32,7 @@ export function useNotifications() {
     enabled: !!user?.id,
     queryFn: async () => {
       if (!user) return [];
-      const data = await api.listNotifications(user.id, { limit: 200 });
+      const data = await api.listNotifications(user.id, { limit: 50 });
       return data || [];
     },
   });

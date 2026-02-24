@@ -39,31 +39,28 @@ async def list_notifications(
 
 @router.get("/counts", response_model=NotificationCounts)
 async def get_notification_counts(user_id: str):
-    """Get notification counts by type"""
+    """Get notification counts by type — single query with FILTER for performance"""
     try:
-        client = get_client()
-
-        # Get total unread - use is_read=false instead of status='unread'
-        total_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("is_read", False).execute()
-
-        # Get counts by type
-        messages_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("is_read", False).eq("type", "message").execute()
-        requests_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("is_read", False).eq("type", "connection_request").execute()
-        submissions_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("is_read", False).eq("type", "submission_update").execute()
-
-        # CRM count — types prefixed with crm_
-        crm_row = execute_single(
-            "SELECT COUNT(*) as cnt FROM notifications WHERE user_id = :uid AND is_read = false AND type LIKE 'crm_%'",
+        row = execute_single(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE is_read = false) AS total,
+                COUNT(*) FILTER (WHERE is_read = false AND type = 'message') AS messages,
+                COUNT(*) FILTER (WHERE is_read = false AND type = 'connection_request') AS connection_requests,
+                COUNT(*) FILTER (WHERE is_read = false AND type = 'submission_update') AS submission_updates,
+                COUNT(*) FILTER (WHERE is_read = false AND type LIKE 'crm_%') AS crm
+            FROM notifications
+            WHERE user_id = :uid
+            """,
             {"uid": user_id},
         )
-        crm_count = crm_row["cnt"] if crm_row else 0
 
         return {
-            "total": total_response.count or 0,
-            "messages": messages_response.count or 0,
-            "connection_requests": requests_response.count or 0,
-            "submission_updates": submissions_response.count or 0,
-            "crm": crm_count,
+            "total": row["total"] if row else 0,
+            "messages": row["messages"] if row else 0,
+            "connection_requests": row["connection_requests"] if row else 0,
+            "submission_updates": row["submission_updates"] if row else 0,
+            "crm": row["crm"] if row else 0,
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
