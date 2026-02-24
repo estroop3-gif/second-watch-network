@@ -109,13 +109,16 @@ def parse_nominatim_address(address: Dict[str, Any]) -> AddressComponents:
     state = address.get("state", "")
     state_code = state_codes.get(state.lower(), "") if state else ""
 
-    # Try to get city from various Nominatim fields
+    # Try to get city from various Nominatim fields (ordered by specificity)
     city = (
         address.get("city") or
         address.get("town") or
         address.get("village") or
         address.get("municipality") or
         address.get("hamlet") or
+        address.get("suburb") or
+        address.get("neighbourhood") or
+        address.get("county", "").replace(" County", "").replace(" Parish", "") or
         ""
     )
 
@@ -279,8 +282,7 @@ async def autocomplete_address(
         }
 
         if mode == "city":
-            # For city mode, use featuretype to get settlements and request more results to filter
-            params["featuretype"] = "settlement"
+            # For city mode, request more results so we can filter to city-level entries
             params["limit"] = limit * 3  # Get more to filter down
         else:
             params["limit"] = limit
@@ -299,10 +301,11 @@ async def autocomplete_address(
                     if mode == "city":
                         item_type = item.get("type", "")
                         item_class = item.get("class", "")
-                        # Include if it's a place/boundary type that represents a city
-                        if item_type in CITY_PLACE_TYPES or item_class in ["place", "boundary"]:
+                        has_city = bool(parsed.address.city and parsed.address.state_code)
+                        # Include if it's a known place type OR if the address has a city component
+                        if item_type in CITY_PLACE_TYPES or item_class in ["place", "boundary"] or has_city:
                             # For city results, simplify the display name to just city, state
-                            if parsed.address.city and parsed.address.state_code:
+                            if has_city:
                                 parsed.display_name = f"{parsed.address.city}, {parsed.address.state_code}"
                             results.append(parsed)
                     else:

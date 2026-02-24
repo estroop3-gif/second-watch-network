@@ -216,12 +216,16 @@ export function LocationAutocomplete({
 
           // In city mode, only return city/state without coordinates
           if (mode === 'city') {
-            const cityState = [fullLocationData.city, fullLocationData.stateCode || fullLocationData.state]
+            // Use city from parsed data, or fall back to county from raw response
+            const cityName = fullLocationData.city
+              || response.result.address.county?.replace(/ County$/, '').replace(/ Parish$/, '')
+              || '';
+            const cityState = [cityName, fullLocationData.stateCode || fullLocationData.state]
               .filter(Boolean)
               .join(', ');
             const locationData: LocationData = {
               displayName: cityState || fullLocationData.displayName,
-              city: fullLocationData.city,
+              city: cityName || undefined,
               state: fullLocationData.state,
               stateCode: fullLocationData.stateCode,
               // No coordinates for city mode

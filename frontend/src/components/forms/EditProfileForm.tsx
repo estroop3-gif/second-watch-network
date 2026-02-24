@@ -156,7 +156,7 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
       await api.updateProfile(profileId, {
         full_name: data.fullName || null,
         display_name: data.displayName || null,
-        location_visible: data.location_visible,
+        location_visible: true,
       });
 
       // Step 2: Update filmmaker_profiles table (extended data)
@@ -241,25 +241,6 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
     }
   };
 
-  // Handle location visibility toggle separately (optimistic update)
-  const handleLocationVisibilityChange = async (checked: boolean, field: any) => {
-    if (!profileId) return;
-
-    const prev = field.value;
-    field.onChange(checked);
-
-    try {
-      await api.updateProfile(profileId, { location_visible: checked });
-      toast.success('Location preference updated');
-      onProfileUpdate();
-      qc.invalidateQueries({ queryKey: ['profile', profileId] });
-      qc.invalidateQueries({ queryKey: ['account-profile', profileId] });
-    } catch (error) {
-      field.onChange(prev);
-      toast.error('Could not update location visibility.');
-    }
-  };
-
   const canSave = (form.formState.isDirty || creditsDirty) && !isSaving;
 
   return (
@@ -331,7 +312,7 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
               )} />
             </div>
           </div>
-           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center pt-6">
+           <div className="pt-6">
             <FormField control={form.control} name="location" render={({ field }) => (
               <FormItem>
                 <FormLabel>City & State</FormLabel>
@@ -347,21 +328,8 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
                     mode="city"
                   />
                 </FormControl>
+                <p className="text-xs text-muted-foreground mt-1">Your city and state will be shown on your profile and in the network.</p>
                 <FormMessage />
-              </FormItem>
-            )} />
-            <FormField control={form.control} name="location_visible" render={({ field }) => (
-              <FormItem className="flex flex-row items-center justify-between rounded-lg border border-muted-gray/20 p-4 mt-6">
-                <div className="space-y-0.5">
-                  <FormLabel>Show location on my profile</FormLabel>
-                  <p className="text-xs text-muted-foreground">If enabled, your city/state will be shown on your public profile.</p>
-                </div>
-                <FormControl>
-                  <Switch
-                    checked={field.value}
-                    onCheckedChange={(checked) => handleLocationVisibilityChange(checked, field)}
-                  />
-                </FormControl>
               </FormItem>
             )} />
           </div>

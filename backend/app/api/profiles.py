@@ -445,7 +445,7 @@ async def get_filmmaker_profile_by_username(username: str):
             "display_name": filmmaker.get("display_name") or base_profile.get("display_name"),
             "email": base_profile.get("email"),
             "bio": filmmaker.get("bio"),
-            "location": filmmaker.get("location") if base_profile.get("location_visible", True) else None,
+            "location": filmmaker.get("location"),
             "department": filmmaker.get("department"),
             "experience_level": filmmaker.get("experience_level"),
             "skills": filmmaker.get("skills") or [],
