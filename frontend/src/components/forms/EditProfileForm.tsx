@@ -298,17 +298,18 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
             <div className="flex flex-col items-center gap-4">
               <AvatarUploader
                 avatarUrl={profile?.avatar_url || session?.user?.user_metadata?.avatar_url}
-                onUploadSuccess={(newAvatarUrl) => {
-                  // Directly patch avatar_url into the profile query cache.
+                onUploadSuccess={async (newAvatarUrl) => {
+                  // Strategy: patch every cache layer so the avatar updates everywhere.
                   // useProfile's query is disabled when authProfile exists, so
                   // invalidateQueries won't trigger a refetch — setQueryData
                   // directly updates the cached data and triggers re-renders.
-                  qc.setQueryData(['profile', user?.id], (old: any) =>
-                    old ? { ...old, avatar_url: newAvatarUrl } : old
-                  );
-                  qc.setQueryData(['account-profile', user?.id], (old: any) =>
-                    old ? { ...old, avatar_url: newAvatarUrl } : old
-                  );
+
+                  const patchAvatar = (old: any) =>
+                    old ? { ...old, avatar_url: newAvatarUrl } : { avatar_url: newAvatarUrl };
+
+                  // 1. Patch React Query caches
+                  qc.setQueryData(['profile', user?.id], patchAvatar);
+                  qc.setQueryData(['account-profile', user?.id], patchAvatar);
                   qc.setQueryData(['my-profile-data'], (old: any) => {
                     if (!old) return old;
                     return {
@@ -317,7 +318,7 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
                     };
                   });
 
-                  // Update localStorage cached profile as backup
+                  // 2. Update localStorage cached profile
                   try {
                     const cachedRaw = localStorage.getItem('swn_cached_profile');
                     if (cachedRaw) {
@@ -326,6 +327,21 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
                       localStorage.setItem('swn_cached_profile', JSON.stringify(cached));
                     }
                   } catch { /* ignore */ }
+
+                  // 3. Force-fetch fresh profile from server as fallback.
+                  //    This ensures the cache is populated even if the query key
+                  //    didn't match or the query observer didn't pick up setQueryData.
+                  try {
+                    const freshProfile = await api.getProfile();
+                    if (freshProfile) {
+                      qc.setQueryData(['profile', user?.id], freshProfile);
+                      try {
+                        localStorage.setItem('swn_cached_profile', JSON.stringify(freshProfile));
+                      } catch { /* ignore */ }
+                    }
+                  } catch {
+                    // Non-fatal — the setQueryData above is the primary mechanism
+                  }
 
                   onProfileUpdate();
                 }}

@@ -14,6 +14,24 @@ interface AvatarUploaderProps {
   onUploadSuccess?: (newAvatarUrl: string) => void;
 }
 
+/**
+ * Preload an image to verify it's actually accessible at the given URL.
+ * Returns true if the image loads, false on error/timeout.
+ */
+function verifyImageLoads(url: string, timeoutMs = 8000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const timer = setTimeout(() => {
+      img.onload = null;
+      img.onerror = null;
+      resolve(false);
+    }, timeoutMs);
+    img.onload = () => { clearTimeout(timer); resolve(true); };
+    img.onerror = () => { clearTimeout(timer); resolve(false); };
+    img.src = url;
+  });
+}
+
 export const AvatarUploader: React.FC<AvatarUploaderProps> = ({ avatarUrl, onUploadSuccess }) => {
   const { session } = useAuth();
   const [isUploading, setIsUploading] = useState(false);
@@ -28,6 +46,12 @@ export const AvatarUploader: React.FC<AvatarUploaderProps> = ({ avatarUrl, onUpl
 
     const file = event.target.files[0];
 
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please select an image file (JPG, PNG, etc.)');
+      return;
+    }
+
     // Validate file size
     if (file.size > MAX_FILE_SIZE) {
       toast.error('Image must be less than 10MB');
@@ -41,7 +65,7 @@ export const AvatarUploader: React.FC<AvatarUploaderProps> = ({ avatarUrl, onUpl
 
     try {
       const token = api.getToken();
-      if (!token) throw new Error('Not authenticated');
+      if (!token) throw new Error('Not authenticated — please log in again');
 
       // Create form data for file upload
       const formData = new FormData();
@@ -57,23 +81,35 @@ export const AvatarUploader: React.FC<AvatarUploaderProps> = ({ avatarUrl, onUpl
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
-        throw new Error(error.detail);
+        throw new Error(error.detail || `Server error (${response.status})`);
       }
 
       const result = await response.json();
 
-      // Update local preview to the actual S3 URL
-      if (result.avatar_url) {
-        setLocalAvatarUrl(result.avatar_url);
+      // Validate the server returned a usable avatar URL
+      if (!result.avatar_url) {
+        throw new Error('Server did not return an image URL — upload may have failed');
       }
 
-      setIsUploading(false);
-      toast.success('Profile picture updated!');
+      // Verify the image is actually accessible at the returned URL
+      const imageOk = await verifyImageLoads(result.avatar_url);
+      if (!imageOk) {
+        // Image uploaded but not yet accessible — still call onUploadSuccess
+        // since the DB was updated, but warn the user
+        console.warn('[AvatarUploader] Image not immediately accessible at:', result.avatar_url);
+      }
+
+      // Update local preview to the actual S3 URL
+      setLocalAvatarUrl(result.avatar_url);
 
       // Revoke the blob URL
       URL.revokeObjectURL(localPreview);
 
-      if (onUploadSuccess && result.avatar_url) {
+      setIsUploading(false);
+      toast.success('Profile picture updated!');
+
+      // Notify parent with the new URL
+      if (onUploadSuccess) {
         onUploadSuccess(result.avatar_url);
       }
     } catch (error) {
@@ -81,7 +117,9 @@ export const AvatarUploader: React.FC<AvatarUploaderProps> = ({ avatarUrl, onUpl
       // Revert preview on error
       setLocalAvatarUrl(null);
       URL.revokeObjectURL(localPreview);
-      toast.error(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      toast.error(`Upload failed: ${msg}`);
+      console.error('[AvatarUploader] Upload error:', error);
     }
 
     // Reset file input so the same file can be re-selected

@@ -86,21 +86,26 @@ async def upload_avatar(
     client = get_client()
 
     try:
-        # Get current avatar URL to delete old file
-        profile_result = client.table("profiles").select("avatar_url").eq("id", user_id).execute()
-        old_avatar_url = profile_result.data[0].get("avatar_url") if profile_result.data else None
+        # Verify profile exists before uploading
+        profile_result = client.table("profiles").select("id, avatar_url").eq("id", user_id).execute()
+        if not profile_result.data:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        old_avatar_url = profile_result.data[0].get("avatar_url")
 
         # Delete old avatar if it exists and is in our S3 bucket
         if old_avatar_url and "s3." in old_avatar_url and "swn-avatars" in old_avatar_url:
             try:
-                # Extract path from URL
                 old_path = old_avatar_url.split("/")[-2] + "/" + old_avatar_url.split("/")[-1]
                 storage_client.from_("avatars").remove([old_path])
             except Exception as e:
                 print(f"Warning: Could not delete old avatar: {e}")
 
-        # Upload new avatar to S3
+        # Read and upload new avatar to S3
         file_content = await file.read()
+        if len(file_content) == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
         file_obj = io.BytesIO(file_content)
 
         storage_client.from_("avatars").upload(
@@ -109,18 +114,38 @@ async def upload_avatar(
             {"content_type": file.content_type}
         )
 
-        # Get public URL
+        # Build public URL
         avatar_url = storage_client.from_("avatars").get_public_url(unique_filename)
 
-        # Update profiles table
-        client.table("profiles").update({
+        if not avatar_url:
+            raise HTTPException(status_code=500, detail="Failed to generate image URL after upload")
+
+        # Update profiles table and verify it took effect
+        update_result = client.table("profiles").update({
             "avatar_url": avatar_url
         }).eq("id", user_id).execute()
 
-        # Update filmmaker_profiles table if exists
-        client.table("filmmaker_profiles").update({
-            "profile_image_url": avatar_url
-        }).eq("user_id", user_id).execute()
+        if not update_result.data:
+            print(f"Warning: profiles update returned no data for user_id={user_id}")
+
+        # Verify the DB actually has the new URL
+        verify_result = client.table("profiles").select("avatar_url").eq("id", user_id).single().execute()
+        saved_url = verify_result.data.get("avatar_url") if verify_result.data else None
+
+        if saved_url != avatar_url:
+            print(f"Error: avatar_url mismatch after update. Expected={avatar_url}, Got={saved_url}")
+            raise HTTPException(
+                status_code=500,
+                detail="Profile picture was uploaded but failed to save to your profile"
+            )
+
+        # Update filmmaker_profiles table if exists (non-fatal)
+        try:
+            client.table("filmmaker_profiles").update({
+                "profile_image_url": avatar_url
+            }).eq("user_id", user_id).execute()
+        except Exception as e:
+            print(f"Warning: Could not update filmmaker_profiles avatar: {e}")
 
         return AvatarUploadResponse(
             success=True,
@@ -128,6 +153,8 @@ async def upload_avatar(
             message="Avatar uploaded successfully"
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error uploading avatar: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to upload avatar: {str(e)}")
