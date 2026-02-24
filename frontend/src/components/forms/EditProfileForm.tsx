@@ -74,7 +74,7 @@ interface EditProfileFormProps {
 }
 
 const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpdate, isFilmmaker = false }) => {
-  const { user, session, profileId } = useAuth();
+  const { user, session, profileId, refreshProfile } = useAuth();
   const qc = useQueryClient();
   const navigate = useNavigate();
 
@@ -299,50 +299,10 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
               <AvatarUploader
                 avatarUrl={profile?.avatar_url || session?.user?.user_metadata?.avatar_url}
                 onUploadSuccess={async (newAvatarUrl) => {
-                  // Strategy: patch every cache layer so the avatar updates everywhere.
-                  // useProfile's query is disabled when authProfile exists, so
-                  // invalidateQueries won't trigger a refetch — setQueryData
-                  // directly updates the cached data and triggers re-renders.
-
-                  const patchAvatar = (old: any) =>
-                    old ? { ...old, avatar_url: newAvatarUrl } : { avatar_url: newAvatarUrl };
-
-                  // 1. Patch React Query caches
-                  qc.setQueryData(['profile', user?.id], patchAvatar);
-                  qc.setQueryData(['account-profile', user?.id], patchAvatar);
-                  qc.setQueryData(['my-profile-data'], (old: any) => {
-                    if (!old) return old;
-                    return {
-                      ...old,
-                      profile: old.profile ? { ...old.profile, avatar_url: newAvatarUrl } : old.profile,
-                    };
-                  });
-
-                  // 2. Update localStorage cached profile
-                  try {
-                    const cachedRaw = localStorage.getItem('swn_cached_profile');
-                    if (cachedRaw) {
-                      const cached = JSON.parse(cachedRaw);
-                      cached.avatar_url = newAvatarUrl;
-                      localStorage.setItem('swn_cached_profile', JSON.stringify(cached));
-                    }
-                  } catch { /* ignore */ }
-
-                  // 3. Force-fetch fresh profile from server as fallback.
-                  //    This ensures the cache is populated even if the query key
-                  //    didn't match or the query observer didn't pick up setQueryData.
-                  try {
-                    const freshProfile = await api.getProfile();
-                    if (freshProfile) {
-                      qc.setQueryData(['profile', user?.id], freshProfile);
-                      try {
-                        localStorage.setItem('swn_cached_profile', JSON.stringify(freshProfile));
-                      } catch { /* ignore */ }
-                    }
-                  } catch {
-                    // Non-fatal — the setQueryData above is the primary mechanism
-                  }
-
+                  // Re-fetch profile from server and update AuthContext state directly.
+                  // This is the only reliable way to propagate the avatar change because
+                  // AuthContext.profile is the source of truth for useProfile → EnrichedProfileContext → all UI.
+                  await refreshProfile();
                   onProfileUpdate();
                 }}
               />

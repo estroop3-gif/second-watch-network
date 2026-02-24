@@ -104,7 +104,7 @@ const AddCreditForm = ({ onAddCredit, closeModal }: { onAddCredit: (data: Credit
 }
 
 const FilmmakerOnboardingForm = () => {
-  const { profileId, session } = useAuth();
+  const { profileId, session, refreshProfile } = useAuth();
   const navigate = useNavigate();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCreditModalOpen, setIsCreditModalOpen] = useState(false);
@@ -195,19 +195,8 @@ const FilmmakerOnboardingForm = () => {
             <div className="flex flex-col md:flex-row items-center gap-6">
                 <AvatarUploader
                   avatarUrl={session?.user?.user_metadata?.avatar_url}
-                  onUploadSuccess={(newAvatarUrl) => {
-                    const patchAvatar = (old: any) =>
-                      old ? { ...old, avatar_url: newAvatarUrl } : { avatar_url: newAvatarUrl };
-                    queryClient.setQueryData(['profile', session?.user?.id], patchAvatar);
-                    queryClient.setQueryData(['account-profile', session?.user?.id], patchAvatar);
-                    try {
-                      const cachedRaw = localStorage.getItem('swn_cached_profile');
-                      if (cachedRaw) {
-                        const cached = JSON.parse(cachedRaw);
-                        cached.avatar_url = newAvatarUrl;
-                        localStorage.setItem('swn_cached_profile', JSON.stringify(cached));
-                      }
-                    } catch { /* ignore */ }
+                  onUploadSuccess={async () => {
+                    await refreshProfile();
                   }}
                 />
                 <div className="flex-1 w-full space-y-6">

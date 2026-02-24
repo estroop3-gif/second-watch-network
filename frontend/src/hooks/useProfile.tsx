@@ -1,5 +1,6 @@
+import { useEffect, useRef } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, safeStorage } from '@/lib/api';
 
 const getCachedProfile = (): any | null => {
@@ -14,6 +15,7 @@ const getCachedProfile = (): any | null => {
 
 export const useProfile = () => {
   const { user, profile: authProfile, loading: authLoading } = useAuth();
+  const queryClient = useQueryClient();
 
   const cachedProfile = !authProfile ? getCachedProfile() : null;
 
@@ -33,6 +35,21 @@ export const useProfile = () => {
     initialData: authProfile || cachedProfile || undefined,
     staleTime: 5 * 60 * 1000,
   });
+
+  // When AuthContext.profile changes (e.g. after refreshProfile()), sync the
+  // new value into the React Query cache. Without this, the query data stays
+  // frozen at the initialData value set on first mount and never updates.
+  const prevAuthProfileRef = useRef(authProfile);
+  useEffect(() => {
+    if (
+      authProfile &&
+      user?.id &&
+      authProfile !== prevAuthProfileRef.current
+    ) {
+      prevAuthProfileRef.current = authProfile;
+      queryClient.setQueryData(['profile', user.id], authProfile);
+    }
+  }, [authProfile, user?.id, queryClient]);
 
   // If auth is still loading, show loading. Otherwise use query loading state.
   // But if we have authProfile or cachedProfile, we're not really "loading" even if query is refreshing.

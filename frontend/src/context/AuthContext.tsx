@@ -66,6 +66,8 @@ interface AuthContextType {
   confirmSignUp: (email: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
   retryBootstrap: () => Promise<boolean>;
+  /** Re-fetch profile from server and update context + localStorage cache */
+  refreshProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -576,6 +578,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  const refreshProfile = useCallback(async () => {
+    try {
+      const freshProfile = await api.getProfile();
+      if (freshProfile) {
+        setProfile(freshProfile);
+        saveCachedProfile(freshProfile);
+      }
+    } catch (error) {
+      console.warn('[Auth] refreshProfile failed:', error);
+    }
+  }, []);
+
   const signOut = async () => {
     // Clear local state first to ensure UI updates immediately
     safeStorage.removeItem('access_token');
@@ -701,6 +715,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       confirmSignUp,
       signOut,
       retryBootstrap,
+      refreshProfile,
     }}>
       {children}
     </AuthContext.Provider>
