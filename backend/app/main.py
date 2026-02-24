@@ -224,18 +224,56 @@ async def root():
 
 
 @app.get("/health")
-async def health_check():
+async def health_check(request: Request):
     """
-    Lightweight health check endpoint.
-    Used by keep-warm scheduler and load balancers.
-    Does NOT perform any database queries to minimize latency.
+    Health check endpoint.
+    Used by keep-warm scheduler (every 1 min) and load balancers.
+    On warmup pings, also runs background scheduler jobs (campaigns, scheduled emails,
+    sequences, etc.) since APScheduler lifespan="off" on Lambda means the scheduler
+    never starts.
     """
     from app.core.logging import is_cold_start, get_process_age_ms
+
+    is_warmup = request.headers.get("x-warmup-ping") == "true"
+    jobs_run = []
+
+    if is_warmup:
+        try:
+            from app.jobs.email_scheduler import (
+                process_campaign_sends,
+                process_scheduled_emails,
+                process_sequence_sends,
+                process_unsnoozed_threads,
+            )
+            # Run critical email jobs on every warmup ping (every ~1 min)
+            try:
+                await process_scheduled_emails()
+                jobs_run.append("scheduled_emails")
+            except Exception as e:
+                logger.warning(f"Warmup job scheduled_emails failed: {e}")
+            try:
+                await process_campaign_sends()
+                jobs_run.append("campaign_sends")
+            except Exception as e:
+                logger.warning(f"Warmup job campaign_sends failed: {e}")
+            try:
+                await process_unsnoozed_threads()
+                jobs_run.append("unsnoozed_threads")
+            except Exception as e:
+                logger.warning(f"Warmup job unsnoozed_threads failed: {e}")
+            try:
+                await process_sequence_sends()
+                jobs_run.append("sequence_sends")
+            except Exception as e:
+                logger.warning(f"Warmup job sequence_sends failed: {e}")
+        except Exception as e:
+            logger.warning(f"Warmup scheduler import failed: {e}")
 
     return {
         "status": "healthy",
         "cold_start": is_cold_start(),
         "process_age_ms": round(get_process_age_ms(), 2),
+        **({"jobs_run": jobs_run} if jobs_run else {}),
     }
 
 

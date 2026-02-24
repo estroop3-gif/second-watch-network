@@ -1657,6 +1657,14 @@ async def send_campaign_now(
     except Exception:
         pass
 
+    # Directly process campaign sends — don't rely on APScheduler (lifespan="off" on Lambda)
+    try:
+        from app.jobs.email_scheduler import process_campaign_sends
+        await process_campaign_sends()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to trigger immediate campaign processing: {e}")
+
     return result
 
 
