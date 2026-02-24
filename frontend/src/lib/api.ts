@@ -535,6 +535,13 @@ class APIClient {
     })
   }
 
+  async updateMyLocation(location: string) {
+    return this.request<any>('/api/v1/profiles/me/location', {
+      method: 'PATCH',
+      body: JSON.stringify({ location }),
+    })
+  }
+
   async onboardFilmmaker(data: {
     full_name: string;
     display_name?: string;
@@ -1685,7 +1692,13 @@ class APIClient {
     return this.request<any[]>(`/api/v1/credits/?user_id=${userId}`)
   }
 
-  async createCredit(userId: string, data: any) {
+  async createCredit(userId: string, data: {
+    position: string;
+    production_title: string;
+    production_id?: string;
+    description?: string;
+    production_date?: string;
+  }) {
     return this.request<any>(`/api/v1/credits/?user_id=${userId}`, {
       method: 'POST',
       body: JSON.stringify(data),
@@ -1695,6 +1708,7 @@ class APIClient {
   async updateCredit(creditId: string, userId: string, data: {
     position?: string;
     production_title?: string;
+    production_id?: string;
     description?: string;
     production_date?: string;
   }) {
@@ -1707,6 +1721,25 @@ class APIClient {
   async deleteCredit(creditId: string) {
     return this.request<any>(`/api/v1/credits/${creditId}`, {
       method: 'DELETE',
+    })
+  }
+
+  // ============================================================================
+  // PRODUCTIONS — The Slate
+  // ============================================================================
+
+  async searchAllProductions(q: string = '') {
+    return this.request<any[]>(`/api/v1/productions/search/all?q=${encodeURIComponent(q)}&limit=20`)
+  }
+
+  async getProductionBySlug(slug: string) {
+    return this.request<any>(`/api/v1/productions/slug/${slug}`)
+  }
+
+  async quickCreateProduction(name: string) {
+    return this.request<any>('/api/v1/productions/quick-create', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
     })
   }
 

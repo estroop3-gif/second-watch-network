@@ -13,12 +13,14 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogClose } from '@/components/ui/dialog';
 import { AccountSection } from '@/components/account/AccountSection';
-import { filmPositions } from '@/data/filmmaker-options';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
+import PositionSelector, { Position, POSITIONS } from '@/components/shared/PositionSelector';
+import ProductionSelector, { ProductionItem } from '@/components/shared/ProductionSelector';
 
 const creditSchema = z.object({
   position: z.string().min(1, "Position is required."),
   productionTitle: z.string().min(1, "Production title is required."),
+  productionId: z.string().optional(),
   description: z.string().max(250, "Description must be 250 characters or less.").optional(),
   productionDate: z.string().optional(),
 });
@@ -26,11 +28,29 @@ const creditSchema = z.object({
 type CreditFormValues = z.infer<typeof creditSchema>;
 
 const CreditForm = ({ onSave, existingCredit, closeModal }: { onSave: (data: CreditFormValues, creditId?: string) => void, existingCredit?: any, closeModal: () => void }) => {
+  // Build initial position from existing credit
+  const existingPosition = existingCredit?.position || existingCredit?.role || "";
+  const matchedPosition = POSITIONS.find(
+    p => p.name.toLowerCase() === existingPosition.toLowerCase()
+  );
+
+  // Build initial production from existing credit
+  const existingProdTitle = existingCredit?.productions?.title || existingCredit?.title || "";
+  const existingProdId = existingCredit?.production_id || existingCredit?.productions?.id || null;
+
+  const [selectedPositionId, setSelectedPositionId] = useState<string | null>(
+    matchedPosition?.id || null
+  );
+  const [selectedProductionId, setSelectedProductionId] = useState<string | null>(
+    existingProdId
+  );
+
   const form = useForm<CreditFormValues>({
     resolver: zodResolver(creditSchema),
     defaultValues: {
-      position: existingCredit?.position || existingCredit?.role || "",
-      productionTitle: existingCredit?.productions?.title || existingCredit?.title || "",
+      position: existingPosition,
+      productionTitle: existingProdTitle,
+      productionId: existingProdId || undefined,
       description: existingCredit?.description || "",
       productionDate: existingCredit?.production_date
         ? new Date(existingCredit.production_date).toISOString().split('T')[0]
@@ -49,10 +69,44 @@ const CreditForm = ({ onSave, existingCredit, closeModal }: { onSave: (data: Cre
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
         <FormField control={form.control} name="position" render={({ field }) => (
-          <FormItem><FormLabel>Position</FormLabel><FormControl><Input placeholder="e.g. Director" {...field} list="positions" /></FormControl><datalist id="positions">{filmPositions.map(p => <option key={p} value={p} />)}</datalist><FormMessage /></FormItem>
+          <FormItem>
+            <FormLabel>Position</FormLabel>
+            <FormControl>
+              <PositionSelector
+                value={selectedPositionId}
+                onChange={(id, position) => {
+                  setSelectedPositionId(id);
+                  field.onChange(position?.name || '');
+                }}
+                initialSelectedItem={matchedPosition || (existingPosition ? {
+                  id: 'custom-' + existingPosition,
+                  name: existingPosition,
+                  department: 'Other',
+                } : null)}
+              />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
         )} />
         <FormField control={form.control} name="productionTitle" render={({ field }) => (
-          <FormItem><FormLabel>Production Title</FormLabel><FormControl><Input placeholder="e.g. My Awesome Film" {...field} /></FormControl><FormMessage /></FormItem>
+          <FormItem>
+            <FormLabel>Production</FormLabel>
+            <FormControl>
+              <ProductionSelector
+                value={selectedProductionId}
+                onChange={(id, production) => {
+                  setSelectedProductionId(id);
+                  form.setValue('productionId', id || undefined);
+                  field.onChange(production?.name || '');
+                }}
+                initialSelectedItem={existingProdId ? {
+                  id: existingProdId,
+                  name: existingProdTitle,
+                } as ProductionItem : null}
+              />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
         )} />
         <FormField control={form.control} name="productionDate" render={({ field }) => (
           <FormItem><FormLabel>Production Date (Optional)</FormLabel><FormControl><Input type="date" {...field} /></FormControl><FormMessage /></FormItem>
@@ -80,12 +134,17 @@ const ManageCredits = ({ initialCredits, onCreditsUpdate }: { initialCredits: an
     setIsSubmitting(true);
 
     try {
-      const creditPayload = {
+      const creditPayload: any = {
         position: data.position,
         production_title: data.productionTitle,
         description: data.description,
         production_date: data.productionDate || undefined,
       };
+
+      // Include production_id if a known production was selected
+      if (data.productionId) {
+        creditPayload.production_id = data.productionId;
+      }
 
       if (creditId) {
         // Update existing credit

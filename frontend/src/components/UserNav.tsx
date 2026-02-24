@@ -13,7 +13,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
-import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Landmark, Send, Inbox, Clapperboard, Crown, Handshake, Wrench, Building2, Home, Contact } from 'lucide-react';
+import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Landmark, Send, Inbox, Clapperboard, Crown, Handshake, Wrench, Building2, Home, Contact, ScrollText } from 'lucide-react';
 import { useLivePermissions, BADGE_CONFIG, BadgeType } from '@/hooks/useLivePermissions';
 import { cn } from '@/lib/utils';
 
@@ -200,6 +200,12 @@ export const UserNav = () => {
           <Link to="/backlot">
             <Film className="mr-2 h-4 w-4" />
             <span>The Backlot</span>
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
+          <Link to="/slate">
+            <ScrollText className="mr-2 h-4 w-4" />
+            <span>The Slate</span>
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">

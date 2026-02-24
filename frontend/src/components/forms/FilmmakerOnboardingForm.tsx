@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { departments, filmmakerSkills, experienceLevels, filmPositions, availableForOptions, contactMethods } from "@/data/filmmaker-options";
+import { departments, filmmakerSkills, experienceLevels, availableForOptions, contactMethods } from "@/data/filmmaker-options";
 import { MultiSelect } from "../ui/multi-select";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
@@ -39,10 +39,13 @@ import { TagInput } from "../ui/tag-input";
 import { AvatarUploader } from '../account/AvatarUploader';
 import { useQueryClient } from "@tanstack/react-query";
 import { LocationAutocomplete, LocationData } from '@/components/ui/location-autocomplete';
+import PositionSelector, { Position, POSITIONS } from '@/components/shared/PositionSelector';
+import ProductionSelector, { ProductionItem } from '@/components/shared/ProductionSelector';
 
 const creditSchema = z.object({
   position: z.string().min(1, "Position is required."),
   productionTitle: z.string().min(1, "Production title is required."),
+  productionId: z.string().optional(),
   description: z.string().max(250, "Description must be 250 characters or less.").optional(),
   productionDate: z.string().optional(),
 });
@@ -51,7 +54,6 @@ const onboardingSchema = z.object({
   fullName: z.string().min(2, "Full name is required."),
   displayName: z.string().optional(),
   location: z.string().optional(),
-  location_visible: z.boolean().default(true),
   portfolio_website: z.string().url("Please enter a valid URL.").optional().or(z.literal('')),
   reel_links: z.array(z.object({ value: z.string().url({ message: "Please enter a valid URL." }).or(z.literal('')) })).optional(),
   bio: z.string().max(500, "Bio cannot exceed 500 characters.").optional(),
@@ -72,9 +74,12 @@ type OnboardingFormValues = z.infer<typeof onboardingSchema>;
 type CreditFormValues = z.infer<typeof creditSchema>;
 
 const AddCreditForm = ({ onAddCredit, closeModal }: { onAddCredit: (data: CreditFormValues) => void, closeModal: () => void }) => {
+    const [selectedPositionId, setSelectedPositionId] = useState<string | null>(null);
+    const [selectedProductionId, setSelectedProductionId] = useState<string | null>(null);
+
     const form = useForm<CreditFormValues>({
         resolver: zodResolver(creditSchema),
-        defaultValues: { position: "", productionTitle: "", description: "", productionDate: "" },
+        defaultValues: { position: "", productionTitle: "", productionId: undefined, description: "", productionDate: "" },
     });
 
     function onSubmit(data: CreditFormValues) {
@@ -86,10 +91,35 @@ const AddCreditForm = ({ onAddCredit, closeModal }: { onAddCredit: (data: Credit
         <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
                 <FormField control={form.control} name="position" render={({ field }) => (
-                    <FormItem><FormLabel>Position</FormLabel><FormControl><Input placeholder="e.g. Director" {...field} list="positions" /></FormControl><datalist id="positions">{filmPositions.map(p => <option key={p} value={p} />)}</datalist><FormMessage /></FormItem>
+                    <FormItem>
+                        <FormLabel>Position</FormLabel>
+                        <FormControl>
+                            <PositionSelector
+                                value={selectedPositionId}
+                                onChange={(id, position) => {
+                                    setSelectedPositionId(id);
+                                    field.onChange(position?.name || '');
+                                }}
+                            />
+                        </FormControl>
+                        <FormMessage />
+                    </FormItem>
                 )} />
                 <FormField control={form.control} name="productionTitle" render={({ field }) => (
-                    <FormItem><FormLabel>Production Title</FormLabel><FormControl><Input placeholder="e.g. My Awesome Film" {...field} /></FormControl><FormMessage /></FormItem>
+                    <FormItem>
+                        <FormLabel>Production</FormLabel>
+                        <FormControl>
+                            <ProductionSelector
+                                value={selectedProductionId}
+                                onChange={(id, production) => {
+                                    setSelectedProductionId(id);
+                                    form.setValue('productionId', id || undefined);
+                                    field.onChange(production?.name || '');
+                                }}
+                            />
+                        </FormControl>
+                        <FormMessage />
+                    </FormItem>
                 )} />
                 <FormField control={form.control} name="productionDate" render={({ field }) => (
                     <FormItem><FormLabel>Production Date (Optional)</FormLabel><FormControl><Input type="date" {...field} /></FormControl><FormMessage /></FormItem>
@@ -116,7 +146,6 @@ const FilmmakerOnboardingForm = () => {
       fullName: "",
       displayName: "",
       location: "",
-      location_visible: true,
       portfolio_website: "",
       reel_links: [],
       bio: "",
@@ -158,7 +187,7 @@ const FilmmakerOnboardingForm = () => {
         reel_links: data.reel_links?.map(link => link.value).filter(Boolean) as string[],
         portfolio_website: data.portfolio_website,
         location: data.location,
-        location_visible: data.location_visible,
+        location_visible: true,
         department: data.department,
         experience_level: data.experienceLevel,
         skills: data.skills,
@@ -208,32 +237,24 @@ const FilmmakerOnboardingForm = () => {
                   )} />
                 </div>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <FormField control={form.control} name="location" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>City & State</FormLabel>
-                    <FormControl>
-                      <LocationAutocomplete
-                        value={field.value || ''}
-                        onChange={(locationData: LocationData) => {
-                          // In city mode, displayName is already "City, State" format
-                          field.onChange(locationData.displayName);
-                        }}
-                        showUseMyLocation={true}
-                        placeholder="Start typing a city..."
-                        mode="city"
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-              )} />
-              <FormField control={form.control} name="location_visible" render={({ field }) => (
-                  <FormItem className="flex flex-row items-center justify-between rounded-lg border border-muted-gray/20 p-4">
-                      <div className="space-y-0.5"><FormLabel>Show Location on Profile?</FormLabel></div>
-                      <FormControl><Switch checked={field.value} onCheckedChange={field.onChange} /></FormControl>
-                  </FormItem>
-              )} />
-            </div>
+            <FormField control={form.control} name="location" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>City & State</FormLabel>
+                  <FormControl>
+                    <LocationAutocomplete
+                      value={field.value || ''}
+                      onChange={(locationData: LocationData) => {
+                        // In city mode, displayName is already "City, State" format
+                        field.onChange(locationData.displayName);
+                      }}
+                      showUseMyLocation={true}
+                      placeholder="Start typing a city..."
+                      mode="city"
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+            )} />
             <FormField control={form.control} name="portfolio_website" render={({ field }) => (
                 <FormItem><FormLabel>Personal Website</FormLabel><FormControl><Input placeholder="https://your-portfolio.com" {...field} /></FormControl><FormMessage /></FormItem>
             )} />

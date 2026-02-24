@@ -194,6 +194,10 @@ const MediaDiscussionThread = React.lazy(() => import("./pages/media/DiscussionT
 const MediaAnalytics = React.lazy(() => import("./pages/media/Analytics"));
 const MediaAdmin = React.lazy(() => import("./pages/media/Admin"));
 
+// The Slate - Production database (IMDB-style)
+const SlateIndex = React.lazy(() => import("./pages/SlateIndex"));
+const SlatePage = React.lazy(() => import("./pages/SlatePage"));
+
 // Backlot Production Hub Pages
 const BacklotHome = React.lazy(() => import("./pages/backlot/BacklotHome"));
 const ProjectWorkspace = React.lazy(() => import("./pages/backlot/ProjectWorkspace"));
@@ -335,6 +339,8 @@ const App = () => (
                   <Route path="/terms" element={<Terms />} />
                   <Route path="/profile/:username" element={<FilmmakerProfile />} />
                   <Route path="/projects/:slug" element={<PublicProjectPage />} />
+                  <Route path="/slate" element={<SlateIndex />} />
+                  <Route path="/slate/:slug" element={<SlatePage />} />
                   <Route path="/share/:shareToken" element={<PublicCallSheetPage />} />
                   <Route path="/login" element={<Login />} />
                   <Route path="/signin" element={<Login />} />

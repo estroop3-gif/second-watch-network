@@ -228,6 +228,49 @@ async def get_my_profile(authorization: str = Header(None)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class LocationUpdate(BaseModel):
+    location: str
+
+
+@router.patch("/me/location")
+async def update_my_location(
+    data: LocationUpdate,
+    authorization: str = Header(None),
+):
+    """Auto-detect location update. Only writes if user has no existing location."""
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    location = (data.location or "").strip()
+    if not location:
+        return {"message": "No location provided", "updated": False}
+
+    try:
+        client = get_client()
+
+        # Check if filmmaker profile exists
+        existing = client.table("filmmaker_profiles").select("user_id, location").eq("user_id", user_id).execute()
+
+        if existing.data:
+            # Only write if no existing location
+            current_location = (existing.data[0].get("location") or "").strip()
+            if current_location:
+                return {"message": "Location already set", "updated": False}
+            client.table("filmmaker_profiles").update({"location": location}).eq("user_id", user_id).execute()
+        else:
+            # Create minimal filmmaker_profiles row
+            client.table("filmmaker_profiles").insert({"user_id": user_id, "location": location}).execute()
+
+        # Also ensure location_visible is true on profiles
+        client.table("profiles").update({"location_visible": True}).eq("id", user_id).execute()
+
+        return {"message": "Location updated", "updated": True, "location": location}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/{user_id}", response_model=Profile)
 async def get_profile(user_id: str):
     """Get user profile by ID"""
@@ -380,15 +423,17 @@ async def get_filmmaker_profile_by_username(username: str):
             "user_id", user_id
         ).order("created_at", desc=True).execute()
 
-        # Fetch associated productions by ID and merge
+        # Fetch associated productions by ID and merge (include slug for Slate links)
         credits_data = credits_result.data or []
         production_ids = list({c["production_id"] for c in credits_data if c.get("production_id")})
         productions_map = {}
         if production_ids:
             for pid in production_ids:
-                prod_result = client.table("productions").select("id, title").eq("id", pid).execute()
+                prod_result = client.table("productions").select("id, title, name, slug").eq("id", pid).execute()
                 if prod_result.data:
-                    productions_map[pid] = prod_result.data[0]
+                    p = prod_result.data[0]
+                    p["title"] = p.get("title") or p.get("name") or "Untitled"
+                    productions_map[pid] = p
         for credit in credits_data:
             pid = credit.get("production_id")
             credit["productions"] = productions_map.get(pid) if pid else None
@@ -514,25 +559,41 @@ async def get_partner_profile(user_id: str):
 
 @router.get("/credits/{user_id}")
 async def get_user_credits(user_id: str):
-    """Get all credits for a user with production titles"""
+    """Get all credits for a user with production titles and slugs"""
     try:
-        client = get_client()
-        response = client.table("credits").select(
-            "*, productions(id, title)"
-        ).eq("user_id", user_id).order("created_at", desc=True).execute()
+        from app.core.database import execute_query
+        # Use raw SQL for reliable join (query builder nested joins unreliable)
+        rows = execute_query("""
+            SELECT c.id, c.user_id, c.production_id, c.position, c.description,
+                   c.production_date, c.created_at, c.updated_at,
+                   p.name as prod_name, p.title as prod_title, p.slug as prod_slug
+            FROM credits c
+            LEFT JOIN productions p ON p.id = c.production_id
+            WHERE c.user_id = :user_id
+            ORDER BY c.created_at DESC
+        """, {"user_id": user_id})
 
-        # Map to expected format
         credits = []
-        for c in (response.data or []):
+        for c in (rows or []):
+            prod_date = c.get("production_date")
+            year = None
+            if prod_date:
+                try:
+                    year = int(str(prod_date)[:4])
+                except (ValueError, TypeError):
+                    pass
+
             credits.append({
-                "id": c.get("id"),
-                "user_id": c.get("user_id"),
-                "title": c.get("productions", {}).get("title") if c.get("productions") else "Unknown Production",
+                "id": str(c["id"]),
+                "user_id": str(c["user_id"]),
+                "production_id": str(c["production_id"]) if c.get("production_id") else None,
+                "title": c.get("prod_name") or c.get("prod_title") or "Unknown Production",
+                "production_slug": c.get("prod_slug"),
                 "role": c.get("position"),
-                "year": None,  # Could extract from production_date if needed
+                "year": year,
                 "description": c.get("description"),
-                "created_at": c.get("created_at"),
-                "updated_at": c.get("updated_at"),
+                "created_at": str(c["created_at"]) if c.get("created_at") else None,
+                "updated_at": str(c["updated_at"]) if c.get("updated_at") else None,
             })
 
         return credits
@@ -908,7 +969,7 @@ async def onboard_filmmaker(
         client.table("profiles").update({
             "full_name": data.full_name,
             "display_name": data.display_name,
-            "location_visible": data.location_visible,
+            "location_visible": True,
             "has_completed_filmmaker_onboarding": True,
         }).eq("id", user_id).execute()
 

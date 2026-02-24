@@ -54,7 +54,6 @@ interface ProfileHeaderProps {
   avatarUrl?: string | null;
   bio?: string | null;
   location?: string | null;
-  locationVisible?: boolean;
   primaryBadge: BadgeConfig;
   secondaryBadges: BadgeConfig[];
   roleSummary: string;
@@ -71,7 +70,6 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
   avatarUrl,
   bio,
   location,
-  locationVisible,
   primaryBadge,
   secondaryBadges,
   roleSummary,
@@ -120,7 +118,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
                 <p className="text-muted-gray text-sm">{roleSummary}</p>
 
                 {/* Location */}
-                {location && locationVisible !== false && (
+                {location && (
                   <div className="flex items-center gap-2 text-bone-white/80">
                     <MapPin className="h-4 w-4 text-muted-gray" />
                     <span>{location}</span>
@@ -374,7 +372,13 @@ const FilmmakerSection: React.FC<FilmmakerSectionProps> = ({ filmmakerProfile, c
                 <div key={credit.id} className="p-3 bg-muted-gray/10 rounded-lg">
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <p className="font-semibold text-bone-white">{credit.title}</p>
+                      {credit.production_slug ? (
+                        <Link to={`/slate/${credit.production_slug}`} className="font-semibold text-accent-yellow hover:underline">
+                          {credit.title}
+                        </Link>
+                      ) : (
+                        <p className="font-semibold text-bone-white">{credit.title}</p>
+                      )}
                       <div className="flex items-center gap-2 text-sm text-muted-gray">
                         {credit.role && <span>{credit.role}</span>}
                         {credit.role && credit.year && <span>•</span>}
@@ -985,7 +989,13 @@ const PublicProfilePreview: React.FC<PublicProfilePreviewProps> = ({
                           <p className="font-semibold">{credit.role}</p>
                           <p className="text-sm text-muted-gray flex items-center gap-2">
                             <Building className="h-4 w-4" />
-                            {credit.title}
+                            {credit.production_slug ? (
+                              <Link to={`/slate/${credit.production_slug}`} className="text-accent-yellow hover:underline">
+                                {credit.title}
+                              </Link>
+                            ) : (
+                              credit.title
+                            )}
                             {credit.year && ` (${credit.year})`}
                           </p>
                         </li>
@@ -1133,7 +1143,6 @@ const MyProfile: React.FC = () => {
   const avatarUrl = profile?.avatar_url || user.user_metadata?.avatar_url || filmmakerProfile?.profile_image_url as string | null | undefined;
   const bio = filmmakerProfile?.bio || (profile as any)?.bio as string | null | undefined;
   const location = filmmakerProfile?.location || (profile as any)?.location as string | null | undefined;
-  const locationVisible = (profile as any)?.location_visible;
 
   // Secondary badges (all except primary)
   const secondaryBadges = allBadges.filter(b => b.role !== primaryBadge.role);
@@ -1171,7 +1180,6 @@ const MyProfile: React.FC = () => {
             avatarUrl={avatarUrl}
             bio={bio}
             location={location}
-            locationVisible={locationVisible}
             primaryBadge={primaryBadge}
             secondaryBadges={secondaryBadges}
             roleSummary={roleSummary}

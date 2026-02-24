@@ -73,6 +73,8 @@ export interface CreditDB {
   project_type?: string;
   description?: string;
   link?: string;
+  production_id?: string;
+  production_slug?: string;
   created_at?: string;
   updated_at?: string;
 }

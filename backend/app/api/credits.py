@@ -77,6 +77,7 @@ async def get_my_credits(authorization: str = Header(None)):
 class CreditCreate(BaseModel):
     position: str
     production_title: str
+    production_id: Optional[str] = None
     description: Optional[str] = None
     production_date: Optional[str] = None
 
@@ -84,6 +85,7 @@ class CreditCreate(BaseModel):
 class CreditUpdate(BaseModel):
     position: Optional[str] = None
     production_title: Optional[str] = None
+    production_id: Optional[str] = None
     description: Optional[str] = None
     production_date: Optional[str] = None
 
@@ -118,27 +120,48 @@ async def list_credits(user_id: str):
 
 @router.post("/")
 async def create_credit(credit: CreditCreate, user_id: str):
-    """Create project credit - finds or creates production by title"""
+    """Create project credit - uses production_id if provided, else finds or creates by title"""
     try:
         client = get_client()
-
-        # Find existing production by title
-        production_result = client.table("productions").select("id").eq(
-            "title", credit.production_title
-        ).execute()
+        import re
 
         production_id = None
-        if production_result.data:
-            production_id = production_result.data[0]["id"]
+        production_title = credit.production_title
+
+        if credit.production_id:
+            # Use the provided production_id directly
+            production_id = credit.production_id
+            # Verify it exists
+            prod_check = client.table("productions").select("id, name, title").eq(
+                "id", production_id
+            ).execute()
+            if prod_check.data:
+                production_title = prod_check.data[0].get("name") or prod_check.data[0].get("title") or production_title
         else:
-            # Create new production
-            slug = credit.production_title.lower().replace(" ", "-")
-            new_production = client.table("productions").insert({
-                "title": credit.production_title,
-                "slug": slug,
-                "created_by": user_id,
-            }).execute()
-            production_id = new_production.data[0]["id"]
+            # Find existing production by title (check both name and title columns)
+            production_result = client.table("productions").select("id").eq(
+                "title", credit.production_title
+            ).execute()
+
+            if not production_result.data:
+                # Also try by name
+                production_result = client.table("productions").select("id").eq(
+                    "name", credit.production_title
+                ).execute()
+
+            if production_result.data:
+                production_id = production_result.data[0]["id"]
+            else:
+                # Create new production with both name and title
+                slug = re.sub(r'[^a-zA-Z0-9]+', '-', credit.production_title.lower()).strip('-')
+                new_production = client.table("productions").insert({
+                    "name": credit.production_title,
+                    "title": credit.production_title,
+                    "slug": slug,
+                    "created_by": user_id,
+                    "created_by_user_id": user_id,
+                }).execute()
+                production_id = new_production.data[0]["id"]
 
         # Create the credit
         credit_data = {
@@ -154,7 +177,7 @@ async def create_credit(credit: CreditCreate, user_id: str):
         # Return with production info
         return {
             **response.data[0],
-            "productions": {"id": production_id, "title": credit.production_title}
+            "productions": {"id": production_id, "title": production_title}
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -162,31 +185,39 @@ async def create_credit(credit: CreditCreate, user_id: str):
 
 @router.put("/{credit_id}")
 async def update_credit(credit_id: str, credit: CreditUpdate, user_id: str):
-    """Update a credit - optionally updates production title"""
+    """Update a credit - optionally updates production via production_id or title"""
     try:
         client = get_client()
+        import re
 
         update_data = {}
-        production_id = None
 
-        # If production title is being updated, find or create production
-        if credit.production_title:
+        # If production_id is provided, use it directly
+        if credit.production_id:
+            update_data["production_id"] = credit.production_id
+        elif credit.production_title:
+            # Find or create production by title
             production_result = client.table("productions").select("id").eq(
                 "title", credit.production_title
             ).execute()
 
+            if not production_result.data:
+                production_result = client.table("productions").select("id").eq(
+                    "name", credit.production_title
+                ).execute()
+
             if production_result.data:
-                production_id = production_result.data[0]["id"]
+                update_data["production_id"] = production_result.data[0]["id"]
             else:
-                slug = credit.production_title.lower().replace(" ", "-")
+                slug = re.sub(r'[^a-zA-Z0-9]+', '-', credit.production_title.lower()).strip('-')
                 new_production = client.table("productions").insert({
+                    "name": credit.production_title,
                     "title": credit.production_title,
                     "slug": slug,
                     "created_by": user_id,
+                    "created_by_user_id": user_id,
                 }).execute()
-                production_id = new_production.data[0]["id"]
-
-            update_data["production_id"] = production_id
+                update_data["production_id"] = new_production.data[0]["id"]
 
         if credit.position is not None:
             update_data["position"] = credit.position

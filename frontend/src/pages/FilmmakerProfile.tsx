@@ -289,7 +289,13 @@ const FilmmakerProfile = () => {
                           <p className="font-semibold">{credit.position}</p>
                           <p className="text-sm text-muted-gray flex items-center gap-2">
                             <Building className="h-4 w-4" />
-                            {credit.productions.title}
+                            {credit.productions?.slug ? (
+                              <Link to={`/slate/${credit.productions.slug}`} className="text-accent-yellow hover:underline">
+                                {credit.productions.title}
+                              </Link>
+                            ) : (
+                              credit.productions?.title || 'Unknown Production'
+                            )}
                             {credit.production_date && ` (${new Date(credit.production_date).getFullYear()})`}
                           </p>
                         </li>
@@ -310,7 +316,13 @@ const FilmmakerProfile = () => {
                           <p className="font-semibold">{credit.position}</p>
                           <p className="text-sm text-muted-gray flex items-center gap-2">
                             <Building className="h-4 w-4" />
-                            {credit.productions.title}
+                            {credit.productions?.slug ? (
+                              <Link to={`/slate/${credit.productions.slug}`} className="text-accent-yellow hover:underline">
+                                {credit.productions.title}
+                              </Link>
+                            ) : (
+                              credit.productions?.title || 'Unknown Production'
+                            )}
                             {credit.production_date && ` (${new Date(credit.production_date).getFullYear()})`}
                           </p>
                         </li>
