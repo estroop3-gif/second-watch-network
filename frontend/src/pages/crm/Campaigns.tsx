@@ -102,8 +102,8 @@ const Campaigns = () => {
     setForm((prev) => ({ ...prev, target_tags: prev.target_tags.filter((t) => t !== tag) }));
   };
 
-  const parseManualRecipients = () => {
-    const lines = manualInput.split('\n').filter((l) => l.trim());
+  const parseManualInput = (text: string) => {
+    const lines = text.split('\n').filter((l) => l.trim());
     const parsed: typeof form.manual_recipients = [];
     for (const line of lines) {
       const parts = line.split(',').map((p) => p.trim());
@@ -116,6 +116,11 @@ const Campaigns = () => {
         company: parts[3] || '',
       });
     }
+    return parsed;
+  };
+
+  const parseManualRecipients = () => {
+    const parsed = parseManualInput(manualInput);
     setForm((prev) => ({ ...prev, manual_recipients: parsed }));
   };
 
@@ -138,7 +143,12 @@ const Campaigns = () => {
   };
 
   const handleCreate = () => {
-    createCampaign.mutate(form, {
+    // Auto-parse manual input before submit so user doesn't have to click Parse
+    const submitForm = { ...form };
+    if (form.source_manual_emails && manualInput.trim()) {
+      submitForm.manual_recipients = parseManualInput(manualInput);
+    }
+    createCampaign.mutate(submitForm, {
       onSuccess: (result) => {
         setShowCreate(false);
         setForm({ ...INITIAL_FORM });

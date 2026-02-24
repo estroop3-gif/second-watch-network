@@ -117,6 +117,10 @@ const CampaignDetail = () => {
 
   const saveEdit = () => {
     const { target_temperature, target_tags, manual_recipients, target_roles, target_subscription_tiers, ...rest } = editForm;
+    // Auto-parse manual input before save so user doesn't have to click Parse
+    const finalManualRecipients = (editForm.source_manual_emails && editManualInput.trim())
+      ? parseManualText(editManualInput)
+      : manual_recipients;
     updateCampaign.mutate({
       id: id!,
       data: {
@@ -124,7 +128,7 @@ const CampaignDetail = () => {
         sender_mode: editSenderMode,
         target_temperature,
         target_tags,
-        manual_recipients,
+        manual_recipients: finalManualRecipients,
         target_roles,
         target_subscription_tiers,
       },
@@ -164,8 +168,8 @@ const CampaignDetail = () => {
     setEditForm((prev: any) => ({ ...prev, target_tags: prev.target_tags.filter((t: string) => t !== tag) }));
   };
 
-  const editParseManual = () => {
-    const lines = editManualInput.split('\n').filter((l) => l.trim());
+  const parseManualText = (text: string) => {
+    const lines = text.split('\n').filter((l) => l.trim());
     const parsed: any[] = [];
     for (const line of lines) {
       const parts = line.split(',').map((p) => p.trim());
@@ -173,6 +177,11 @@ const CampaignDetail = () => {
       if (!email || !email.includes('@')) continue;
       parsed.push({ email, first_name: parts[1] || '', last_name: parts[2] || '', company: parts[3] || '' });
     }
+    return parsed;
+  };
+
+  const editParseManual = () => {
+    const parsed = parseManualText(editManualInput);
     setEditForm((prev: any) => ({ ...prev, manual_recipients: parsed }));
   };
 
