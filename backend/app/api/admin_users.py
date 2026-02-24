@@ -591,15 +591,26 @@ async def delete_user(user_id: str, authorization: str = Header(None)):
         except Exception:
             pass  # Cognito user may already be gone
 
-        # Dynamically clear ALL foreign key references to this profile.
-        # For each FK pointing at profiles.id with NO ACTION or RESTRICT,
-        # SET NULL if the column is nullable, otherwise DELETE the row.
+        # Clear all foreign key references to this profile, then delete.
+        # Everything runs in one transaction so it's atomic.
         with get_db_session() as db:
+            # Explicit cleanup for known FK tables that reference profiles
+            # (backlot_trial_requests has 3 nullable FKs to profiles.id)
+            db.execute(text("""
+                UPDATE backlot_trial_requests
+                SET provisioned_profile_id = NULL,
+                    extension_approved_by = NULL,
+                    extension_denied_by = NULL
+                WHERE provisioned_profile_id = :uid
+                   OR extension_approved_by = :uid
+                   OR extension_denied_by = :uid
+            """), {"uid": user_id})
+
+            # Dynamic cleanup for ALL other FK references to profiles.id
             fk_refs = db.execute(text("""
                 SELECT
                     tc.table_name,
                     kcu.column_name,
-                    rc.delete_rule,
                     c.is_nullable
                 FROM information_schema.table_constraints tc
                 JOIN information_schema.key_column_usage kcu
@@ -624,7 +635,7 @@ async def delete_user(user_id: str, authorization: str = Header(None)):
             for ref in fk_refs:
                 tbl = ref[0]
                 col = ref[1]
-                nullable = ref[3] == "YES"
+                nullable = ref[2] == "YES"
                 if nullable:
                     db.execute(text(
                         f'UPDATE "{tbl}" SET "{col}" = NULL WHERE "{col}" = :uid'
@@ -634,8 +645,9 @@ async def delete_user(user_id: str, authorization: str = Header(None)):
                         f'DELETE FROM "{tbl}" WHERE "{col}" = :uid'
                     ), {"uid": user_id})
 
-        # Delete from database (CASCADE/SET NULL FKs handled by the DB)
-        client.table("profiles").delete().eq("id", user_id).execute()
+            # Delete the profile in the same transaction
+            db.execute(text('DELETE FROM profiles WHERE id = :uid'), {"uid": user_id})
+            db.commit()
 
         return {
             "success": True,

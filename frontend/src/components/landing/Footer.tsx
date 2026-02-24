@@ -12,7 +12,7 @@ const Footer = () => {
         <div className="flex gap-6 font-sans text-sm order-first md:order-none">
           <Link to="/submit" className="text-gray-500 hover:text-accent-yellow uppercase">Submit Content</Link>
           <Link to="/terms" className="text-gray-500 hover:text-accent-yellow uppercase">Terms</Link>
-          <a href="#" className="text-gray-500 hover:text-accent-yellow uppercase">Contact</a>
+          <Link to="/contact" className="text-gray-500 hover:text-accent-yellow uppercase">Contact</Link>
         </div>
         <div className="flex gap-4 md:flex-1 md:justify-end">
           <a href="https://www.instagram.com/secondwatchnetwork" target="_blank" rel="noopener noreferrer" aria-label="Instagram" className="text-gray-500 hover:text-accent-yellow">

@@ -30,18 +30,29 @@ async def get_newly_available_filmmakers(days: int = 2):
         client = get_client()
         cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
 
-        # Get availability records with user profile info
-        response = client.table("availability").select(
-            "*, profile:user_id(id, full_name, username, avatar_url, location)"
-        ).eq("is_available", True).gte("created_at", cutoff_date).execute()
+        # Get availability records (no nested joins — query builder doesn't support them)
+        response = client.table("availability").select("*").eq(
+            "is_available", True
+        ).gte("created_at", cutoff_date).execute()
 
         results = response.data
 
-        # Fetch filmmaker profiles for each user
+        # Fetch profile and filmmaker_profile for each user separately
         for item in results:
-            if item.get("user_id"):
-                fp_response = client.table("filmmaker_profiles").select("*").eq("user_id", item["user_id"]).execute()
+            user_id = item.get("user_id")
+            if user_id:
+                profile_resp = client.table("profiles").select(
+                    "id, full_name, username, avatar_url, location"
+                ).eq("id", user_id).execute()
+                item["profile"] = profile_resp.data[0] if profile_resp.data else None
+
+                fp_response = client.table("filmmaker_profiles").select("*").eq(
+                    "user_id", user_id
+                ).execute()
                 item["filmmaker_profile"] = fp_response.data[0] if fp_response.data else None
+            else:
+                item["profile"] = None
+                item["filmmaker_profile"] = None
 
         return results
     except Exception as e:

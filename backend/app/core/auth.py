@@ -89,8 +89,10 @@ async def get_current_user(
             )
 
         # Return user dict with profile ID (compatible with existing code)
+        # "sub" is an alias for cognito_id — many routes use current_user["sub"]
         return {
             "id": profile_id,
+            "sub": cognito_id,
             "cognito_id": cognito_id,
             "email": email,
             "is_admin": is_admin,

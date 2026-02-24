@@ -93,20 +93,31 @@ def _code_box(code: str) -> str:
 def build_verification_email(name: str, code: str) -> tuple[str, str]:
     """Verification code email for signup / resend code."""
     body = f"""
-<h2 style="color: {TEXT_LIGHT}; margin: 0 0 16px 0; font-size: 22px;">Verify Your Email</h2>
+<h2 style="color: {TEXT_LIGHT}; margin: 0 0 16px 0; font-size: 24px;">Welcome to Second Watch Network!</h2>
 <p style="color: {TEXT_MUTED}; margin: 0 0 8px 0; font-size: 15px; line-height: 1.6;">
     Hi{' ' + name if name else ''},
 </p>
+<p style="color: {TEXT_LIGHT}; margin: 0 0 8px 0; font-size: 15px; line-height: 1.6;">
+    Thanks for signing up! We're excited to have you join our community of purpose-driven filmmakers.
+</p>
 <p style="color: {TEXT_MUTED}; margin: 0 0 24px 0; font-size: 15px; line-height: 1.6;">
-    Welcome to Second Watch Network! Use the code below to verify your email address and complete your registration.
+    To get started, enter the verification code below on the confirmation page after signing up:
 </p>
 {_code_box(code)}
+<div style="background-color: {BG_CARD_INNER}; padding: 16px; border-radius: 8px; margin: 24px 0 0 0;">
+    <p style="color: {TEXT_LIGHT}; margin: 0 0 8px 0; font-size: 14px; font-weight: 600;">How to verify:</p>
+    <ol style="color: {TEXT_MUTED}; margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.8;">
+        <li>Go back to your sign-up tab or visit <a href="https://www.secondwatchnetwork.com" style="color: {ACCENT_YELLOW}; text-decoration: none;">secondwatchnetwork.com</a></li>
+        <li>Enter the 6-digit code above in the verification field</li>
+        <li>You'll be signed in automatically — welcome aboard!</li>
+    </ol>
+</div>
 <p style="color: #666; margin: 24px 0 0 0; font-size: 13px;">
     This code expires in 24 hours. If you didn't create an account, you can safely ignore this email.
 </p>"""
 
-    subject = "Verify Your Email — Second Watch Network"
-    return subject, _base_template("Verify Your Email", body)
+    subject = "Welcome to Second Watch Network — Verify Your Email"
+    return subject, _base_template("Welcome to Second Watch Network", body, preheader="Your verification code is inside. Welcome aboard!")
 
 
 def build_password_reset_email(name: str, code: str) -> tuple[str, str]:

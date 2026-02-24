@@ -56,12 +56,15 @@ const LoginForm = () => {
   const [newPasswordLoading, setNewPasswordLoading] = useState(false);
   const [resendCooldownUntil, setResendCooldownUntil] = useState<number | null>(null);
   const [lastTriedEmail, setLastTriedEmail] = useState<string>("");
+  const [lastTriedPassword, setLastTriedPassword] = useState<string>("");
   const [challengeSession, setChallengeSession] = useState<string>("");
+  const [confirmationCode, setConfirmationCode] = useState("");
+  const [isConfirming, setIsConfirming] = useState(false);
 
   const attemptsRef = useRef<{ timestamps: number[] }>({ timestamps: [] });
   const ariaLiveRef = useRef<string>("");
 
-  const { signIn, completeNewPassword } = useAuth();
+  const { signIn, completeNewPassword, confirmSignUp } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -112,8 +115,36 @@ const LoginForm = () => {
     }
   }
 
+  async function handleConfirmFromLogin() {
+    if (!confirmationCode || confirmationCode.length !== 6 || isConfirming) return;
+    setIsConfirming(true);
+
+    try {
+      await confirmSignUp(lastTriedEmail, confirmationCode);
+
+      // Re-attempt sign-in with stored credentials
+      if (lastTriedPassword) {
+        const result = await signIn(lastTriedEmail, lastTriedPassword);
+        if (result.success || !result.challenge) {
+          setConfirmOpen(false);
+          toast.success("Email confirmed! Welcome to Second Watch Network!");
+          navigate(returnTo || "/dashboard", { replace: true });
+          return;
+        }
+      }
+
+      setConfirmOpen(false);
+      toast.success("Email confirmed! Please sign in.");
+    } catch (error: any) {
+      toast.error(error?.message || "Invalid confirmation code. Please try again.");
+    } finally {
+      setIsConfirming(false);
+    }
+  }
+
   const onSubmit = async (values: FormValues) => {
     setLastTriedEmail(values.email);
+    setLastTriedPassword(values.password);
     if (loading) return;
 
     // Friendly client-side rate limit
@@ -286,9 +317,29 @@ const LoginForm = () => {
           <DialogHeader>
             <DialogTitle>Confirm your email to continue</DialogTitle>
             <DialogDescription>
-              We sent a verification link to {lastTriedEmail || "your email"}. Click the link to activate your account, then sign in.
+              We sent a 6-digit verification code to {lastTriedEmail || "your email"}. Enter it below to activate your account.
             </DialogDescription>
           </DialogHeader>
+
+          <div className="space-y-4">
+            <Input
+              type="text"
+              placeholder="Enter 6-digit code"
+              value={confirmationCode}
+              onChange={(e) => setConfirmationCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              className="text-center text-2xl tracking-widest"
+              maxLength={6}
+            />
+            <Button
+              onClick={handleConfirmFromLogin}
+              disabled={confirmationCode.length !== 6 || isConfirming}
+              className="w-full bg-accent-yellow text-charcoal-black"
+            >
+              {isConfirming && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {isConfirming ? "Confirming..." : "Confirm Email"}
+            </Button>
+          </div>
+
           <div className="text-sm text-muted-foreground">
             Didn’t get it? Check your spam folder or resend below.
           </div>
@@ -299,7 +350,7 @@ const LoginForm = () => {
               disabled={!!resendCooldownUntil && Date.now() < resendCooldownUntil}
               className="bg-accent-yellow text-charcoal-black"
             >
-              Resend confirmation
+              Resend code
             </Button>
           </DialogFooter>
         </DialogContent>

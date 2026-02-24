@@ -402,7 +402,10 @@ export function SignupForm() {
             </details>
           </div>
           <DialogFooter>
-            <UIButton variant="outline" onClick={() => setOpenConfirmSent(false)}>Cancel</UIButton>
+            <UIButton variant="outline" onClick={() => {
+              setOpenConfirmSent(false);
+              navigate('/confirm-email', { state: { email: lastEmail, password: form.getValues('password') } });
+            }}>Cancel</UIButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -416,7 +419,7 @@ export function SignupForm() {
           </DialogHeader>
           <DialogFooter className="flex gap-2">
             <UIButton autoFocus onClick={() => setOpenGenericError(false)} className="bg-accent-yellow text-charcoal-black">Try again</UIButton>
-            <a href="/contact" className="underline ml-auto">Contact support</a>
+            <Link to="/contact" className="underline ml-auto">Contact support</Link>
           </DialogFooter>
         </DialogContent>
       </Dialog>

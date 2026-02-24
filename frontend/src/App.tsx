@@ -20,6 +20,7 @@ import Signup from "./pages/Signup";
 import AuthCallback from "./pages/AuthCallback";
 import ResetPassword from "./pages/ResetPassword";
 import ConfirmEmail from "./pages/ConfirmEmail";
+import Contact from "./pages/Contact";
 import Dashboard from "./pages/Dashboard";
 import Account from "./pages/Account";
 import NotificationSettings from "./pages/NotificationSettings";
@@ -379,6 +380,7 @@ const App = () => (
 
                 {/* Auth pages without any layout */}
                 <Route path="/confirm-email" element={<ConfirmEmail />} />
+                <Route path="/contact" element={<Contact />} />
                 <Route path="/filmmaker-onboarding" element={<FilmmakerOnboarding />} />
                 <Route path="/filmmaker-onboarding/success" element={<FilmmakerOnboardingSuccess />} />
                 <Route path="/apply/filmmaker" element={<FilmmakerApplicationPage />} />

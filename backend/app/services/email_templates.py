@@ -122,6 +122,37 @@ def security_notice(text: str) -> str:
 </div>"""
 
 
+def build_welcome_email(name: str) -> tuple:
+    """
+    Welcome email sent after a user confirms their email address.
+    Returns (subject, html).
+    """
+    body = f"""
+<h2 style="color: {TEXT_LIGHT}; margin: 0 0 16px 0; font-size: 24px;">You're In!</h2>
+<p style="color: {TEXT_LIGHT}; margin: 0 0 8px 0; font-size: 16px; line-height: 1.6;">
+    Hi{' ' + name if name else ''},
+</p>
+<p style="color: {TEXT_MUTED}; margin: 0 0 24px 0; font-size: 15px; line-height: 1.6;">
+    Your email is verified and your Second Watch Network account is ready to go.
+    Welcome to a community of purpose-driven filmmakers.
+</p>
+
+{info_card("Explore the Platform", "Browse original content from independent creators, manage your productions with Backlot, and connect with fellow filmmakers.")}
+
+{info_card("Set Up Your Profile", "Add a photo, bio, and your filmmaking background so other creators can find and connect with you.")}
+
+{cta_button("Go to Your Dashboard", f"{LINK_URL}/dashboard")}
+
+<p style="color: #666; margin: 24px 0 0 0; font-size: 13px; line-height: 1.6;">
+    Questions? Reply to this email or reach us at
+    <a href="mailto:parker.stroop@theswn.com" style="color: {ACCENT_YELLOW}; text-decoration: none;">parker.stroop@theswn.com</a>
+</p>"""
+
+    subject = "Welcome to Second Watch Network!"
+    html = base_template("Welcome", body, preheader="Your account is ready. Let's get started!")
+    return subject, html
+
+
 def build_instant_notification_email(
     account_email: str,
     from_address: str,
