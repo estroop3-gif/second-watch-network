@@ -34,6 +34,7 @@ Parameters:
   S3AvatarsBucket:
     Type: String
     Description: S3 bucket for avatar uploads
+    Default: swn-avatars-517220555400
   S3BacklotBucket:
     Type: String
     Description: S3 bucket for backlot files
