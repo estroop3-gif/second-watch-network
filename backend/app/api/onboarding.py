@@ -108,8 +108,8 @@ def check_project_admin(project_id: str, profile_id: str) -> bool:
         return True
     # Check if user is a crew member with admin role
     crew = execute_single(
-        """SELECT role FROM backlot_crew_members
-           WHERE project_id = :project_id AND profile_id = :profile_id
+        """SELECT role FROM backlot_project_members
+           WHERE project_id = :project_id AND user_id = :profile_id
            AND role IN ('producer', 'executive_producer', 'line_producer', 'upm', 'admin')
            LIMIT 1""",
         {"project_id": project_id, "profile_id": profile_id}

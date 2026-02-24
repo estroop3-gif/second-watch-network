@@ -693,14 +693,14 @@ async def get_production_by_slug(slug: str):
                 if bp_row:
                     backlot_slug = bp_row.get("slug")
 
-                # Backlot crew
+                # Backlot crew (from project members)
                 crew_rows = execute_query("""
-                    SELECT bcm.id, bcm.user_id, bcm.role as position, bcm.department,
+                    SELECT bpm.id, bpm.user_id, bpm.role as position, bpm.department,
                            p.username, p.full_name, p.display_name, p.avatar_url
-                    FROM backlot_crew_members bcm
-                    LEFT JOIN profiles p ON p.id = bcm.user_id
-                    WHERE bcm.project_id = :pid
-                    ORDER BY bcm.department, bcm.role
+                    FROM backlot_project_members bpm
+                    LEFT JOIN profiles p ON p.id = bpm.user_id
+                    WHERE bpm.project_id = :pid
+                    ORDER BY bpm.department, bpm.role
                 """, {"pid": str(backlot_project_id)})
 
                 for row in (crew_rows or []):
@@ -716,26 +716,26 @@ async def get_production_by_slug(slug: str):
                         "source": "backlot_crew",
                     })
 
-                # Backlot cast
-                cast_rows = execute_query("""
-                    SELECT bcm.id, bcm.user_id, bcm.character_name, bcm.role_type,
+                # Backlot credits (from project credits)
+                credit_rows = execute_query("""
+                    SELECT bpc.id, bpc.user_id, bpc.credit_role, bpc.department,
                            p.username, p.full_name, p.display_name, p.avatar_url
-                    FROM backlot_cast_members bcm
-                    LEFT JOIN profiles p ON p.id = bcm.user_id
-                    WHERE bcm.project_id = :pid
-                    ORDER BY bcm.role_type, bcm.character_name
+                    FROM backlot_project_credits bpc
+                    LEFT JOIN profiles p ON p.id = bpc.user_id
+                    WHERE bpc.project_id = :pid AND bpc.is_public = true
+                    ORDER BY bpc.department, bpc.credit_role
                 """, {"pid": str(backlot_project_id)})
 
-                for row in (cast_rows or []):
+                for row in (credit_rows or []):
                     cast_crew.append({
                         "id": str(row["id"]),
                         "user_id": str(row["user_id"]) if row.get("user_id") else None,
-                        "position": row.get("character_name") or row.get("role_type") or "Cast",
+                        "position": row.get("credit_role") or "Crew",
                         "username": row.get("username"),
                         "full_name": row.get("full_name"),
                         "display_name": row.get("display_name") or row.get("full_name"),
                         "avatar_url": row.get("avatar_url"),
-                        "source": "backlot_cast",
+                        "source": "backlot_credit",
                     })
             except Exception as e:
                 print(f"Error fetching backlot credits: {e}")

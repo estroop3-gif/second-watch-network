@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, Navigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -90,31 +90,27 @@ const FilmmakerProfile = () => {
     );
   }
 
-  // Handle profile not found - show friendly message with option to create profile
+  // Handle profile not found
   if (profileNotFound || !profile) {
+    // For other users without filmmaker profiles, redirect to their public Slate person page
+    if (!isOwnProfile && username) {
+      return <Navigate to={`/slate/person/${username}`} replace />;
+    }
     return (
       <div className="container mx-auto px-4 max-w-lg py-12 text-center">
         <div className="mb-6">
           <User className="h-16 w-16 mx-auto text-muted-gray" />
         </div>
         <h2 className="text-2xl font-heading mb-2">Filmmaker Profile Not Found</h2>
-        {isOwnProfile ? (
-          <>
-            <p className="text-muted-gray mb-6">
-              You haven't set up your filmmaker profile yet. Complete your profile to showcase your work and connect with the community.
-            </p>
-            <Button asChild>
-              <Link to="/filmmaker-onboarding">
-                <UserPlus className="mr-2 h-4 w-4" />
-                Complete Your Profile
-              </Link>
-            </Button>
-          </>
-        ) : (
-          <p className="text-muted-gray">
-            This user hasn't set up a public filmmaker profile yet.
-          </p>
-        )}
+        <p className="text-muted-gray mb-6">
+          You haven't set up your filmmaker profile yet. Complete your profile to showcase your work and connect with the community.
+        </p>
+        <Button asChild>
+          <Link to="/filmmaker-onboarding">
+            <UserPlus className="mr-2 h-4 w-4" />
+            Complete Your Profile
+          </Link>
+        </Button>
       </div>
     );
   }
