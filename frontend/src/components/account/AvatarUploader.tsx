@@ -98,8 +98,8 @@ export const AvatarUploader: React.FC<AvatarUploaderProps> = ({ avatarUrl, onUpl
           <User className="w-16 h-16 text-bone-white" />
         </AvatarFallback>
       </Avatar>
-      <input type="file" ref={avatarInputRef} onChange={handleAvatarUpload} accept="image/*" capture="environment" className="hidden" />
-      <Button onClick={() => avatarInputRef.current?.click()} disabled={isUploading} className="w-full bg-charcoal-black border-2 border-accent-yellow text-accent-yellow hover:bg-accent-yellow hover:text-charcoal-black">
+      <input type="file" ref={avatarInputRef} onChange={handleAvatarUpload} accept="image/*" className="hidden" />
+      <Button type="button" onClick={() => avatarInputRef.current?.click()} disabled={isUploading} className="w-full bg-charcoal-black border-2 border-accent-yellow text-accent-yellow hover:bg-accent-yellow hover:text-charcoal-black">
         {isUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UploadCloud className="mr-2 h-4 w-4" />}
         {isUploading ? 'Uploading...' : 'Change Photo'}
       </Button>
