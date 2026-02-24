@@ -26,10 +26,12 @@ import { Separator } from "@/components/ui/separator";
 import OAuthButtons from "@/components/auth/OAuthButtons";
 import { getAuthErrorMessage } from "@/utils/authErrors";
 import { useAuth } from "@/context/AuthContext";
+import { LocationAutocomplete, LocationData } from "@/components/ui/location-autocomplete";
 
 const baseSchema = z.object({
   fullName: z.string(),
   displayName: z.string().optional(),
+  location: z.string().min(2, "Please enter your city & state."),
   email: z.string().email("Please enter a valid email address."),
   password: z.string()
     .min(8, "Password must be at least 8 characters.")
@@ -78,6 +80,7 @@ export function SignupForm() {
     defaultValues: {
       fullName: "",
       displayName: "",
+      location: "",
       email: "",
       password: "",
       confirmPassword: "",
@@ -135,6 +138,12 @@ export function SignupForm() {
       // Now sign in the user
       await signIn(lastEmail, form.getValues("password"));
 
+      // Save location to profile (best-effort, non-blocking)
+      const signupLocation = form.getValues("location");
+      if (signupLocation) {
+        api.updateMyLocation(signupLocation).catch(() => {});
+      }
+
       setOpenConfirmSent(false);
       toast.success("Email confirmed! Welcome to Second Watch Network!");
       navigate("/dashboard");
@@ -166,6 +175,11 @@ export function SignupForm() {
         track("signup_needs_confirmation", { email: values.email }, correlationIdRef.current);
         setOpenConfirmSent(true);
         return;
+      }
+
+      // Save location to profile (best-effort, non-blocking)
+      if (values.location) {
+        api.updateMyLocation(values.location).catch(() => {});
       }
 
       // Success: redirect to dashboard or show welcome message
@@ -218,6 +232,27 @@ export function SignupForm() {
                 <FormLabel className="font-heading uppercase text-bone-white">Display Name (Optional)</FormLabel>
                 <FormControl>
                   <Input placeholder="Display name" {...field} className="bg-charcoal-black border-muted-gray focus:border-accent-yellow" />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="location"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel className="font-heading uppercase text-bone-white">City & State</FormLabel>
+                <FormControl>
+                  <LocationAutocomplete
+                    value={field.value || ''}
+                    onChange={(locationData: LocationData) => {
+                      field.onChange(locationData.displayName);
+                    }}
+                    showUseMyLocation={true}
+                    placeholder="Start typing a city..."
+                    mode="city"
+                  />
                 </FormControl>
                 <FormMessage />
               </FormItem>

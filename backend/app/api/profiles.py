@@ -419,9 +419,10 @@ async def get_filmmaker_profile_by_username(username: str):
         filmmaker = filmmaker_result.data[0]
 
         # Get credits (separate queries — nested joins not supported)
+        # Only show approved credits on public profile
         credits_result = client.table("credits").select("*").eq(
             "user_id", user_id
-        ).order("created_at", desc=True).execute()
+        ).eq("status", "approved").order("created_at", desc=True).execute()
 
         # Fetch associated productions by ID and merge (include slug for Slate links)
         credits_data = credits_result.data or []
@@ -558,18 +559,35 @@ async def get_partner_profile(user_id: str):
 # =====================================================
 
 @router.get("/credits/{user_id}")
-async def get_user_credits(user_id: str):
-    """Get all credits for a user with production titles and slugs"""
+async def get_user_credits(
+    user_id: str,
+    authorization: str = Header(None),
+):
+    """Get all credits for a user with production titles and slugs.
+    Own credits include all statuses; other users only see approved."""
     try:
         from app.core.database import execute_query
-        # Use raw SQL for reliable join (query builder nested joins unreliable)
-        rows = execute_query("""
+
+        # Determine if the viewer is the same user (show all statuses)
+        is_own = False
+        if authorization:
+            try:
+                viewer = await get_current_user_from_token(authorization)
+                if viewer and viewer.get("id") == user_id:
+                    is_own = True
+            except Exception:
+                pass
+
+        status_filter = "" if is_own else "AND c.status = 'approved'"
+
+        rows = execute_query(f"""
             SELECT c.id, c.user_id, c.production_id, c.position, c.description,
                    c.production_date, c.created_at, c.updated_at,
+                   c.status, c.review_note,
                    p.name as prod_name, p.title as prod_title, p.slug as prod_slug
             FROM credits c
             LEFT JOIN productions p ON p.id = c.production_id
-            WHERE c.user_id = :user_id
+            WHERE c.user_id = :user_id {status_filter}
             ORDER BY c.created_at DESC
         """, {"user_id": user_id})
 
@@ -583,7 +601,7 @@ async def get_user_credits(user_id: str):
                 except (ValueError, TypeError):
                     pass
 
-            credits.append({
+            credit_item = {
                 "id": str(c["id"]),
                 "user_id": str(c["user_id"]),
                 "production_id": str(c["production_id"]) if c.get("production_id") else None,
@@ -594,11 +612,15 @@ async def get_user_credits(user_id: str):
                 "description": c.get("description"),
                 "created_at": str(c["created_at"]) if c.get("created_at") else None,
                 "updated_at": str(c["updated_at"]) if c.get("updated_at") else None,
-            })
+                "status": c.get("status") or "approved",
+            }
+            if is_own and c.get("review_note"):
+                credit_item["review_note"] = c.get("review_note")
+
+            credits.append(credit_item)
 
         return credits
     except Exception as e:
-        # Table might not exist yet
         print(f"Credits lookup error: {e}")
         return []
 

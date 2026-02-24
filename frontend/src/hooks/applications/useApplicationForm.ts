@@ -10,6 +10,7 @@ import {
   useCoverLetterTemplateMutations,
 } from '@/hooks/applications';
 import { useAuth } from '@/context/AuthContext';
+import { useAccountProfile } from '@/hooks/useAccountProfile';
 
 import type {
   ApplicationFormState,
@@ -95,6 +96,8 @@ interface UseApplicationFormOptions {
 export function useApplicationForm({ collab, isOpen, onClose, onSuccess }: UseApplicationFormOptions) {
   const { profile } = useAuth();
   const isOrderMember = profile?.is_order_member || false;
+  const { profile: accountProfile } = useAccountProfile();
+  const hasLocation = !!(accountProfile?.location && accountProfile.location.trim());
 
   // Form state
   const [formState, setFormState] = useState<ApplicationFormState>(getInitialFormState());
@@ -259,6 +262,9 @@ export function useApplicationForm({ collab, isOpen, onClose, onSuccess }: UseAp
 
   // Check if can submit
   const canSubmit = () => {
+    if (!hasLocation) {
+      return false;
+    }
     if (requirements.requires_local_hire && formState.local_hire_confirmed === null) {
       return false;
     }
@@ -321,6 +327,9 @@ export function useApplicationForm({ collab, isOpen, onClose, onSuccess }: UseAp
 
   // Get a specific error message for why submission is blocked
   const getSubmitBlockedReason = (): string | null => {
+    if (!hasLocation) {
+      return 'Please add your city & state to your profile before applying';
+    }
     if (requirements.requires_local_hire && formState.local_hire_confirmed === null) {
       return 'Please confirm your local hire status in the Details step';
     }
@@ -453,6 +462,7 @@ export function useApplicationForm({ collab, isOpen, onClose, onSuccess }: UseAp
     requirements,
     fulfilled,
     isOrderMember,
+    hasLocation,
 
     // Validation
     canSubmit,

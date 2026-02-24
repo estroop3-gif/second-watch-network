@@ -1331,6 +1331,11 @@ async def apply_to_collab(
         if collab.get("requires_headshot") and not application.headshot_url:
             raise HTTPException(status_code=400, detail="A headshot is required for this opportunity")
 
+        # Require city/state on filmmaker profile
+        filmmaker_loc = client.table("filmmaker_profiles").select("location").eq("user_id", user_id).execute()
+        if not filmmaker_loc.data or not (filmmaker_loc.data[0].get("location") or "").strip():
+            raise HTTPException(status_code=400, detail="Please add your city & state to your profile before applying")
+
         # Resolve resume_id to resume_url if needed
         resolved_resume_url = application.resume_url
         if not resolved_resume_url and application.resume_id:

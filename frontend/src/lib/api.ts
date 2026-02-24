@@ -1736,10 +1736,46 @@ class APIClient {
     return this.request<any>(`/api/v1/productions/slug/${slug}`)
   }
 
+  async getBacklotProjectForSlate(slug: string) {
+    return this.request<any>(`/api/v1/productions/backlot-slug/${slug}`)
+  }
+
   async quickCreateProduction(name: string) {
     return this.request<any>('/api/v1/productions/quick-create', {
       method: 'POST',
       body: JSON.stringify({ name }),
+    })
+  }
+
+  async searchUnified(q: string = '', type: string = 'all', limit: number = 10) {
+    return this.request<{ productions: any[]; people: any[] }>(
+      `/api/v1/productions/search/unified?q=${encodeURIComponent(q)}&type=${type}&limit=${limit}`
+    )
+  }
+
+  async getFilmography(username: string) {
+    return this.request<{ person: any; credits: any[]; backlot_credits: any[] }>(
+      `/api/v1/productions/filmography/${encodeURIComponent(username)}`
+    )
+  }
+
+  async getPendingCredits(skip: number = 0, limit: number = 50) {
+    return this.request<{ credits: any[]; total: number }>(
+      `/api/v1/credits/admin/pending?skip=${skip}&limit=${limit}`
+    )
+  }
+
+  async approveCredit(creditId: string, note?: string) {
+    return this.request<{ success: boolean }>(`/api/v1/credits/admin/${creditId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ note: note || null }),
+    })
+  }
+
+  async rejectCredit(creditId: string, note: string) {
+    return this.request<{ success: boolean }>(`/api/v1/credits/admin/${creditId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ note }),
     })
   }
 

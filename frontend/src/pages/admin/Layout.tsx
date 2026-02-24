@@ -20,6 +20,7 @@ import {
   HardDrive,
   Mail,
   Building2,
+  BadgeCheck,
 } from 'lucide-react';
 
 const AdminLayout = () => {
@@ -46,6 +47,7 @@ const AdminLayout = () => {
     { name: 'Audit Log', href: '/admin/audit-log', icon: Shield },
     { name: 'Donations', href: '/admin/donations', icon: Heart },
     { name: 'Alpha Testing', href: '/admin/alpha-testing', icon: FlaskConical },
+    { name: 'Credit Review', href: '/admin/credit-review', icon: BadgeCheck },
     { name: 'Email', href: '/admin/email', icon: Mail },
     { name: 'Site Settings', href: '/admin/settings', icon: Settings },
   ];

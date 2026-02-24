@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Loader2, Send, Video, Film, Image as ImageIcon, Sparkles } from 'lucide-react';
+import { Loader2, Send, Video, Film, Image as ImageIcon, Sparkles, AlertTriangle } from 'lucide-react';
 
 import ElevatorPitchInput from './ElevatorPitchInput';
 import CreditSelector from './CreditSelector';
@@ -73,6 +73,22 @@ const ApplicationModalDesktop: React.FC<ApplicationModalDesktopProps> = ({
         </DialogHeader>
 
         <div className="space-y-6 py-4">
+          {/* Location required banner */}
+          {!form.hasLocation && (
+            <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
+              <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+              <div className="text-sm">
+                <p className="text-amber-300 font-medium">City & state required</p>
+                <p className="text-muted-gray mt-1">
+                  Please add your city & state to your profile before applying.{' '}
+                  <a href="/account" className="text-accent-yellow underline hover:text-bone-white">
+                    Edit profile
+                  </a>
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Requirements */}
           <RequirementChecklist requirements={requirements} fulfilled={fulfilled} />
 

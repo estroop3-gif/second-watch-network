@@ -185,6 +185,258 @@ async def create_production(
 # SEARCH — Public production search (for ProductionSelector)
 # ============================================================================
 
+@router.get("/search/unified")
+async def search_unified(
+    q: str = Query("", description="Search query"),
+    type: str = Query("all", description="Filter: all, productions, people"),
+    limit: int = Query(10, ge=1, le=25),
+):
+    """
+    Unified search across productions and people.
+    Public, no auth required.
+    Returns { productions: [...], people: [...] }
+    """
+    try:
+        productions = []
+        people = []
+
+        if type in ("all", "productions"):
+            if q.strip():
+                prod_rows = execute_query("""
+                    SELECT id, name, title, production_type, slug, backlot_project_id,
+                           poster_url, year
+                    FROM productions
+                    WHERE name ILIKE :pattern OR title ILIKE :pattern
+                    ORDER BY
+                        CASE WHEN lower(COALESCE(name, '')) = lower(:exact) THEN 0
+                             WHEN lower(COALESCE(name, '')) LIKE lower(:prefix) THEN 1
+                             ELSE 2 END,
+                        updated_at DESC NULLS LAST
+                    LIMIT :lim
+                """, {"pattern": f"%{q}%", "exact": q, "prefix": f"{q}%", "lim": limit})
+            else:
+                prod_rows = execute_query("""
+                    SELECT id, name, title, production_type, slug, backlot_project_id,
+                           poster_url, year
+                    FROM productions
+                    ORDER BY updated_at DESC NULLS LAST
+                    LIMIT :lim
+                """, {"lim": limit})
+
+            seen_ids = set()
+            linked_backlot_ids = set()
+            for row in (prod_rows or []):
+                pid = str(row["id"])
+                seen_ids.add(pid)
+                if row.get("backlot_project_id"):
+                    linked_backlot_ids.add(str(row["backlot_project_id"]))
+                productions.append({
+                    "id": pid,
+                    "name": row.get("name") or row.get("title") or "Untitled",
+                    "production_type": row.get("production_type"),
+                    "slug": row.get("slug"),
+                    "source": "production",
+                    "poster_url": row.get("poster_url"),
+                    "year": row.get("year"),
+                })
+
+            # Also search public backlot projects
+            if q.strip():
+                backlot_rows = execute_query("""
+                    SELECT id, title, slug
+                    FROM backlot_projects
+                    WHERE (title ILIKE :pattern)
+                      AND visibility IN ('public', 'unlisted')
+                    ORDER BY updated_at DESC NULLS LAST
+                    LIMIT :lim
+                """, {"pattern": f"%{q}%", "lim": limit})
+            else:
+                backlot_rows = execute_query("""
+                    SELECT id, title, slug
+                    FROM backlot_projects
+                    WHERE visibility IN ('public', 'unlisted')
+                    ORDER BY updated_at DESC NULLS LAST
+                    LIMIT :lim
+                """, {"lim": limit})
+
+            for row in (backlot_rows or []):
+                bid = str(row["id"])
+                if bid in linked_backlot_ids:
+                    continue
+                productions.append({
+                    "id": f"backlot:{bid}",
+                    "name": row.get("title") or "Untitled",
+                    "production_type": None,
+                    "slug": row.get("slug"),
+                    "source": "backlot",
+                })
+            productions = productions[:limit]
+
+        if type in ("all", "people") and q.strip():
+            people_rows = execute_query("""
+                SELECT p.id, p.username, p.full_name, p.display_name, p.avatar_url,
+                       fp.department,
+                       COUNT(c.id) FILTER (WHERE c.status = 'approved') as credit_count
+                FROM profiles p
+                LEFT JOIN filmmaker_profiles fp ON fp.user_id = p.id
+                LEFT JOIN credits c ON c.user_id = p.id
+                WHERE p.full_name ILIKE :pattern
+                   OR p.display_name ILIKE :pattern
+                   OR p.username ILIKE :pattern
+                GROUP BY p.id, p.username, p.full_name, p.display_name, p.avatar_url, fp.department
+                ORDER BY
+                    CASE WHEN lower(COALESCE(p.full_name, '')) = lower(:exact) THEN 0
+                         WHEN lower(COALESCE(p.username, '')) = lower(:exact) THEN 0
+                         WHEN lower(COALESCE(p.full_name, '')) LIKE lower(:prefix) THEN 1
+                         ELSE 2 END,
+                    credit_count DESC
+                LIMIT :lim
+            """, {"pattern": f"%{q}%", "exact": q, "prefix": f"{q}%", "lim": limit})
+
+            for row in (people_rows or []):
+                people.append({
+                    "id": str(row["id"]),
+                    "username": row.get("username"),
+                    "full_name": row.get("full_name"),
+                    "display_name": row.get("display_name"),
+                    "avatar_url": row.get("avatar_url"),
+                    "department": row.get("department"),
+                    "credit_count": row.get("credit_count") or 0,
+                })
+
+        return {"productions": productions, "people": people}
+
+    except Exception as e:
+        print(f"Error in search_unified: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/filmography/{username}")
+async def get_filmography(username: str):
+    """
+    Get a person's filmography by username.
+    Public, no auth required. Only returns approved credits.
+    """
+    try:
+        # Get the person's profile
+        person_row = execute_single("""
+            SELECT id, username, full_name, display_name, avatar_url, tagline
+            FROM profiles
+            WHERE username = :username
+        """, {"username": username})
+
+        if not person_row:
+            raise HTTPException(status_code=404, detail="Person not found")
+
+        user_id = str(person_row["id"])
+
+        # Get approved manual credits with production info
+        credits_rows = execute_query("""
+            SELECT c.id, c.position, c.description, c.production_date, c.created_at,
+                   p.id as prod_id, p.name as prod_name, p.title as prod_title,
+                   p.slug as prod_slug, p.production_type, p.year as prod_year,
+                   p.poster_url as prod_poster_url
+            FROM credits c
+            LEFT JOIN productions p ON p.id = c.production_id
+            WHERE c.user_id = :user_id AND c.status = 'approved'
+            ORDER BY p.year DESC NULLS LAST, c.created_at DESC
+        """, {"user_id": user_id})
+
+        credits = []
+        for row in (credits_rows or []):
+            year = row.get("prod_year")
+            if not year and row.get("production_date"):
+                try:
+                    year = int(str(row["production_date"])[:4])
+                except (ValueError, TypeError):
+                    pass
+            credits.append({
+                "id": str(row["id"]),
+                "position": row.get("position"),
+                "description": row.get("description"),
+                "production_name": row.get("prod_name") or row.get("prod_title") or "Unknown",
+                "production_slug": row.get("prod_slug"),
+                "production_type": row.get("production_type"),
+                "year": year,
+                "poster_url": row.get("prod_poster_url"),
+            })
+
+        # Also get backlot project credits (crew via project_members, public credits)
+        backlot_credits = []
+        try:
+            crew_rows = execute_query("""
+                SELECT bpm.id, bpm.role as position, bpm.department,
+                       bp.title as project_title, bp.slug as project_slug
+                FROM backlot_project_members bpm
+                JOIN backlot_projects bp ON bp.id = bpm.project_id
+                WHERE bpm.user_id = :user_id
+                ORDER BY bp.updated_at DESC NULLS LAST
+            """, {"user_id": user_id})
+            for row in (crew_rows or []):
+                backlot_credits.append({
+                    "id": str(row["id"]),
+                    "position": row.get("position"),
+                    "department": row.get("department"),
+                    "project_title": row.get("project_title"),
+                    "project_slug": row.get("project_slug"),
+                    "source": "crew",
+                })
+        except Exception as e:
+            print(f"Error fetching backlot crew for filmography: {e}")
+
+        try:
+            credit_rows = execute_query("""
+                SELECT bpc.id, bpc.credit_role as position, bpc.department,
+                       bp.title as project_title, bp.slug as project_slug
+                FROM backlot_project_credits bpc
+                JOIN backlot_projects bp ON bp.id = bpc.project_id
+                WHERE bpc.user_id = :user_id AND bpc.is_public = true
+                ORDER BY bp.updated_at DESC NULLS LAST
+            """, {"user_id": user_id})
+            for row in (credit_rows or []):
+                backlot_credits.append({
+                    "id": str(row["id"]),
+                    "position": row.get("position"),
+                    "department": row.get("department"),
+                    "project_title": row.get("project_title"),
+                    "project_slug": row.get("project_slug"),
+                    "source": "credit",
+                })
+        except Exception as e:
+            print(f"Error fetching backlot credits for filmography: {e}")
+
+        # Get filmmaker profile for bio/headline
+        filmmaker_row = execute_single("""
+            SELECT bio, department, experience_level
+            FROM filmmaker_profiles
+            WHERE user_id = :user_id
+        """, {"user_id": user_id})
+
+        person = {
+            "id": user_id,
+            "username": person_row.get("username"),
+            "full_name": person_row.get("full_name"),
+            "display_name": person_row.get("display_name"),
+            "avatar_url": person_row.get("avatar_url"),
+            "tagline": person_row.get("tagline"),
+            "bio": filmmaker_row.get("bio") if filmmaker_row else None,
+            "department": filmmaker_row.get("department") if filmmaker_row else None,
+            "experience_level": filmmaker_row.get("experience_level") if filmmaker_row else None,
+        }
+
+        return {
+            "person": person,
+            "credits": credits,
+            "backlot_credits": backlot_credits,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_filmography: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/search/all")
 async def search_all_productions(
     q: str = Query("", description="Search query"),
@@ -392,7 +644,8 @@ async def get_production_by_slug(slug: str):
         prod_row = execute_single("""
             SELECT id, name, title, slug, production_type, company, year,
                    description, logline, poster_url, genre, status,
-                   backlot_project_id, network_id, created_at
+                   backlot_project_id, network_id, created_at,
+                   runtime_minutes, tagline, backdrop_url
             FROM productions
             WHERE slug = :slug
         """, {"slug": slug})
@@ -403,13 +656,13 @@ async def get_production_by_slug(slug: str):
         production_id = str(prod_row["id"])
         prod_name = prod_row.get("name") or prod_row.get("title") or "Untitled"
 
-        # Get manual credits for this production
+        # Get manual credits for this production (only approved)
         credits_rows = execute_query("""
             SELECT c.id, c.user_id, c.position, c.description, c.production_date,
                    p.username, p.full_name, p.display_name, p.avatar_url
             FROM credits c
             LEFT JOIN profiles p ON p.id = c.user_id
-            WHERE c.production_id = :prod_id
+            WHERE c.production_id = :prod_id AND c.status = 'approved'
             ORDER BY c.created_at ASC
         """, {"prod_id": production_id})
 
@@ -422,6 +675,7 @@ async def get_production_by_slug(slug: str):
                 "description": row.get("description"),
                 "production_date": str(row["production_date"]) if row.get("production_date") else None,
                 "username": row.get("username"),
+                "full_name": row.get("full_name"),
                 "display_name": row.get("display_name") or row.get("full_name"),
                 "avatar_url": row.get("avatar_url"),
                 "source": "credit",
@@ -456,6 +710,7 @@ async def get_production_by_slug(slug: str):
                         "position": row.get("position"),
                         "department": row.get("department"),
                         "username": row.get("username"),
+                        "full_name": row.get("full_name"),
                         "display_name": row.get("display_name") or row.get("full_name"),
                         "avatar_url": row.get("avatar_url"),
                         "source": "backlot_crew",
@@ -477,6 +732,7 @@ async def get_production_by_slug(slug: str):
                         "user_id": str(row["user_id"]) if row.get("user_id") else None,
                         "position": row.get("character_name") or row.get("role_type") or "Cast",
                         "username": row.get("username"),
+                        "full_name": row.get("full_name"),
                         "display_name": row.get("display_name") or row.get("full_name"),
                         "avatar_url": row.get("avatar_url"),
                         "source": "backlot_cast",
@@ -496,6 +752,9 @@ async def get_production_by_slug(slug: str):
             "poster_url": prod_row.get("poster_url"),
             "genre": prod_row.get("genre") or [],
             "status": prod_row.get("status") or "released",
+            "runtime_minutes": prod_row.get("runtime_minutes"),
+            "tagline": prod_row.get("tagline"),
+            "backdrop_url": prod_row.get("backdrop_url"),
             "backlot_project_id": str(backlot_project_id) if backlot_project_id else None,
             "backlot_slug": backlot_slug,
             "cast_crew": cast_crew,
@@ -505,6 +764,132 @@ async def get_production_by_slug(slug: str):
         raise
     except Exception as e:
         print(f"Error in get_production_by_slug: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/backlot-slug/{slug}")
+async def get_backlot_project_for_slate(slug: str):
+    """
+    Get a backlot project by slug for The Slate — public, no auth required.
+    Returns same shape as get_production_by_slug so the frontend can render identically.
+    """
+    try:
+        proj_row = execute_single("""
+            SELECT id, title, slug, description, logline, genre, status,
+                   cover_image_url, thumbnail_url, project_type, runtime_minutes,
+                   organization_id
+            FROM backlot_projects
+            WHERE slug = :slug AND visibility IN ('public', 'unlisted')
+        """, {"slug": slug})
+
+        if not proj_row:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        project_id = str(proj_row["id"])
+        proj_name = proj_row.get("title") or "Untitled"
+
+        # Parse genre — may be a comma-separated string or null
+        raw_genre = proj_row.get("genre")
+        if isinstance(raw_genre, list):
+            genres = raw_genre
+        elif isinstance(raw_genre, str) and raw_genre.strip():
+            genres = [g.strip() for g in raw_genre.split(",") if g.strip()]
+        else:
+            genres = []
+
+        # Get organization name as "company"
+        company = None
+        if proj_row.get("organization_id"):
+            org_row = execute_single("""
+                SELECT name FROM organizations WHERE id = :oid
+            """, {"oid": str(proj_row["organization_id"])})
+            if org_row:
+                company = org_row.get("name")
+
+        # Get project members (crew)
+        cast_crew = []
+        member_rows = execute_query("""
+            SELECT bpm.id, bpm.user_id, bpm.role as position, bpm.department,
+                   p.username, p.full_name, p.display_name, p.avatar_url
+            FROM backlot_project_members bpm
+            LEFT JOIN profiles p ON p.id = bpm.user_id
+            WHERE bpm.project_id = :pid
+            ORDER BY bpm.department NULLS LAST, bpm.role
+        """, {"pid": project_id})
+
+        for row in (member_rows or []):
+            cast_crew.append({
+                "id": str(row["id"]),
+                "user_id": str(row["user_id"]) if row.get("user_id") else None,
+                "position": row.get("position"),
+                "department": row.get("department"),
+                "username": row.get("username"),
+                "full_name": row.get("full_name"),
+                "display_name": row.get("display_name") or row.get("full_name"),
+                "avatar_url": row.get("avatar_url"),
+                "source": "backlot_crew",
+            })
+
+        # Get public credits
+        credit_rows = execute_query("""
+            SELECT bpc.id, bpc.user_id, bpc.credit_role as position, bpc.department,
+                   p.username, p.full_name, p.display_name, p.avatar_url
+            FROM backlot_project_credits bpc
+            LEFT JOIN profiles p ON p.id = bpc.user_id
+            WHERE bpc.project_id = :pid AND bpc.is_public = true
+            ORDER BY bpc.department NULLS LAST, bpc.credit_role
+        """, {"pid": project_id})
+
+        for row in (credit_rows or []):
+            cast_crew.append({
+                "id": str(row["id"]),
+                "user_id": str(row["user_id"]) if row.get("user_id") else None,
+                "position": row.get("position"),
+                "department": row.get("department"),
+                "username": row.get("username"),
+                "full_name": row.get("full_name"),
+                "display_name": row.get("display_name") or row.get("full_name"),
+                "avatar_url": row.get("avatar_url"),
+                "source": "backlot_crew",
+            })
+
+        # Map backlot project_type to production_type label
+        type_map = {
+            "film": "feature_film",
+            "short": "short_film",
+            "series": "series_episodic",
+            "documentary": "documentary",
+            "commercial": "commercial",
+            "music_video": "music_video",
+            "web": "web_content",
+        }
+        production_type = type_map.get(proj_row.get("project_type"), proj_row.get("project_type"))
+
+        return {
+            "id": project_id,
+            "name": proj_name,
+            "slug": proj_row.get("slug"),
+            "production_type": production_type,
+            "company": company,
+            "year": None,
+            "description": proj_row.get("description"),
+            "logline": proj_row.get("logline"),
+            "poster_url": proj_row.get("cover_image_url") or proj_row.get("thumbnail_url"),
+            "genre": genres,
+            "status": proj_row.get("status") or "pre_production",
+            "runtime_minutes": proj_row.get("runtime_minutes"),
+            "tagline": None,
+            "backdrop_url": None,
+            "backlot_project_id": project_id,
+            "backlot_slug": proj_row.get("slug"),
+            "cast_crew": cast_crew,
+            "source": "backlot",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_backlot_project_for_slate: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

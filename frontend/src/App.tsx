@@ -129,6 +129,7 @@ const EmailLogs = React.lazy(() => import("./pages/admin/EmailLogs"));
 const AdminEmailPage = React.lazy(() => import("./pages/admin/AdminEmail"));
 const AdminOrganizations = React.lazy(() => import("./pages/admin/Organizations"));
 const AdminBacklotTrials = React.lazy(() => import("./pages/admin/BacklotTrials"));
+const AdminCreditReview = React.lazy(() => import("./pages/admin/CreditReview"));
 
 // Public Pages
 const BacklotFreeTrial = React.lazy(() => import("./pages/BacklotFreeTrial"));
@@ -197,6 +198,7 @@ const MediaAdmin = React.lazy(() => import("./pages/media/Admin"));
 // The Slate - Production database (IMDB-style)
 const SlateIndex = React.lazy(() => import("./pages/SlateIndex"));
 const SlatePage = React.lazy(() => import("./pages/SlatePage"));
+const SlatePersonPage = React.lazy(() => import("./pages/SlatePersonPage"));
 
 // Backlot Production Hub Pages
 const BacklotHome = React.lazy(() => import("./pages/backlot/BacklotHome"));
@@ -340,6 +342,8 @@ const App = () => (
                   <Route path="/profile/:username" element={<FilmmakerProfile />} />
                   <Route path="/projects/:slug" element={<PublicProjectPage />} />
                   <Route path="/slate" element={<SlateIndex />} />
+                  <Route path="/slate/person/:username" element={<SlatePersonPage />} />
+                  <Route path="/slate/backlot/:slug" element={<SlatePage source="backlot" />} />
                   <Route path="/slate/:slug" element={<SlatePage />} />
                   <Route path="/share/:shareToken" element={<PublicCallSheetPage />} />
                   <Route path="/login" element={<Login />} />
@@ -624,6 +628,7 @@ const App = () => (
                         <Route path="audit-log" element={<AuditLog />} />
                         <Route path="donations" element={<AdminDonations />} />
                         <Route path="alpha-testing" element={<AlphaTesting />} />
+                        <Route path="credit-review" element={<AdminCreditReview />} />
                         <Route path="email" element={<AdminEmailPage />} />
                         <Route path="email-logs" element={<Navigate to="/admin/email" replace />} />
                         <Route path="settings" element={<SiteSettings />} />

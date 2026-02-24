@@ -5,12 +5,14 @@ import * as z from 'zod';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { toast } from 'sonner';
-import { Loader2, PlusCircle, Trash2, Edit, X } from 'lucide-react';
+import { Loader2, PlusCircle, Trash2, Edit, X, Clock, CheckCircle, XCircle } from 'lucide-react';
 
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { Badge } from '@/components/ui/badge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogClose } from '@/components/ui/dialog';
 import { AccountSection } from '@/components/account/AccountSection';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
@@ -198,14 +200,17 @@ const ManageCredits = ({ initialCredits, onCreditsUpdate }: { initialCredits: an
         ) : (
           initialCredits.map((credit) => (
             <div key={credit.id} className="flex items-center justify-between p-3 bg-charcoal-black/50 rounded-md border border-muted-gray/20">
-              <div>
-                <p className="font-semibold">{credit.position || credit.role || 'Credit'}</p>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="font-semibold">{credit.position || credit.role || 'Credit'}</p>
+                  <CreditStatusBadge status={credit.status} reviewNote={credit.review_note} />
+                </div>
                 <p className="text-sm text-muted-gray">
                   {credit.productions?.title || credit.title || 'Unknown Production'}
                   {(credit.production_date || credit.year) && ` (${credit.year || new Date(credit.production_date).getFullYear()})`}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-shrink-0">
                 <Button type="button" variant="ghost" size="icon" onClick={() => { setEditingCredit(credit); setIsModalOpen(true); }}>
                   <Edit className="h-4 w-4" />
                 </Button>
@@ -228,6 +233,43 @@ const ManageCredits = ({ initialCredits, onCreditsUpdate }: { initialCredits: an
       </div>
     </AccountSection>
   );
+};
+
+const CreditStatusBadge: React.FC<{ status?: string; reviewNote?: string }> = ({ status, reviewNote }) => {
+  if (!status || status === 'approved') return null;
+
+  if (status === 'pending') {
+    return (
+      <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 border-yellow-500/40 text-yellow-400 bg-yellow-500/10">
+        <Clock className="w-3 h-3 mr-1" />
+        Pending Review
+      </Badge>
+    );
+  }
+
+  if (status === 'rejected') {
+    const badge = (
+      <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 border-primary-red/40 text-primary-red bg-primary-red/10">
+        <XCircle className="w-3 h-3 mr-1" />
+        Rejected
+      </Badge>
+    );
+
+    if (reviewNote) {
+      return (
+        <Tooltip>
+          <TooltipTrigger asChild>{badge}</TooltipTrigger>
+          <TooltipContent side="top" className="max-w-xs">
+            <p className="text-sm">{reviewNote}</p>
+          </TooltipContent>
+        </Tooltip>
+      );
+    }
+
+    return badge;
+  }
+
+  return null;
 };
 
 export default ManageCredits;

@@ -1,9 +1,9 @@
 """
 Credits API Routes
 """
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Depends, Query
 from typing import List, Optional
-from app.core.database import get_client
+from app.core.database import get_client, execute_query, execute_single, execute_insert
 from app.api.community import get_current_user_from_token
 from pydantic import BaseModel
 from datetime import date
@@ -15,7 +15,6 @@ router = APIRouter()
 async def get_my_credits(authorization: str = Header(None)):
     """Get current user's credits for application selection"""
     from app.api.users import get_profile_id_from_cognito_id
-    from app.core.database import execute_query
 
     user = await get_current_user_from_token(authorization)
     cognito_id = user["id"]
@@ -49,7 +48,7 @@ async def get_my_credits(authorization: str = Header(None)):
 
         # Get manual credits with production titles
         manual_credits = execute_query("""
-            SELECT c.id, c.position, p.title as project_title
+            SELECT c.id, c.position, c.status, p.title as project_title
             FROM credits c
             LEFT JOIN productions p ON p.id = c.production_id
             WHERE c.user_id = :user_id
@@ -64,6 +63,7 @@ async def get_my_credits(authorization: str = Header(None)):
                 "department": None,
                 "is_primary": False,
                 "source": "manual",
+                "status": c.get("status") or "approved",
             })
 
         return {"credits": credits}
@@ -90,6 +90,10 @@ class CreditUpdate(BaseModel):
     production_date: Optional[str] = None
 
 
+class CreditReviewInput(BaseModel):
+    note: Optional[str] = None
+
+
 @router.get("/")
 async def list_credits(user_id: str):
     """List user's project credits with production details"""
@@ -110,6 +114,8 @@ async def list_credits(user_id: str):
                 "description": c.get("description"),
                 "production_date": c.get("production_date"),
                 "created_at": c.get("created_at"),
+                "status": c.get("status") or "approved",
+                "review_note": c.get("review_note"),
                 "productions": c.get("productions"),
             })
 
@@ -118,9 +124,23 @@ async def list_credits(user_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _is_admin_user(user_id: str) -> bool:
+    """Check if a user is admin or superadmin."""
+    try:
+        row = execute_single("""
+            SELECT is_admin, is_superadmin FROM profiles WHERE id = :id
+        """, {"id": user_id})
+        if not row:
+            return False
+        return bool(row.get("is_admin")) or bool(row.get("is_superadmin"))
+    except Exception:
+        return False
+
+
 @router.post("/")
 async def create_credit(credit: CreditCreate, user_id: str):
-    """Create project credit - uses production_id if provided, else finds or creates by title"""
+    """Create project credit - uses production_id if provided, else finds or creates by title.
+    New credits are 'pending' unless submitted by an admin (auto-approved)."""
     try:
         client = get_client()
         import re
@@ -163,6 +183,10 @@ async def create_credit(credit: CreditCreate, user_id: str):
                 }).execute()
                 production_id = new_production.data[0]["id"]
 
+        # Admin users get auto-approved credits
+        is_admin = _is_admin_user(user_id)
+        credit_status = "approved" if is_admin else "pending"
+
         # Create the credit
         credit_data = {
             "user_id": user_id,
@@ -170,13 +194,30 @@ async def create_credit(credit: CreditCreate, user_id: str):
             "position": credit.position,
             "description": credit.description,
             "production_date": credit.production_date,
+            "status": credit_status,
         }
 
         response = client.table("credits").insert(credit_data).execute()
+        credit_row = response.data[0]
+
+        # Insert initial history record
+        try:
+            execute_insert("""
+                INSERT INTO credit_status_history (credit_id, old_status, new_status, changed_by, note)
+                VALUES (:credit_id, NULL, :new_status, :changed_by, :note)
+                RETURNING id
+            """, {
+                "credit_id": credit_row["id"],
+                "new_status": credit_status,
+                "changed_by": user_id,
+                "note": "Credit submitted" if credit_status == "pending" else "Auto-approved (admin)",
+            })
+        except Exception as e:
+            print(f"Warning: Failed to insert credit history: {e}")
 
         # Return with production info
         return {
-            **response.data[0],
+            **credit_row,
             "productions": {"id": production_id, "title": production_title}
         }
     except Exception as e:
@@ -246,3 +287,176 @@ async def delete_credit(credit_id: str):
         return {"message": "Credit deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ============================================================================
+# ADMIN — Credit approval workflow
+# ============================================================================
+
+@router.get("/admin/pending")
+async def get_pending_credits(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    authorization: str = Header(None),
+):
+    """Get all pending credits for admin review."""
+    from app.api.profiles import get_current_user_from_token as get_user
+    user = await get_user(authorization)
+    user_id = user["id"]
+
+    if not _is_admin_user(user_id):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        rows = execute_query("""
+            SELECT c.id, c.user_id, c.production_id, c.position, c.description,
+                   c.production_date, c.status, c.created_at,
+                   p.username as submitter_username,
+                   p.full_name as submitter_name,
+                   p.display_name as submitter_display_name,
+                   p.avatar_url as submitter_avatar,
+                   pr.name as production_name, pr.title as production_title,
+                   pr.slug as production_slug
+            FROM credits c
+            LEFT JOIN profiles p ON p.id = c.user_id
+            LEFT JOIN productions pr ON pr.id = c.production_id
+            WHERE c.status = 'pending'
+            ORDER BY c.created_at ASC
+            OFFSET :skip LIMIT :lim
+        """, {"skip": skip, "lim": limit})
+
+        count_row = execute_single("""
+            SELECT COUNT(*) as total FROM credits WHERE status = 'pending'
+        """, {})
+
+        credits = []
+        for row in (rows or []):
+            credits.append({
+                "id": str(row["id"]),
+                "user_id": str(row["user_id"]) if row.get("user_id") else None,
+                "production_id": str(row["production_id"]) if row.get("production_id") else None,
+                "position": row.get("position"),
+                "description": row.get("description"),
+                "production_date": str(row["production_date"]) if row.get("production_date") else None,
+                "created_at": str(row["created_at"]) if row.get("created_at") else None,
+                "submitter_username": row.get("submitter_username"),
+                "submitter_name": row.get("submitter_display_name") or row.get("submitter_name"),
+                "submitter_avatar": row.get("submitter_avatar"),
+                "production_name": row.get("production_name") or row.get("production_title") or "Unknown",
+                "production_slug": row.get("production_slug"),
+            })
+
+        return {
+            "credits": credits,
+            "total": count_row["total"] if count_row else 0,
+        }
+    except Exception as e:
+        print(f"Error in get_pending_credits: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/admin/{credit_id}/approve")
+async def approve_credit(
+    credit_id: str,
+    body: CreditReviewInput = CreditReviewInput(),
+    authorization: str = Header(None),
+):
+    """Approve a pending credit."""
+    from app.api.profiles import get_current_user_from_token as get_user
+    user = await get_user(authorization)
+    user_id = user["id"]
+
+    if not _is_admin_user(user_id):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        # Get current credit
+        credit_row = execute_single("""
+            SELECT id, status FROM credits WHERE id = :id
+        """, {"id": credit_id})
+
+        if not credit_row:
+            raise HTTPException(status_code=404, detail="Credit not found")
+
+        old_status = credit_row.get("status")
+
+        # Update credit
+        execute_query("""
+            UPDATE credits
+            SET status = 'approved', reviewed_by = :reviewer, reviewed_at = NOW(), review_note = :note
+            WHERE id = :id
+        """, {"id": credit_id, "reviewer": user_id, "note": body.note})
+
+        # Insert history record
+        execute_insert("""
+            INSERT INTO credit_status_history (credit_id, old_status, new_status, changed_by, note)
+            VALUES (:credit_id, :old_status, 'approved', :changed_by, :note)
+            RETURNING id
+        """, {
+            "credit_id": credit_id,
+            "old_status": old_status,
+            "changed_by": user_id,
+            "note": body.note,
+        })
+
+        return {"success": True, "status": "approved"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error approving credit: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/admin/{credit_id}/reject")
+async def reject_credit(
+    credit_id: str,
+    body: CreditReviewInput = CreditReviewInput(),
+    authorization: str = Header(None),
+):
+    """Reject a pending credit. Note is required."""
+    from app.api.profiles import get_current_user_from_token as get_user
+    user = await get_user(authorization)
+    user_id = user["id"]
+
+    if not _is_admin_user(user_id):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    if not body.note or not body.note.strip():
+        raise HTTPException(status_code=400, detail="Rejection note is required")
+
+    try:
+        # Get current credit
+        credit_row = execute_single("""
+            SELECT id, status FROM credits WHERE id = :id
+        """, {"id": credit_id})
+
+        if not credit_row:
+            raise HTTPException(status_code=404, detail="Credit not found")
+
+        old_status = credit_row.get("status")
+
+        # Update credit
+        execute_query("""
+            UPDATE credits
+            SET status = 'rejected', reviewed_by = :reviewer, reviewed_at = NOW(), review_note = :note
+            WHERE id = :id
+        """, {"id": credit_id, "reviewer": user_id, "note": body.note})
+
+        # Insert history record
+        execute_insert("""
+            INSERT INTO credit_status_history (credit_id, old_status, new_status, changed_by, note)
+            VALUES (:credit_id, :old_status, 'rejected', :changed_by, :note)
+            RETURNING id
+        """, {
+            "credit_id": credit_id,
+            "old_status": old_status,
+            "changed_by": user_id,
+            "note": body.note,
+        })
+
+        return {"success": True, "status": "rejected"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error rejecting credit: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
