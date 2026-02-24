@@ -296,7 +296,27 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
         <AccountSection title="General Info">
           <div className="grid md:grid-cols-3 gap-8 items-start">
             <div className="flex flex-col items-center gap-4">
-              <AvatarUploader avatarUrl={session?.user?.user_metadata?.avatar_url} />
+              <AvatarUploader
+                avatarUrl={profile?.avatar_url || session?.user?.user_metadata?.avatar_url}
+                onUploadSuccess={(newAvatarUrl) => {
+                  // Update cached profile in localStorage so UserNav/header picks it up
+                  try {
+                    const cachedRaw = localStorage.getItem('swn_cached_profile');
+                    if (cachedRaw) {
+                      const cached = JSON.parse(cachedRaw);
+                      cached.avatar_url = newAvatarUrl;
+                      localStorage.setItem('swn_cached_profile', JSON.stringify(cached));
+                    }
+                  } catch { /* ignore */ }
+
+                  // Invalidate all profile caches so avatar updates everywhere
+                  qc.invalidateQueries({ queryKey: ['profile'] });
+                  qc.invalidateQueries({ queryKey: ['account-profile'] });
+                  qc.invalidateQueries({ queryKey: ['filmmaker-profile'] });
+                  qc.invalidateQueries({ queryKey: ['my-profile-data'] });
+                  onProfileUpdate();
+                }}
+              />
               <div className="flex flex-wrap justify-center gap-2">
                 {profile?.roles?.map((role: string) => (
                   <span key={role} className="bg-accent-yellow text-charcoal-black text-xs font-bold uppercase px-2 py-0.5 rounded-[4px] transform -rotate-3">{role}</span>

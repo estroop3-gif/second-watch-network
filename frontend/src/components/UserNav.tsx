@@ -78,7 +78,7 @@ export const UserNav = () => {
 
   const username = profile?.username || user.user_metadata?.username || user.email?.split('@')[0];
   const displayName = profile?.full_name || username;
-  const avatarUrl = user.user_metadata?.avatar_url;
+  const avatarUrl = profile?.avatar_url || user.user_metadata?.avatar_url;
 
   // Use enriched profile for role checks
   const showAdminLink = isAdmin || isSuperadmin;

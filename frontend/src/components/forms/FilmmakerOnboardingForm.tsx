@@ -193,7 +193,13 @@ const FilmmakerOnboardingForm = () => {
           <CardHeader><CardTitle className="font-heading text-2xl text-bone-white">Basic Info</CardTitle></CardHeader>
           <CardContent className="space-y-6">
             <div className="flex flex-col md:flex-row items-center gap-6">
-                <AvatarUploader avatarUrl={session?.user?.user_metadata?.avatar_url} />
+                <AvatarUploader
+                  avatarUrl={session?.user?.user_metadata?.avatar_url}
+                  onUploadSuccess={() => {
+                    queryClient.invalidateQueries({ queryKey: ['profile'] });
+                    queryClient.invalidateQueries({ queryKey: ['filmmaker-profile'] });
+                  }}
+                />
                 <div className="flex-1 w-full space-y-6">
                   <FormField control={form.control} name="fullName" render={({ field }) => (
                       <FormItem><FormLabel>Full Name</FormLabel><FormDescription>Your legal name, shown on your public profile.</FormDescription><FormControl><Input placeholder="e.g. Jane Doe" {...field} /></FormControl><FormMessage /></FormItem>
