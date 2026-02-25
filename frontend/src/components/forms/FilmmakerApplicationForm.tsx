@@ -21,7 +21,10 @@ import { useEffect, useState } from 'react';
 const projectSchema = z.object({
   title: z.string().min(1, 'Project title is required.'),
   role: z.string().min(1, 'Your role is required.'),
-  link: z.string().url('Must be a valid URL.').optional().or(z.literal('')),
+  link: z.string().optional().refine(
+    (val) => !val || val.startsWith('http://') || val.startsWith('https://'),
+    { message: 'Please include https:// (e.g., https://vimeo.com/your-film)' }
+  ),
   description: z.string().min(1, 'Description is required.'),
 });
 
@@ -150,7 +153,7 @@ const FilmmakerApplicationForm = ({ onSuccess }: FilmmakerApplicationFormProps) 
             <FormItem><FormLabel>Years of Experience</FormLabel><Select onValueChange={field.onChange} defaultValue={field.value}><FormControl><SelectTrigger><SelectValue placeholder="Select your experience level" /></SelectTrigger></FormControl><SelectContent>{experienceLevels.map(level => <SelectItem key={level} value={level}>{level}</SelectItem>)}</SelectContent></Select><FormMessage /></FormItem>
           )} />
           <FormField control={form.control} name="primaryRoles" render={({ field }) => (
-            <FormItem><FormLabel>Primary Roles</FormLabel><FormControl><TagInput {...field} placeholder="Enter roles..." tags={field.value} setTags={(newTags) => field.onChange(newTags)} enableAutocomplete autocompleteOptions={filmmakerSkills.map(s => ({ id: s, text: s }))} /></FormControl><FormDescription>Search or type to add custom roles.</FormDescription><FormMessage /></FormItem>
+            <FormItem><FormLabel>Primary Roles</FormLabel><FormControl><TagInput {...field} placeholder="Type a role and press Enter..." /></FormControl><FormDescription>Press Enter (or Tab away) to add each role. Add at least one.</FormDescription><FormMessage /></FormItem>
           )} />
         </div>
 
@@ -168,7 +171,7 @@ const FilmmakerApplicationForm = ({ onSuccess }: FilmmakerApplicationFormProps) 
                   )} />
                 </div>
                 <FormField control={form.control} name={`topProjects.${index}.link`} render={({ field }) => (
-                  <FormItem className="mt-4"><FormLabel>Link (Optional)</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
+                  <FormItem className="mt-4"><FormLabel>Link (Optional)</FormLabel><FormControl><Input {...field} placeholder="https://vimeo.com/your-film" /></FormControl><FormDescription>Include the full URL starting with https://</FormDescription><FormMessage /></FormItem>
                 )} />
                 <FormField control={form.control} name={`topProjects.${index}.description`} render={({ field }) => (
                   <FormItem className="mt-4"><FormLabel>Brief Description</FormLabel><FormControl><Textarea {...field} /></FormControl><FormMessage /></FormItem>

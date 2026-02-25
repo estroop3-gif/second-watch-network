@@ -373,6 +373,7 @@ export function LocationAutocomplete({
             <button
               key={result.place_id}
               type="button"
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => handleSelect(result)}
               onMouseEnter={() => setSelectedIndex(index)}
               className={cn(

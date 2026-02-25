@@ -29,6 +29,13 @@ export const TagInput = forwardRef<HTMLDivElement, TagInputProps>(
       }
     };
 
+    const handleInputBlur = () => {
+      if (inputValue.trim() && !value.includes(inputValue.trim())) {
+        onChange([...value, inputValue.trim()]);
+        setInputValue('');
+      }
+    };
+
     const removeTag = (tagToRemove: string) => {
       onChange(value.filter(tag => tag !== tagToRemove));
     };
@@ -53,6 +60,7 @@ export const TagInput = forwardRef<HTMLDivElement, TagInputProps>(
             value={inputValue}
             onChange={handleInputChange}
             onKeyDown={handleInputKeyDown}
+            onBlur={handleInputBlur}
             placeholder={placeholder}
             className="bg-transparent outline-none placeholder:text-muted-foreground flex-1 min-w-[120px]"
           />
