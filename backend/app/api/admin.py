@@ -1540,6 +1540,7 @@ async def approve_filmmaker_application(application_id: str):
         # Update user profile - add filmmaker role
         client.table("profiles").update({
             "role": "filmmaker",
+            "is_filmmaker": True,
             "has_completed_filmmaker_onboarding": True,
             "full_name": application.get("full_name"),
             "display_name": application.get("display_name"),

@@ -1498,30 +1498,55 @@ async def send_subscription_activated_email(org_id: str, config: dict) -> None:
     if not recipients:
         return
 
-    tier_label = (config.get("tier_name") or "A La Carte").title()
+    tier_label = (config.get("tier_name") or "A La Carte").replace("_", " ").title()
     monthly = config.get("monthly_total_cents", 0) / 100
+    annual_prepay = config.get("annual_prepay", False)
+    effective_monthly = config.get("effective_monthly_cents", 0) / 100
+    config_id = config.get("id", "")
+
+    billing_info = (
+        f"<strong>Billing:</strong> Annual — pay 10 months, get 12 (${effective_monthly:,.2f}/mo effective)<br>"
+        if annual_prepay
+        else f"<strong>Billing:</strong> Monthly (${monthly:,.2f}/mo)<br>"
+    )
+
+    owner_seats = config.get("owner_seats", 1)
+    collab_seats = config.get("collaborative_seats", 0)
+    active_projects = config.get("active_projects", 1)
 
     body = f"""
     <h2 style="color: #FCDC58; margin: 0 0 16px;">Subscription Activated</h2>
     <p style="color: #F9F5EF; margin: 0 0 16px;">
-        Your Backlot subscription is now active. Here's your plan summary:
+        Your Backlot {tier_label} subscription is now active. Here's your plan summary:
     </p>
     {info_card(f'''
-        <strong>Plan:</strong> {tier_label}<br>
-        <strong>Monthly:</strong> ${monthly:,.2f}<br>
-        <strong>Owner Seats:</strong> {config.get("owner_seats", 1)}<br>
-        <strong>Collaborative Seats:</strong> {config.get("collaborative_seats", 2)}<br>
-        <strong>Active Projects:</strong> {config.get("active_projects", 5)}
+        <strong>Plan:</strong> Backlot {tier_label}<br>
+        {billing_info}
+        <strong>Owner Seats:</strong> {"Unlimited" if owner_seats == -1 else owner_seats}<br>
+        <strong>Collaborative Seats:</strong> {"Unlimited" if collab_seats == -1 else collab_seats}<br>
+        <strong>Active Projects:</strong> {"Unlimited" if active_projects == -1 else active_projects}
     ''')}
-    {cta_button("Go to Backlot", f"{settings.FRONTEND_URL}/backlot")}
+    <p style="color: #a0a0a0; font-size: 13px; margin: 16px 0;">
+        View your full receipt and subscription details on the confirmation page.
+    </p>
+    {cta_button("View Receipt", f"{settings.FRONTEND_URL}/subscribe/backlot/confirmation?config_id={config_id}")}
+    <p style="margin-top: 16px; text-align: center;">
+        <a href="{settings.FRONTEND_URL}/backlot" style="color: #FCDC58; text-decoration: none; font-size: 14px;">
+            Go to Backlot &rarr;
+        </a>
+    </p>
     """
 
-    html = base_template("Subscription Activated", body, "Your Backlot subscription is now active")
+    html = base_template(
+        f"Your Backlot {tier_label} Subscription is Active",
+        body,
+        f"Your Backlot {tier_label} subscription is now active",
+    )
 
     for email, name in recipients:
         await EmailService.send_email(
             to_emails=[email],
-            subject="Your Backlot Subscription is Active",
+            subject=f"Your Backlot {tier_label} subscription is active",
             html_content=html,
             email_type="subscription_activated",
             source_service="billing",

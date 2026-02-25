@@ -296,6 +296,21 @@ async def require_partner(profile: Dict[str, Any] = Depends(get_user_profile)) -
     return profile
 
 
+async def require_filmmaker_pro(profile: Dict[str, Any] = Depends(get_user_profile)) -> Dict[str, Any]:
+    """
+    Require Filmmaker Pro subscription for access.
+
+    Raises:
+        HTTPException: If user is not a Filmmaker Pro subscriber or staff
+    """
+    if not profile.get("is_filmmaker_pro") and not has_any_role(profile, [RoleType.SUPERADMIN, RoleType.ADMIN]):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Filmmaker Pro subscription required"
+        )
+    return profile
+
+
 async def require_premium(profile: Dict[str, Any] = Depends(get_user_profile)) -> Dict[str, Any]:
     """
     Require premium subscription for access.

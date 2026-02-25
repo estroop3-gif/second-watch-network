@@ -3909,7 +3909,7 @@ async def get_user_directory(
         # Build base query for profiles (no nested join — client doesn't support it)
         query = client.table("profiles").select(
             "id, username, full_name, display_name, avatar_url, role, "
-            "is_order_member, is_partner"
+            "is_order_member, is_partner, is_filmmaker_pro"
         ).neq("id", current_user_id)  # Exclude current user
 
         # Apply search filter

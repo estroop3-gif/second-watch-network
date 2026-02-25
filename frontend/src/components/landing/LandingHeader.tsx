@@ -164,9 +164,12 @@ const LandingHeader = () => {
 
   return (
     <header className="fixed top-0 left-0 w-full bg-charcoal-black/80 backdrop-blur-sm px-4 py-3 sm:p-4 z-50 flex items-center justify-between">
-      <Link to="/landing" className="text-xl md:text-2xl font-bold text-bone-white tracking-widest flex-shrink-0 mr-auto">
-        <span className="font-spray">Second Watch</span>
-        <span className="hidden sm:inline"> Network</span>
+      <Link to="/landing" className="text-xl md:text-2xl font-bold text-bone-white tracking-widest flex-shrink-0 mr-auto flex items-center gap-2">
+        <span>
+          <span className="font-spray">Second Watch</span>
+          <span className="hidden sm:inline"> Network</span>
+        </span>
+        <span className="text-[10px] font-medium tracking-wide text-accent-yellow bg-accent-yellow/15 px-1.5 py-0.5 rounded">beta</span>
       </Link>
       
       {/* Desktop Nav */}

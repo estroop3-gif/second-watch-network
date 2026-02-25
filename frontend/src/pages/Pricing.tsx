@@ -4,7 +4,9 @@ import { useAuth } from '@/context/AuthContext';
 import PlanConfigurator from '@/components/pricing/PlanConfigurator';
 import PriceSummary from '@/components/pricing/PriceSummary';
 import { useCreateCheckout } from '@/hooks/useSubscriptionBilling';
+import { useMyBacklotOrganizations } from '@/hooks/useOrganizations';
 import { Button } from '@/components/ui/button';
+import { useToast } from '@/hooks/use-toast';
 import { ArrowRight, Check, Zap, Star, Building2, Crown, Rocket } from 'lucide-react';
 
 const TIER_HIGHLIGHTS = [
@@ -109,6 +111,8 @@ export default function Pricing() {
   const { isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const createCheckout = useCreateCheckout();
+  const { data: orgs, isLoading: orgsLoading } = useMyBacklotOrganizations();
+  const { toast } = useToast();
   const [planConfig, setPlanConfig] = useState<any>(null);
   const [showConfigurator, setShowConfigurator] = useState(false);
   const [showComparison, setShowComparison] = useState(false);
@@ -117,18 +121,34 @@ export default function Pricing() {
     setPlanConfig(config);
   }, []);
 
-  const handleSubscribe = () => {
+  const handleSubscribe = async () => {
     if (!isAuthenticated) {
-      if (planConfig) {
-        try { sessionStorage.setItem('pending_plan_config', JSON.stringify(planConfig)); } catch {}
-      }
       navigate('/login?returnTo=/pricing');
       return;
     }
-    if (planConfig) {
-      try { sessionStorage.setItem('pending_plan_config', JSON.stringify(planConfig)); } catch {}
+    if (!planConfig) {
+      toast({ title: 'Please configure your plan first', variant: 'destructive' });
+      return;
     }
-    navigate('/organizations?action=subscribe');
+    const org = orgs?.[0];
+    if (!org) {
+      navigate('/organizations');
+      return;
+    }
+    try {
+      const result = await createCheckout.mutateAsync({
+        org_id: org.id,
+        plan_type: planConfig.plan_type,
+        tier_name: planConfig.tier_name,
+        config: {
+          ...planConfig.config,
+          term_type: planConfig.term_type,
+        },
+      });
+      window.location.href = result.checkout_url;
+    } catch {
+      toast({ title: 'Failed to start checkout', description: 'Please try again.', variant: 'destructive' });
+    }
   };
 
   const handleTierCTA = (tier: typeof TIER_HIGHLIGHTS[0]) => {
@@ -357,6 +377,7 @@ export default function Pricing() {
                   showCTA
                   ctaLabel={isAuthenticated ? 'Subscribe Now' : 'Sign Up to Subscribe'}
                   onCTAClick={handleSubscribe}
+                  ctaLoading={createCheckout.isPending || orgsLoading}
                 />
               </div>
             </div>

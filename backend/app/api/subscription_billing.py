@@ -9,8 +9,11 @@ Self-service subscription management for Backlot organizations:
 - Stripe portal access
 """
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
+import io
+import json
 
 from app.core.auth import get_current_user
 from app.core.database import execute_single, execute_query
@@ -513,3 +516,210 @@ async def get_org_feature_map(org_id: str, user=Depends(get_current_user)):
 
     from app.services.feature_gates import get_org_feature_access
     return get_org_feature_access(org_id)
+
+
+# =============================================================================
+# Config Fetch + Receipt Download (for BacklotConfirmationPage)
+# =============================================================================
+
+@router.get("/config/{config_id}")
+async def get_subscription_config(config_id: str, user=Depends(get_current_user)):
+    """Fetch subscription config details with reconstructed line items."""
+    from app.services.pricing_engine import compute_self_service_quote
+
+    config = execute_single("""
+        SELECT bsc.*, o.name as org_name
+        FROM backlot_subscription_configs bsc
+        JOIN organizations o ON o.id = bsc.organization_id
+        WHERE bsc.id = :config_id
+    """, {"config_id": config_id})
+
+    if not config:
+        raise HTTPException(status_code=404, detail="Subscription config not found")
+
+    config_dict = dict(config)
+
+    module_config = config_dict.get("module_config") or {}
+    if isinstance(module_config, str):
+        module_config = json.loads(module_config)
+
+    try:
+        plan_type = config_dict.get("plan_type", "tier")
+        tier_name = config_dict.get("tier_name")
+        selected_modules = module_config.get("selected_modules", [])
+        use_bundle = module_config.get("use_bundle", False)
+        term_type = "annual" if config_dict.get("annual_prepay") else "monthly"
+
+        quote = compute_self_service_quote(
+            plan_type=plan_type,
+            tier_name=tier_name,
+            config={
+                "term_type": term_type,
+                "owner_seats": config_dict.get("owner_seats", 1),
+                "collaborative_seats": config_dict.get("collaborative_seats", 0),
+                "active_projects": config_dict.get("active_projects", 1),
+                "selected_modules": selected_modules,
+                "use_bundle": use_bundle,
+            },
+        )
+        line_items = quote.get("line_items", [])
+        annual_detail = quote.get("annual_prepay")
+    except Exception:
+        line_items = []
+        annual_detail = None
+
+    # Serialize datetime fields
+    for key, val in config_dict.items():
+        if hasattr(val, "isoformat"):
+            config_dict[key] = val.isoformat()
+
+    return {
+        **config_dict,
+        "line_items": line_items,
+        "annual_detail": annual_detail,
+    }
+
+
+@router.get("/receipt/{config_id}")
+async def download_receipt(config_id: str, user=Depends(get_current_user)):
+    """Generate and download a PDF receipt for a subscription config."""
+    from app.services.pricing_engine import compute_self_service_quote
+
+    config = execute_single("""
+        SELECT bsc.*, o.name as org_name, p.email as owner_email, p.full_name as owner_name
+        FROM backlot_subscription_configs bsc
+        JOIN organizations o ON o.id = bsc.organization_id
+        LEFT JOIN profiles p ON p.id = bsc.created_by
+        WHERE bsc.id = :config_id
+    """, {"config_id": config_id})
+
+    if not config:
+        raise HTTPException(status_code=404, detail="Subscription config not found")
+
+    config_dict = dict(config)
+
+    module_config = config_dict.get("module_config") or {}
+    if isinstance(module_config, str):
+        module_config = json.loads(module_config)
+
+    try:
+        plan_type = config_dict.get("plan_type", "tier")
+        tier_name = config_dict.get("tier_name", "")
+        selected_modules = module_config.get("selected_modules", [])
+        use_bundle = module_config.get("use_bundle", False)
+        term_type = "annual" if config_dict.get("annual_prepay") else "monthly"
+
+        quote = compute_self_service_quote(
+            plan_type=plan_type,
+            tier_name=tier_name,
+            config={
+                "term_type": term_type,
+                "owner_seats": config_dict.get("owner_seats", 1),
+                "collaborative_seats": config_dict.get("collaborative_seats", 0),
+                "active_projects": config_dict.get("active_projects", 1),
+                "selected_modules": selected_modules,
+                "use_bundle": use_bundle,
+            },
+        )
+        line_items = quote.get("line_items", [])
+    except Exception:
+        line_items = []
+
+    tier_name_str = config_dict.get("tier_name", "")
+    tier_label = (tier_name_str or "A La Carte").replace("_", " ").title()
+    billing_label = "Annual (pay 10 months, get 12)" if config_dict.get("annual_prepay") else "Monthly"
+    monthly_total = (config_dict.get("monthly_total_cents") or 0) / 100
+    effective_monthly = (config_dict.get("effective_monthly_cents") or 0) / 100
+    org_name = config_dict.get("org_name", "")
+    owner_name = config_dict.get("owner_name", "")
+    owner_email_val = config_dict.get("owner_email", "")
+
+    created_at = config_dict.get("created_at")
+    if hasattr(created_at, "strftime"):
+        date_str = created_at.strftime("%B %d, %Y")
+    else:
+        date_str = str(created_at)[:10] if created_at else ""
+
+    li_rows = ""
+    for item in line_items:
+        li_rows += (
+            f'<tr><td style="padding:8px 12px;border-bottom:1px solid #2a2a2a;color:#F9F5EF;">'
+            f'{item.get("label", "")}</td>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid #2a2a2a;color:#F9F5EF;text-align:right;">'
+            f'${item.get("total", 0):.2f}</td></tr>'
+        )
+
+    if config_dict.get("annual_prepay"):
+        annual_amount = round(monthly_total * 10, 2)
+        total_row = (
+            f'<tr style="background:#1a1a1a;">'
+            f'<td style="padding:10px 12px;color:#FCDC58;font-weight:bold;">Annual Total (pay 10, get 12)</td>'
+            f'<td style="padding:10px 12px;color:#FCDC58;font-weight:bold;text-align:right;">${annual_amount:.2f}</td></tr>'
+            f'<tr><td style="padding:8px 12px;color:#a0a0a0;font-style:italic;">Effective monthly</td>'
+            f'<td style="padding:8px 12px;color:#a0a0a0;text-align:right;font-style:italic;">${effective_monthly:.2f}/mo</td></tr>'
+        )
+    else:
+        total_row = (
+            f'<tr style="background:#1a1a1a;">'
+            f'<td style="padding:10px 12px;color:#FCDC58;font-weight:bold;">Monthly Total</td>'
+            f'<td style="padding:10px 12px;color:#FCDC58;font-weight:bold;text-align:right;">${monthly_total:.2f}/mo</td></tr>'
+        )
+
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body{{font-family:Arial,sans-serif;background:#121212;color:#F9F5EF;margin:0;padding:40px;}}
+.header{{border-bottom:2px solid #FCDC58;padding-bottom:20px;margin-bottom:30px;}}
+.logo{{font-size:22px;font-weight:bold;color:#FCDC58;letter-spacing:2px;}}
+.subtitle{{color:#a0a0a0;font-size:13px;margin-top:4px;}}
+.receipt-title{{font-size:28px;font-weight:bold;color:#F9F5EF;margin-bottom:16px;}}
+.meta{{margin-bottom:24px;}}
+.meta-row{{margin-bottom:8px;}}
+.meta-label{{font-size:11px;color:#a0a0a0;text-transform:uppercase;letter-spacing:1px;}}
+.meta-value{{font-size:14px;color:#F9F5EF;margin-top:2px;}}
+table{{width:100%;border-collapse:collapse;}}
+th{{padding:10px 12px;background:#1a1a1a;color:#FCDC58;text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:1px;}}
+th:last-child{{text-align:right;}}
+.footer{{margin-top:40px;padding-top:20px;border-top:1px solid #2a2a2a;font-size:12px;color:#a0a0a0;text-align:center;}}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="logo">SECOND WATCH NETWORK</div>
+  <div class="subtitle">Backlot Production Management</div>
+</div>
+<div class="receipt-title">Subscription Receipt</div>
+<div class="meta">
+  <div class="meta-row"><div class="meta-label">Organization</div><div class="meta-value">{org_name}</div></div>
+  <div class="meta-row"><div class="meta-label">Account</div><div class="meta-value">{owner_name or owner_email_val}</div></div>
+  <div class="meta-row"><div class="meta-label">Date</div><div class="meta-value">{date_str}</div></div>
+  <div class="meta-row"><div class="meta-label">Plan</div><div class="meta-value">Backlot {tier_label} &bull; {billing_label}</div></div>
+</div>
+<table>
+  <thead><tr><th>Description</th><th style="text-align:right;">Amount</th></tr></thead>
+  <tbody>{li_rows}{total_row}</tbody>
+</table>
+<div class="footer">
+  <p>Receipt ID: {config_id}</p>
+  <p>Second Watch Network &bull; support@secondwatch.network</p>
+  <p>This receipt confirms your subscription has been activated.</p>
+</div>
+</body>
+</html>"""
+
+    try:
+        from weasyprint import HTML as WeasyprintHTML
+        pdf_bytes = WeasyprintHTML(string=html_content).write_pdf()
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="backlot-receipt-{config_id}.pdf"'},
+        )
+    except ImportError:
+        return StreamingResponse(
+            io.BytesIO(html_content.encode("utf-8")),
+            media_type="text/html",
+            headers={"Content-Disposition": f'attachment; filename="receipt-{config_id}.html"'},
+        )

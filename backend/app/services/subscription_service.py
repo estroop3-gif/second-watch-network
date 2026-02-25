@@ -249,8 +249,8 @@ def create_checkout_session(
     config_id = config_row["id"]
 
     base_url = settings.FRONTEND_URL
-    success_url = f"{base_url}/organizations?checkout=success&config_id={config_id}"
-    cancel_url = f"{base_url}/organizations?checkout=cancelled"
+    success_url = f"{base_url}/subscribe/backlot/confirmation?config_id={config_id}"
+    cancel_url = f"{base_url}/pricing?checkout=cancelled"
 
     session = stripe.checkout.Session.create(
         customer=customer_id,

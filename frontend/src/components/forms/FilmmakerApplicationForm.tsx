@@ -12,6 +12,7 @@ import { TagInput } from '@/components/ui/tag-input';
 import { useAuth } from '@/context/AuthContext';
 import { useProfile } from '@/hooks/useProfile';
 import { api } from '@/lib/api';
+import LocationAutocomplete, { LocationData } from '@/components/ui/location-autocomplete';
 import { toast } from 'sonner';
 import { experienceLevels, filmmakerSkills } from '@/data/filmmaker-options';
 import { Trash2 } from 'lucide-react';
@@ -98,7 +99,7 @@ const FilmmakerApplicationForm = ({ onSuccess }: FilmmakerApplicationFormProps) 
         join_reason: values.joinReason,
       });
 
-      toast.success('Application submitted! We will review it shortly.');
+      toast.success("Application submitted! We'll review it shortly. Once approved, you'll be able to upgrade to Filmmaker Pro for $9.99/mo.");
       onSuccess();
     } catch (error: any) {
       toast.error('Failed to submit application: ' + error.message);
@@ -122,7 +123,21 @@ const FilmmakerApplicationForm = ({ onSuccess }: FilmmakerApplicationFormProps) 
           <FormItem><FormLabel>Email</FormLabel><FormControl><Input {...field} readOnly className="bg-gray-800" /></FormControl><FormMessage /></FormItem>
         )} />
         <FormField control={form.control} name="location" render={({ field }) => (
-          <FormItem><FormLabel>City & State</FormLabel><FormControl><Input {...field} placeholder="e.g., Los Angeles, CA" /></FormControl><FormMessage /></FormItem>
+          <FormItem>
+            <FormLabel>City & State</FormLabel>
+            <FormControl>
+              <LocationAutocomplete
+                value={field.value || ''}
+                onChange={(locationData: LocationData) => {
+                  field.onChange(locationData.displayName);
+                }}
+                showUseMyLocation={true}
+                placeholder="Start typing a city..."
+                mode="city"
+              />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
         )} />
         <FormField control={form.control} name="portfolioLink" render={({ field }) => (
           <FormItem><FormLabel>Link to Reel or Portfolio</FormLabel><FormControl><Input {...field} placeholder="https://vimeo.com/your-reel" /></FormControl><FormMessage /></FormItem>

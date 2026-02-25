@@ -200,6 +200,7 @@ export interface ProfileWithRoles {
   is_media_team?: boolean;
   is_partner?: boolean;
   is_filmmaker?: boolean;
+  is_filmmaker_pro?: boolean;
   is_premium?: boolean;
   has_completed_filmmaker_onboarding?: boolean;
   [key: string]: unknown;

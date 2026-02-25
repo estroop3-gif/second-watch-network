@@ -501,6 +501,15 @@ export const QUICK_ACTIONS: QuickAction[] = [
     roles: CREATOR_ROLES,
   },
 
+  // Filmmaker Pro
+  {
+    id: 'filmmaker-pro',
+    label: 'Pro Tools',
+    icon: 'Sparkles',
+    href: '/filmmaker-pro',
+    roles: ['superadmin', 'admin', 'filmmaker'] as RoleType[],
+  },
+
   // Order members
   {
     id: 'directory',

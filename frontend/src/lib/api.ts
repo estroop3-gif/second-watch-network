@@ -5228,6 +5228,10 @@ class APIClient {
     return this.post<any>(`/api/v1/admin/crm/campaigns/${id}/send-now`, {})
   }
 
+  async resumeCRMCampaign(id: string) {
+    return this.post<any>(`/api/v1/admin/crm/campaigns/${id}/resume`, {})
+  }
+
   async getCRMCampaignSenders(id: string) {
     return this.get<{ senders: any[] }>(`/api/v1/admin/crm/campaigns/${id}/senders`)
   }
@@ -6520,6 +6524,10 @@ class APIClient {
 
   async createSubscriptionCheckout(data: { org_id: string; plan_type: string; tier_name?: string; config?: any }) {
     return this.post<{ checkout_url: string; config_id: string }>('/api/v1/subscription-billing/checkout', data)
+  }
+
+  async getSubscriptionConfig(configId: string) {
+    return this.get<any>(`/api/v1/subscription-billing/config/${configId}`)
   }
 
   async createTrialConvertCheckout(data: { org_id: string; plan_type?: string; tier_name?: string; config?: any }) {

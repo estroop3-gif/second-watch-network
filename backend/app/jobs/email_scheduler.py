@@ -389,6 +389,43 @@ async def process_sequence_sends():
         logger.error(f"process_sequence_sends error: {e}")
 
 
+def _enforce_send_window(send_at, window_start, window_end):
+    """Push send_at into the send window. If outside window, move to next day's window start."""
+    from datetime import datetime, timedelta, time as dt_time
+    if not window_start or not window_end:
+        return send_at
+
+    try:
+        if isinstance(window_start, str):
+            parts = window_start.split(":")
+            win_start = dt_time(int(parts[0]), int(parts[1]))
+        else:
+            win_start = window_start
+        if isinstance(window_end, str):
+            parts = window_end.split(":")
+            win_end = dt_time(int(parts[0]), int(parts[1]))
+        else:
+            win_end = window_end
+    except (ValueError, IndexError):
+        return send_at
+
+    send_time = send_at.time()
+
+    if win_start <= win_end:
+        # Normal window (e.g., 9:00 - 17:00)
+        if send_time < win_start:
+            return send_at.replace(hour=win_start.hour, minute=win_start.minute, second=0, microsecond=0)
+        elif send_time > win_end:
+            next_day = send_at + timedelta(days=1)
+            return next_day.replace(hour=win_start.hour, minute=win_start.minute, second=0, microsecond=0)
+    else:
+        # Overnight window (e.g., 22:00 - 06:00) — unusual but supported
+        if win_end < send_time < win_start:
+            return send_at.replace(hour=win_start.hour, minute=win_start.minute, second=0, microsecond=0)
+
+    return send_at
+
+
 async def process_campaign_sends():
     """Process campaign email blasts with sender rotation. Runs every 120 seconds."""
     try:
@@ -442,6 +479,9 @@ async def process_campaign_sends():
                     if campaign.get("source_crm_contacts", True):
                         conditions = ["c.do_not_email IS NOT TRUE", "c.email IS NOT NULL"]
                         tgt_params = {"cid": campaign_id}
+
+                        # Always exclude contacts flagged as exclude_from_campaigns
+                        conditions.append("c.exclude_from_campaigns IS NOT TRUE")
 
                         if campaign.get("target_temperature") and len(campaign["target_temperature"]) > 0:
                             conditions.append("c.temperature = ANY(:temps)")
@@ -599,7 +639,90 @@ async def process_campaign_sends():
 
                     logger.info(f"Campaign {campaign_id}: targeted {total_inserted} total recipients")
 
+                    # Step 3a-2: Set next_send_at based on send frequency mode
+                    send_type = campaign.get("send_type") or "blast"
+                    from datetime import datetime, timedelta, time as dt_time
+                    import random as _random
+
+                    if send_type in ("blast", "manual"):
+                        # Blast: all sends eligible immediately (clamped to send window if set)
+                        win_start = campaign.get("send_window_start")
+                        win_end = campaign.get("send_window_end")
+                        if win_start and win_end:
+                            blast_send_ids = execute_query(
+                                "SELECT id FROM crm_email_sends WHERE campaign_id = :cid AND status = 'pending' AND next_send_at IS NULL ORDER BY created_at ASC",
+                                {"cid": campaign_id},
+                            )
+                            blast_base = datetime.utcnow()
+                            blast_at = _enforce_send_window(blast_base, win_start, win_end)
+                            for row in blast_send_ids:
+                                execute_single(
+                                    "UPDATE crm_email_sends SET next_send_at = :at WHERE id = :sid RETURNING id",
+                                    {"at": blast_at, "sid": row["id"]},
+                                )
+                        else:
+                            execute_query(
+                                "UPDATE crm_email_sends SET next_send_at = NOW() WHERE campaign_id = :cid AND status = 'pending' AND next_send_at IS NULL RETURNING id",
+                                {"cid": campaign_id},
+                            )
+                    elif send_type == "scheduled":
+                        # Scheduled: all sends at scheduled_at (already promoted by step 1)
+                        scheduled_at = campaign.get("scheduled_at")
+                        if scheduled_at:
+                            execute_query(
+                                "UPDATE crm_email_sends SET next_send_at = :at WHERE campaign_id = :cid AND status = 'pending' AND next_send_at IS NULL RETURNING id",
+                                {"cid": campaign_id, "at": scheduled_at},
+                            )
+                        else:
+                            execute_query(
+                                "UPDATE crm_email_sends SET next_send_at = NOW() WHERE campaign_id = :cid AND status = 'pending' AND next_send_at IS NULL RETURNING id",
+                                {"cid": campaign_id},
+                            )
+                    elif send_type == "staggered":
+                        # Staggered: evenly spaced intervals
+                        stagger_mins = campaign.get("stagger_minutes_between") or 2
+                        all_send_ids = execute_query(
+                            "SELECT id FROM crm_email_sends WHERE campaign_id = :cid AND status = 'pending' AND next_send_at IS NULL ORDER BY created_at ASC",
+                            {"cid": campaign_id},
+                        )
+                        base_time = datetime.utcnow()
+                        win_start = campaign.get("send_window_start")
+                        win_end = campaign.get("send_window_end")
+                        for idx, row in enumerate(all_send_ids):
+                            send_at = base_time + timedelta(minutes=idx * stagger_mins)
+                            send_at = _enforce_send_window(send_at, win_start, win_end)
+                            execute_single(
+                                "UPDATE crm_email_sends SET next_send_at = :at WHERE id = :sid RETURNING id",
+                                {"at": send_at, "sid": row["id"]},
+                            )
+                        logger.info(f"Campaign {campaign_id}: staggered {len(all_send_ids)} sends, {stagger_mins}min apart")
+                    elif send_type == "drip":
+                        # Drip: randomized intervals within a range
+                        drip_min = campaign.get("drip_min_minutes") or 3
+                        drip_max = campaign.get("drip_max_minutes") or 8
+                        if drip_min > drip_max:
+                            drip_min, drip_max = drip_max, drip_min
+                        all_send_ids = execute_query(
+                            "SELECT id FROM crm_email_sends WHERE campaign_id = :cid AND status = 'pending' AND next_send_at IS NULL ORDER BY created_at ASC",
+                            {"cid": campaign_id},
+                        )
+                        cumulative = datetime.utcnow()
+                        win_start = campaign.get("send_window_start")
+                        win_end = campaign.get("send_window_end")
+                        for row in all_send_ids:
+                            delay = _random.uniform(drip_min, drip_max)
+                            cumulative = cumulative + timedelta(minutes=delay)
+                            send_at = _enforce_send_window(cumulative, win_start, win_end)
+                            cumulative = send_at  # keep window-adjusted time for next calculation
+                            execute_single(
+                                "UPDATE crm_email_sends SET next_send_at = :at WHERE id = :sid RETURNING id",
+                                {"at": send_at, "sid": row["id"]},
+                            )
+                        logger.info(f"Campaign {campaign_id}: drip {len(all_send_ids)} sends, {drip_min}-{drip_max}min range")
+
                 # Step 3b: Process pending sends in batches (LEFT JOIN for non-contact sends)
+                # Only fetch sends whose next_send_at has arrived (or is NULL for legacy sends)
+                send_type = campaign.get("send_type") or "blast"
                 pending_sends = execute_query(
                     """
                     SELECT s.id as send_id, s.contact_id, s.recipient_source, s.profile_id,
@@ -611,16 +734,32 @@ async def process_campaign_sends():
                     FROM crm_email_sends s
                     LEFT JOIN crm_contacts c ON c.id = s.contact_id
                     WHERE s.campaign_id = :cid AND s.status = 'pending'
-                    ORDER BY s.created_at ASC
+                          AND (s.next_send_at IS NULL OR s.next_send_at <= NOW())
+                    ORDER BY s.next_send_at ASC NULLS FIRST, s.created_at ASC
                     LIMIT :batch_size
                     """,
                     {"cid": campaign_id, "batch_size": batch_size},
                 )
 
                 if not pending_sends:
-                    # All sends processed — mark campaign as sent
+                    # Check if there are future pending sends (staggered/drip still in progress)
+                    future_sends = execute_single(
+                        "SELECT COUNT(*) as cnt FROM crm_email_sends WHERE campaign_id = :cid AND status = 'pending' AND next_send_at > NOW()",
+                        {"cid": campaign_id},
+                    )
+                    if future_sends and future_sends["cnt"] > 0:
+                        logger.info(f"Campaign {campaign_id}: {future_sends['cnt']} sends still scheduled for future, waiting...")
+                        continue
+
+                    # All sends processed — mark campaign as sent and update tallies
                     execute_single(
-                        "UPDATE crm_email_campaigns SET status = 'sent', updated_at = NOW() WHERE id = :cid RETURNING id",
+                        """
+                        UPDATE crm_email_campaigns SET status = 'sent', updated_at = NOW(),
+                            total_sent = (SELECT count(*) FROM crm_email_sends WHERE campaign_id = :cid AND status IN ('sent', 'delivered', 'opened', 'clicked')),
+                            total_delivered = (SELECT count(*) FROM crm_email_sends WHERE campaign_id = :cid AND delivered_at IS NOT NULL),
+                            total_bounced = (SELECT count(*) FROM crm_email_sends WHERE campaign_id = :cid AND status = 'bounced')
+                        WHERE id = :cid RETURNING id
+                        """,
                         {"cid": campaign_id},
                     )
                     logger.info(f"Campaign {campaign_id}: all sends complete, marked as sent")
@@ -724,6 +863,11 @@ async def process_campaign_sends():
                         }
                         subject = campaign["subject_template"]
                         body_html = campaign.get("html_template") or ""
+                        # If no HTML template, auto-convert plain text to HTML paragraphs
+                        if not body_html.strip() and campaign.get("text_template"):
+                            raw_text = campaign["text_template"]
+                            paragraphs = [p.strip() for p in raw_text.split("\n") if p.strip()]
+                            body_html = "".join(f"<p>{p}</p>" for p in paragraphs)
                         for key, val in vars_map.items():
                             subject = subject.replace(f"{{{{{key}}}}}", val)
                             body_html = body_html.replace(f"{{{{{key}}}}}", val)
@@ -798,8 +942,8 @@ async def process_campaign_sends():
 
                         logger.info(f"Campaign {campaign_id}: sent to {send['contact_email']} via {sender['email_address']}")
 
-                        # Rate limiting delay between sends
-                        if send_delay > 0:
+                        # Rate limiting delay between sends (only for blast mode; staggered/drip use next_send_at)
+                        if send_type in ("blast", "manual") and send_delay > 0:
                             await asyncio.sleep(send_delay)
 
                     except Exception as e:
@@ -1589,6 +1733,16 @@ async def recalculate_org_storage():
         logger.error(f"recalculate_org_storage error: {e}")
 
 
+async def rollup_profile_analytics():
+    """Roll up raw profile view/search events into daily aggregates. Runs daily."""
+    try:
+        from app.api.filmmaker_pro import rollup_daily_analytics
+        await rollup_daily_analytics()
+        logger.info("rollup_profile_analytics: completed")
+    except Exception as e:
+        logger.error(f"rollup_profile_analytics error: {e}")
+
+
 def start_email_scheduler():
     """Initialize and start the APScheduler for email jobs."""
     try:
@@ -1607,8 +1761,9 @@ def start_email_scheduler():
         scheduler.add_job(process_billing_reminders, "interval", seconds=86400, id="billing_reminders")
         scheduler.add_job(reset_monthly_bandwidth, "interval", seconds=86400, id="reset_monthly_bandwidth")
         scheduler.add_job(recalculate_org_storage, "interval", seconds=604800, id="recalculate_org_storage")
+        scheduler.add_job(rollup_profile_analytics, "interval", seconds=86400, id="rollup_profile_analytics")
         scheduler.start()
-        logger.info("Email scheduler started with 12 jobs")
+        logger.info("Email scheduler started with 13 jobs")
         return scheduler
     except ImportError:
         logger.warning("APScheduler not installed — email scheduler disabled. Install with: pip install apscheduler")

@@ -1275,13 +1275,19 @@ class CampaignCreate(BaseModel):
     text_template: Optional[str] = None
     target_temperature: Optional[List[str]] = []
     target_tags: Optional[List[str]] = []
-    send_type: str = "manual"
+    send_type: str = "blast"
     scheduled_at: Optional[str] = None
     drip_delay_days: Optional[int] = None
     sender_account_ids: Optional[List[str]] = None
     sender_mode: Optional[str] = "select"
     batch_size: Optional[int] = None
     send_delay_seconds: Optional[int] = None
+    # Send frequency pacing
+    stagger_minutes_between: Optional[int] = None
+    drip_min_minutes: Optional[int] = None
+    drip_max_minutes: Optional[int] = None
+    send_window_start: Optional[str] = None
+    send_window_end: Optional[str] = None
     # Multi-source targeting
     source_crm_contacts: Optional[bool] = True
     source_manual_emails: Optional[bool] = False
@@ -1289,6 +1295,7 @@ class CampaignCreate(BaseModel):
     manual_recipients: Optional[List[dict]] = []
     target_roles: Optional[List[str]] = []
     target_subscription_tiers: Optional[List[str]] = []
+    include_manual_contacts: Optional[bool] = False
 
 
 class CampaignUpdate(BaseModel):
@@ -1307,6 +1314,12 @@ class CampaignUpdate(BaseModel):
     sender_mode: Optional[str] = None
     batch_size: Optional[int] = None
     send_delay_seconds: Optional[int] = None
+    # Send frequency pacing
+    stagger_minutes_between: Optional[int] = None
+    drip_min_minutes: Optional[int] = None
+    drip_max_minutes: Optional[int] = None
+    send_window_start: Optional[str] = None
+    send_window_end: Optional[str] = None
     # Multi-source targeting
     source_crm_contacts: Optional[bool] = None
     source_manual_emails: Optional[bool] = None
@@ -1314,6 +1327,7 @@ class CampaignUpdate(BaseModel):
     manual_recipients: Optional[List[dict]] = None
     target_roles: Optional[List[str]] = None
     target_subscription_tiers: Optional[List[str]] = None
+    include_manual_contacts: Optional[bool] = None
 
 
 class CampaignSendersUpdate(BaseModel):
@@ -1376,6 +1390,10 @@ async def get_campaign(
         raise HTTPException(404, "Campaign not found")
 
     # Get send results (LEFT JOIN since manual/site-user sends have no contact_id)
+    sends_total = execute_single(
+        "SELECT COUNT(*) as cnt FROM crm_email_sends WHERE campaign_id = :campaign_id",
+        {"campaign_id": campaign_id},
+    )
     sends = execute_query(
         """
         SELECT s.*,
@@ -1386,7 +1404,7 @@ async def get_campaign(
         LEFT JOIN crm_contacts ct ON ct.id = s.contact_id
         WHERE s.campaign_id = :campaign_id
         ORDER BY s.created_at DESC
-        LIMIT 200
+        LIMIT 500
         """,
         {"campaign_id": campaign_id},
     )
@@ -1405,6 +1423,7 @@ async def get_campaign(
     )
 
     campaign["sends"] = sends
+    campaign["sends_total"] = sends_total["cnt"] if sends_total else len(sends)
     campaign["senders"] = senders
     return campaign
 
@@ -1427,19 +1446,25 @@ async def create_campaign(
         "drip_delay_days": data.drip_delay_days,
         "batch_size": data.batch_size,
         "send_delay_seconds": data.send_delay_seconds,
+        "stagger_minutes_between": data.stagger_minutes_between,
+        "drip_min_minutes": data.drip_min_minutes,
+        "drip_max_minutes": data.drip_max_minutes,
+        "send_window_start": data.send_window_start,
+        "send_window_end": data.send_window_end,
         "sender_mode": data.sender_mode,
         "source_crm_contacts": data.source_crm_contacts,
         "source_manual_emails": data.source_manual_emails,
         "source_site_users": data.source_site_users,
         "target_roles": data.target_roles if data.target_roles else None,
         "target_subscription_tiers": data.target_subscription_tiers if data.target_subscription_tiers else None,
+        "include_manual_contacts": data.include_manual_contacts,
         "created_by": profile["id"],
         "status": "draft",
     }
     # manual_recipients is JSONB — must serialize
     if data.manual_recipients:
         campaign_data["manual_recipients"] = json.dumps(data.manual_recipients)
-    campaign_data = {k: v for k, v in campaign_data.items() if v is not None}
+    campaign_data = {k: v for k, v in campaign_data.items() if v is not None and v != ""}
 
     columns = ", ".join(campaign_data.keys())
     placeholders = ", ".join(f":{k}" for k in campaign_data.keys())
@@ -1473,8 +1498,8 @@ async def update_campaign(
     )
     if not existing:
         raise HTTPException(404, "Campaign not found")
-    if existing["status"] not in ("draft", "scheduled"):
-        raise HTTPException(400, "Can only edit draft or scheduled campaigns")
+    if existing["status"] not in ("draft", "scheduled", "cancelled"):
+        raise HTTPException(400, "Can only edit draft, scheduled, or cancelled campaigns")
 
     # Extract sender_account_ids separately — it's not a column on the campaigns table
     import json
@@ -1485,6 +1510,10 @@ async def update_campaign(
     # manual_recipients is JSONB — must serialize
     if "manual_recipients" in update_data:
         update_data["manual_recipients"] = json.dumps(update_data["manual_recipients"])
+    # Convert empty strings to None for TIME/TIMESTAMPTZ columns
+    for field in ("send_window_start", "send_window_end", "scheduled_at"):
+        if field in update_data and update_data[field] == "":
+            update_data.pop(field)
 
     if update_data:
         set_clauses = []
@@ -1573,25 +1602,329 @@ async def cancel_campaign(
     campaign_id: str,
     profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
 ):
-    """Cancel a scheduled campaign."""
+    """Cancel a campaign (draft, scheduled, or sending)."""
     existing = execute_single(
         "SELECT status FROM crm_email_campaigns WHERE id = :id",
         {"id": campaign_id},
     )
     if not existing:
         raise HTTPException(404, "Campaign not found")
-    if existing["status"] not in ("scheduled", "draft"):
-        raise HTTPException(400, "Can only cancel draft or scheduled campaigns")
+    if existing["status"] not in ("scheduled", "draft", "sending"):
+        raise HTTPException(400, "Can only cancel draft, scheduled, or sending campaigns")
 
+    # Cancel any remaining pending sends
+    if existing["status"] == "sending":
+        execute_query(
+            "UPDATE crm_email_sends SET status = 'cancelled' WHERE campaign_id = :id AND status = 'pending' RETURNING id",
+            {"id": campaign_id},
+        )
+
+    # Update tallies and mark campaign as cancelled
     result = execute_single(
         """
         UPDATE crm_email_campaigns
-        SET status = 'cancelled', updated_at = NOW()
+        SET status = 'cancelled', updated_at = NOW(),
+            total_sent = (SELECT count(*) FROM crm_email_sends WHERE campaign_id = :id AND status IN ('sent', 'delivered', 'opened', 'clicked')),
+            total_delivered = (SELECT count(*) FROM crm_email_sends WHERE campaign_id = :id AND delivered_at IS NOT NULL),
+            total_bounced = (SELECT count(*) FROM crm_email_sends WHERE campaign_id = :id AND status = 'bounced')
         WHERE id = :id RETURNING *
         """,
         {"id": campaign_id},
     )
     return result
+
+
+@router.post("/campaigns/{campaign_id}/resume")
+async def resume_campaign(
+    campaign_id: str,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.CRM_MANAGE)),
+):
+    """Resume a cancelled campaign. Deletes cancelled sends, re-runs targeting with current settings, and starts sending."""
+    import json
+    from datetime import datetime, timedelta
+    import random as _random
+
+    existing = execute_single(
+        "SELECT * FROM crm_email_campaigns WHERE id = :id",
+        {"id": campaign_id},
+    )
+    if not existing:
+        raise HTTPException(404, "Campaign not found")
+    if existing["status"] != "cancelled":
+        raise HTTPException(400, "Can only resume cancelled campaigns")
+
+    # Validate senders
+    if existing.get("sender_mode") == "rotate_all":
+        active_accounts = execute_query(
+            "SELECT id FROM crm_email_accounts WHERE is_active = true", {},
+        )
+        if not active_accounts:
+            raise HTTPException(400, "No active email accounts exist for rotate_all mode")
+    elif existing.get("sender_mode") == "rep_match":
+        active_rep_accounts = execute_query(
+            "SELECT id FROM crm_email_accounts WHERE is_active = true AND account_type = 'rep'", {},
+        )
+        if not active_rep_accounts:
+            raise HTTPException(400, "No active rep email accounts exist for rep_match mode")
+    else:
+        senders = execute_query(
+            """
+            SELECT cs.id FROM crm_campaign_senders cs
+            JOIN crm_email_accounts a ON a.id = cs.account_id
+            WHERE cs.campaign_id = :cid AND a.is_active = true
+            """,
+            {"cid": campaign_id},
+        )
+        if not senders:
+            raise HTTPException(400, "No active sender accounts assigned to this campaign")
+
+    # Step 1: Delete all cancelled sends (keep sent/delivered/opened/clicked/failed)
+    execute_query(
+        "DELETE FROM crm_email_sends WHERE campaign_id = :cid AND status = 'cancelled'",
+        {"cid": campaign_id},
+    )
+
+    # Step 2: Collect already-sent emails to avoid re-sending
+    already_sent = execute_query(
+        "SELECT LOWER(COALESCE(recipient_email, '')) as email FROM crm_email_sends WHERE campaign_id = :cid",
+        {"cid": campaign_id},
+    )
+    seen_emails = {row["email"] for row in already_sent if row["email"]}
+
+    # Step 3: Re-run targeting with current campaign settings
+    total_inserted = 0
+
+    # --- Source 1: CRM Contacts ---
+    if existing.get("source_crm_contacts", True):
+        conditions = ["c.do_not_email IS NOT TRUE", "c.email IS NOT NULL"]
+        tgt_params = {"cid": campaign_id}
+
+        # Always exclude contacts flagged as exclude_from_campaigns
+        conditions.append("c.exclude_from_campaigns IS NOT TRUE")
+
+        if existing.get("target_temperature") and len(existing["target_temperature"]) > 0:
+            conditions.append("c.temperature = ANY(:temps)")
+            tgt_params["temps"] = existing["target_temperature"]
+
+        if existing.get("target_tags") and len(existing["target_tags"]) > 0:
+            conditions.append("c.tags && :tags")
+            tgt_params["tags"] = existing["target_tags"]
+
+        where_clause = " AND ".join(conditions)
+        contacts = execute_query(
+            f"""
+            SELECT c.id, c.email, c.first_name, c.last_name, c.company
+            FROM crm_contacts c
+            WHERE {where_clause}
+            ORDER BY c.created_at ASC
+            """,
+            tgt_params,
+        )
+
+        for contact in contacts:
+            email_lower = (contact.get("email") or "").lower().strip()
+            if email_lower in seen_emails:
+                continue
+            seen_emails.add(email_lower)
+            execute_insert(
+                """
+                INSERT INTO crm_email_sends (campaign_id, contact_id, status, recipient_email, recipient_name, recipient_source)
+                VALUES (:cid, :contact_id, 'pending', :email, :name, 'crm_contact')
+                RETURNING id
+                """,
+                {
+                    "cid": campaign_id,
+                    "contact_id": contact["id"],
+                    "email": contact.get("email"),
+                    "name": f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip(),
+                },
+            )
+            total_inserted += 1
+
+    # --- Source 2: Manual Emails ---
+    if existing.get("source_manual_emails"):
+        raw = existing.get("manual_recipients") or []
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+
+        for entry in raw:
+            email = (entry.get("email") or "").lower().strip()
+            if not email or email in seen_emails:
+                continue
+            dnc = execute_single(
+                "SELECT id FROM crm_contacts WHERE LOWER(email) = :email AND (do_not_email = true OR status = 'do_not_contact')",
+                {"email": email},
+            )
+            if dnc:
+                continue
+            seen_emails.add(email)
+            name = f"{entry.get('first_name', '')} {entry.get('last_name', '')}".strip()
+            execute_insert(
+                """
+                INSERT INTO crm_email_sends (campaign_id, contact_id, status, recipient_email, recipient_name, recipient_source)
+                VALUES (:cid, NULL, 'pending', :email, :name, 'manual')
+                RETURNING id
+                """,
+                {"cid": campaign_id, "email": email, "name": name},
+            )
+            total_inserted += 1
+
+    # --- Source 3: Site Users ---
+    if existing.get("source_site_users"):
+        ALLOWED_ROLE_FIELDS = {
+            "is_filmmaker", "is_partner", "is_order_member", "is_premium",
+            "is_sales_agent", "is_sales_rep", "is_media_team", "is_admin",
+        }
+        su_conditions = ["p.email IS NOT NULL"]
+        su_params = {"cid": campaign_id}
+
+        target_roles = existing.get("target_roles") or []
+        role_conds = []
+        for role in target_roles:
+            if role in ALLOWED_ROLE_FIELDS:
+                role_conds.append(f"p.{role} = true")
+        if role_conds:
+            su_conditions.append(f"({' OR '.join(role_conds)})")
+
+        target_tiers = existing.get("target_subscription_tiers") or []
+        if target_tiers:
+            su_conditions.append("""
+                EXISTS (
+                    SELECT 1 FROM organization_members om
+                    JOIN organizations o ON o.id = om.organization_id
+                    JOIN organization_tiers ot ON ot.id = o.tier_id
+                    WHERE om.profile_id = p.id AND LOWER(ot.name) = ANY(:tiers)
+                )
+            """)
+            su_params["tiers"] = [t.lower() for t in target_tiers]
+
+        su_conditions.append("""
+            NOT EXISTS (
+                SELECT 1 FROM crm_contacts dnc
+                WHERE LOWER(dnc.email) = LOWER(p.email)
+                AND (dnc.do_not_email = true OR dnc.status = 'do_not_contact')
+            )
+        """)
+
+        su_where = " AND ".join(su_conditions)
+        site_users = execute_query(
+            f"""
+            SELECT p.id, p.full_name, p.email
+            FROM profiles p
+            WHERE {su_where}
+            ORDER BY p.created_at ASC
+            """,
+            su_params,
+        )
+
+        for user in site_users:
+            email_lower = (user.get("email") or "").lower().strip()
+            if email_lower in seen_emails:
+                continue
+            seen_emails.add(email_lower)
+            execute_insert(
+                """
+                INSERT INTO crm_email_sends (campaign_id, contact_id, status, recipient_email, recipient_name, recipient_source, profile_id)
+                VALUES (:cid, NULL, 'pending', :email, :name, 'site_user', :pid)
+                RETURNING id
+                """,
+                {
+                    "cid": campaign_id,
+                    "email": user.get("email"),
+                    "name": user.get("full_name") or "",
+                    "pid": user["id"],
+                },
+            )
+            total_inserted += 1
+
+    # Step 4: Set next_send_at on new pending sends based on frequency mode
+    send_type = existing.get("send_type") or "blast"
+    from app.jobs.email_scheduler import _enforce_send_window
+
+    if send_type in ("blast", "manual"):
+        win_start = existing.get("send_window_start")
+        win_end = existing.get("send_window_end")
+        if win_start and win_end:
+            # Blast with send window: schedule at NOW clamped to window
+            all_send_ids = execute_query(
+                "SELECT id FROM crm_email_sends WHERE campaign_id = :cid AND status = 'pending' AND next_send_at IS NULL ORDER BY created_at ASC",
+                {"cid": campaign_id},
+            )
+            base_time = datetime.utcnow()
+            for row in all_send_ids:
+                send_at = _enforce_send_window(base_time, win_start, win_end)
+                execute_single(
+                    "UPDATE crm_email_sends SET next_send_at = :at WHERE id = :sid RETURNING id",
+                    {"at": send_at, "sid": row["id"]},
+                )
+        else:
+            execute_query(
+                "UPDATE crm_email_sends SET next_send_at = NOW() WHERE campaign_id = :cid AND status = 'pending' AND next_send_at IS NULL RETURNING id",
+                {"cid": campaign_id},
+            )
+    elif send_type == "scheduled":
+        scheduled_at = existing.get("scheduled_at") or datetime.utcnow()
+        execute_query(
+            "UPDATE crm_email_sends SET next_send_at = :at WHERE campaign_id = :cid AND status = 'pending' AND next_send_at IS NULL RETURNING id",
+            {"cid": campaign_id, "at": scheduled_at},
+        )
+    elif send_type == "staggered":
+        stagger_mins = existing.get("stagger_minutes_between") or 2
+        all_send_ids = execute_query(
+            "SELECT id FROM crm_email_sends WHERE campaign_id = :cid AND status = 'pending' AND next_send_at IS NULL ORDER BY created_at ASC",
+            {"cid": campaign_id},
+        )
+        base_time = datetime.utcnow()
+        win_start = existing.get("send_window_start")
+        win_end = existing.get("send_window_end")
+        for idx, row in enumerate(all_send_ids):
+            send_at = base_time + timedelta(minutes=idx * stagger_mins)
+            send_at = _enforce_send_window(send_at, win_start, win_end)
+            execute_single(
+                "UPDATE crm_email_sends SET next_send_at = :at WHERE id = :sid RETURNING id",
+                {"at": send_at, "sid": row["id"]},
+            )
+    elif send_type == "drip":
+        drip_min = existing.get("drip_min_minutes") or 3
+        drip_max = existing.get("drip_max_minutes") or 8
+        if drip_min > drip_max:
+            drip_min, drip_max = drip_max, drip_min
+        all_send_ids = execute_query(
+            "SELECT id FROM crm_email_sends WHERE campaign_id = :cid AND status = 'pending' AND next_send_at IS NULL ORDER BY created_at ASC",
+            {"cid": campaign_id},
+        )
+        cumulative = datetime.utcnow()
+        win_start = existing.get("send_window_start")
+        win_end = existing.get("send_window_end")
+        for row in all_send_ids:
+            delay = _random.uniform(drip_min, drip_max)
+            cumulative = cumulative + timedelta(minutes=delay)
+            send_at = _enforce_send_window(cumulative, win_start, win_end)
+            cumulative = send_at
+            execute_single(
+                "UPDATE crm_email_sends SET next_send_at = :at WHERE id = :sid RETURNING id",
+                {"at": send_at, "sid": row["id"]},
+            )
+
+    # Step 5: Set campaign status to sending
+    result = execute_single(
+        """
+        UPDATE crm_email_campaigns
+        SET status = 'sending', updated_at = NOW()
+        WHERE id = :id RETURNING *
+        """,
+        {"id": campaign_id},
+    )
+
+    # Step 6: Trigger immediate processing
+    try:
+        from app.jobs.email_scheduler import process_campaign_sends
+        await process_campaign_sends()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to trigger immediate campaign processing: {e}")
+
+    return {"message": f"Campaign resumed with {total_inserted} new recipients targeted", "campaign": result}
 
 
 @router.post("/campaigns/{campaign_id}/send-now")

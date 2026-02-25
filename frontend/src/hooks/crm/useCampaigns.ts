@@ -84,6 +84,17 @@ export function useSendCampaignNow() {
   });
 }
 
+export function useResumeCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.resumeCRMCampaign(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['crm-campaigns'] });
+      qc.invalidateQueries({ queryKey: ['crm-campaign'] });
+    },
+  });
+}
+
 export function useCampaignSenders(id: string) {
   return useQuery({
     queryKey: ['crm-campaign-senders', id],

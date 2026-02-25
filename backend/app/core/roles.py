@@ -72,6 +72,7 @@ PROFILE_ROLE_FIELDS = {
     "is_media_team": RoleType.MEDIA_TEAM,
     "is_partner": RoleType.PARTNER,
     "is_filmmaker": RoleType.FILMMAKER,
+    "is_filmmaker_pro": RoleType.FILMMAKER,  # Filmmaker Pro is an add-on, not a separate role
     "is_premium": RoleType.PREMIUM,
 }
 

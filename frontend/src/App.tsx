@@ -134,6 +134,20 @@ const AdminCreditReview = React.lazy(() => import("./pages/admin/CreditReview"))
 
 // Public Pages
 const BacklotFreeTrial = React.lazy(() => import("./pages/BacklotFreeTrial"));
+const BacklotTierPage = React.lazy(() => import("./pages/BacklotTierPage"));
+const BacklotConfirmationPage = React.lazy(() => import("./pages/BacklotConfirmationPage"));
+
+// Filmmaker Pro Pages
+const FilmmakerProLayout = React.lazy(() => import("./pages/filmmaker-pro/Layout"));
+const FilmmakerProDashboard = React.lazy(() => import("./pages/filmmaker-pro/Dashboard"));
+const FilmmakerProAnalytics = React.lazy(() => import("./pages/filmmaker-pro/Analytics"));
+const FilmmakerProRateCard = React.lazy(() => import("./pages/filmmaker-pro/RateCard"));
+const FilmmakerProInvoices = React.lazy(() => import("./pages/filmmaker-pro/Invoices"));
+const FilmmakerProInvoiceDetail = React.lazy(() => import("./pages/filmmaker-pro/InvoiceDetail"));
+const FilmmakerProAvailability = React.lazy(() => import("./pages/filmmaker-pro/Availability"));
+const FilmmakerProPortfolio = React.lazy(() => import("./pages/filmmaker-pro/Portfolio"));
+const FilmmakerProSettings = React.lazy(() => import("./pages/filmmaker-pro/Settings"));
+const PortfolioPage = React.lazy(() => import("./pages/PortfolioPage"));
 
 // Partner Pages
 const PartnerLayout = React.lazy(() => import("./pages/partner/Layout"));
@@ -332,6 +346,8 @@ const App = () => (
                   <Route path="/subscriptions" element={<SubscriptionsAndRolesPage />} />
                   <Route path="/pricing" element={<PricingPage />} />
                   <Route path="/account/membership" element={<SubscriptionsAndRolesPage />} />
+                  <Route path="/subscribe/backlot/confirmation" element={<BacklotConfirmationPage />} />
+                  <Route path="/subscribe/backlot/:tier" element={<BacklotTierPage />} />
                   <Route path="/watch-now" element={<WatchNow />} />
                   <Route path="/dashboard/free" element={<DashboardFree />} />
                   <Route path="/serve-it-up" element={<ServeItUp />} />
@@ -341,6 +357,7 @@ const App = () => (
                   <Route path="/cued-up" element={<CuedUp />} />
                   <Route path="/terms" element={<Terms />} />
                   <Route path="/profile/:username" element={<FilmmakerProfile />} />
+                  <Route path="/p/:slug" element={<PortfolioPage />} />
                   <Route path="/projects/:slug" element={<PublicProjectPage />} />
                   <Route path="/slate" element={<SlateIndex />} />
                   <Route path="/slate/person/:username" element={<SlatePersonPage />} />
@@ -520,6 +537,21 @@ const App = () => (
                       <Route path="/submit-project" element={<FilmmakerSubmissions />} />
                       <Route path="/my-submissions" element={<MySubmissions />} />
                       <Route path="/submissions/:submissionId" element={<SubmissionDetail />} />
+                    </Route>
+
+                    {/* Filmmaker Pro Routes (approved filmmakers only) */}
+                    <Route path="/filmmaker-pro" element={<PermissionRoute requiredRoles={['filmmaker', 'admin', 'superadmin']} redirectTo="/dashboard" />}>
+                      <Route element={<FilmmakerProLayout />}>
+                        <Route index element={<Navigate to="dashboard" replace />} />
+                        <Route path="dashboard" element={<FilmmakerProDashboard />} />
+                        <Route path="analytics" element={<FilmmakerProAnalytics />} />
+                        <Route path="rate-card" element={<FilmmakerProRateCard />} />
+                        <Route path="invoices" element={<FilmmakerProInvoices />} />
+                        <Route path="invoices/:id" element={<FilmmakerProInvoiceDetail />} />
+                        <Route path="availability" element={<FilmmakerProAvailability />} />
+                        <Route path="portfolio" element={<FilmmakerProPortfolio />} />
+                        <Route path="settings" element={<FilmmakerProSettings />} />
+                      </Route>
                     </Route>
 
                     {/* Partner Routes (also accessible by admin) */}

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Send, Clock, Ban, Trash2, Edit2, Save, Zap, Users, X } from 'lucide-react';
+import { ArrowLeft, Send, Clock, Ban, Trash2, Edit2, Save, Zap, Users, X, BarChart3, Droplets, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -16,6 +16,7 @@ import {
   useScheduleCampaign,
   useCancelCampaign,
   useSendCampaignNow,
+  useResumeCampaign,
   usePreviewTargeting,
   useUpdateCampaignSenders,
 } from '@/hooks/crm/useCampaigns';
@@ -55,6 +56,24 @@ const TIER_OPTIONS = ['Free', 'Indie', 'Pro', 'Business', 'Enterprise'];
 
 const ROLE_LABEL_MAP: Record<string, string> = Object.fromEntries(ROLE_OPTIONS.map((r) => [r.value, r.label]));
 
+const SEND_FREQUENCY_MODES = [
+  { value: 'blast', label: 'Blast', icon: Zap, desc: 'Send all at once — max speed, no pacing.' },
+  { value: 'scheduled', label: 'Scheduled', icon: Clock, desc: 'Send all at a specific date & time.' },
+  { value: 'staggered', label: 'Staggered', icon: BarChart3, desc: 'Evenly-spaced intervals over a time window.' },
+  { value: 'drip', label: 'Drip', icon: Droplets, desc: 'Randomized intervals within a range.' },
+];
+
+const FREQUENCY_LABEL_MAP: Record<string, string> = {
+  blast: 'Blast', manual: 'Blast', scheduled: 'Scheduled', staggered: 'Staggered', drip: 'Drip',
+};
+
+const formatDuration = (totalMinutes: number) => {
+  if (totalMinutes < 60) return `~${Math.round(totalMinutes)} min`;
+  const hours = Math.floor(totalMinutes / 60);
+  const mins = Math.round(totalMinutes % 60);
+  return mins > 0 ? `~${hours}h ${mins}m` : `~${hours}h`;
+};
+
 const CampaignDetail = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -64,6 +83,7 @@ const CampaignDetail = () => {
   const scheduleCampaign = useScheduleCampaign();
   const cancelCampaign = useCancelCampaign();
   const sendNow = useSendCampaignNow();
+  const resumeCampaign = useResumeCampaign();
   const { data: targeting } = usePreviewTargeting(id!);
   const updateSenders = useUpdateCampaignSenders();
   const { data: accountsData } = useEmailAccounts();
@@ -79,11 +99,12 @@ const CampaignDetail = () => {
   if (isLoading) return <div className="text-muted-gray">Loading campaign...</div>;
   if (!campaign) return <div className="text-muted-gray">Campaign not found</div>;
 
-  const canEdit = campaign.status === 'draft' || campaign.status === 'scheduled';
+  const canEdit = campaign.status === 'draft' || campaign.status === 'scheduled' || campaign.status === 'cancelled';
   const canSchedule = campaign.status === 'draft';
   const canSendNow = campaign.status === 'draft' || campaign.status === 'scheduled';
-  const canCancel = campaign.status === 'draft' || campaign.status === 'scheduled';
+  const canCancel = campaign.status === 'draft' || campaign.status === 'scheduled' || campaign.status === 'sending';
   const canDelete = campaign.status === 'draft';
+  const canResume = campaign.status === 'cancelled';
   const senders = campaign.senders || [];
   const hasSenders = campaign.sender_mode === 'rotate_all' || campaign.sender_mode === 'rep_match' || senders.length > 0;
 
@@ -95,6 +116,15 @@ const CampaignDetail = () => {
       subject_template: campaign.subject_template,
       html_template: campaign.html_template || '',
       text_template: campaign.text_template || '',
+      send_type: campaign.send_type || 'blast',
+      scheduled_at: campaign.scheduled_at || '',
+      batch_size: campaign.batch_size || 10,
+      send_delay_seconds: campaign.send_delay_seconds || 5,
+      stagger_minutes_between: campaign.stagger_minutes_between || 2,
+      drip_min_minutes: campaign.drip_min_minutes || 3,
+      drip_max_minutes: campaign.drip_max_minutes || 8,
+      send_window_start: campaign.send_window_start || '',
+      send_window_end: campaign.send_window_end || '',
       source_crm_contacts: campaign.source_crm_contacts ?? true,
       source_manual_emails: campaign.source_manual_emails ?? false,
       source_site_users: campaign.source_site_users ?? false,
@@ -103,6 +133,7 @@ const CampaignDetail = () => {
       manual_recipients: Array.isArray(manualRecipients) ? manualRecipients : [],
       target_roles: campaign.target_roles || [],
       target_subscription_tiers: campaign.target_subscription_tiers || [],
+      include_manual_contacts: campaign.include_manual_contacts ?? false,
     });
     setEditSenderIds(senders.map((s: any) => s.account_id));
     setEditSenderMode(campaign.sender_mode || 'select');
@@ -220,7 +251,10 @@ const CampaignDetail = () => {
   };
 
   const handleCancel = () => {
-    if (confirm('Cancel this campaign?')) {
+    const msg = campaign.status === 'sending'
+      ? 'Stop this campaign? Emails already sent will not be recalled, but remaining pending sends will be cancelled.'
+      : 'Cancel this campaign?';
+    if (confirm(msg)) {
       cancelCampaign.mutate(id!);
     }
   };
@@ -228,6 +262,12 @@ const CampaignDetail = () => {
   const handleDelete = () => {
     if (confirm('Delete this campaign? This cannot be undone.')) {
       deleteCampaign.mutate(id!, { onSuccess: () => navigate('/crm/admin/campaigns') });
+    }
+  };
+
+  const handleResume = () => {
+    if (confirm('Resume this campaign? Targeting will be re-run with current settings. Already-sent emails will not be re-sent.')) {
+      resumeCampaign.mutate(id!);
     }
   };
 
@@ -278,9 +318,21 @@ const CampaignDetail = () => {
               <Clock className="h-4 w-4 mr-1" /> Schedule
             </Button>
           )}
-          {canCancel && campaign.status === 'scheduled' && (
-            <Button variant="outline" size="sm" onClick={handleCancel}>
-              <Ban className="h-4 w-4 mr-1" /> Cancel
+          {canCancel && (campaign.status === 'scheduled' || campaign.status === 'sending') && (
+            <Button variant="outline" size="sm" onClick={handleCancel}
+              className={campaign.status === 'sending' ? 'text-red-400 border-red-400/30 hover:bg-red-900/20' : ''}
+            >
+              <Ban className="h-4 w-4 mr-1" /> {campaign.status === 'sending' ? 'Stop Campaign' : 'Cancel'}
+            </Button>
+          )}
+          {canResume && (
+            <Button
+              size="sm"
+              onClick={handleResume}
+              disabled={resumeCampaign.isPending}
+              className="bg-green-600 hover:bg-green-700 text-white"
+            >
+              <Zap className="h-4 w-4 mr-1" /> {resumeCampaign.isPending ? 'Resuming...' : 'Resume Campaign'}
             </Button>
           )}
           {canDelete && (
@@ -335,6 +387,134 @@ const CampaignDetail = () => {
               className="bg-charcoal-black border-muted-gray/30"
               rows={4}
             />
+          </div>
+
+          {/* ===== Send Frequency (Edit) ===== */}
+          <div className="border border-muted-gray/20 rounded-lg p-4 space-y-4">
+            <Label className="text-base font-medium block">Send Frequency</Label>
+            <RadioGroup
+              value={editForm.send_type}
+              onValueChange={(v) => setEditForm({ ...editForm, send_type: v })}
+              className="space-y-3"
+            >
+              {SEND_FREQUENCY_MODES.map((mode) => {
+                const Icon = mode.icon;
+                return (
+                  <label key={mode.value} className="flex items-start gap-3 cursor-pointer">
+                    <RadioGroupItem value={mode.value} className="mt-0.5" />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 text-sm">
+                        <Icon className="h-4 w-4 text-accent-yellow" />
+                        <span className="text-bone-white font-medium">{mode.label}</span>
+                      </div>
+                      <p className="text-xs text-muted-gray mt-0.5">{mode.desc}</p>
+                    </div>
+                  </label>
+                );
+              })}
+            </RadioGroup>
+
+            {editForm.send_type === 'blast' && (
+              <div className="border-t border-muted-gray/20 pt-3 grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs">Batch Size</Label>
+                  <Input
+                    type="number" min={1} max={100}
+                    value={editForm.batch_size}
+                    onChange={(e) => setEditForm({ ...editForm, batch_size: parseInt(e.target.value) || 10 })}
+                    className="bg-charcoal-black border-muted-gray/30"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Delay Between Sends (sec)</Label>
+                  <Input
+                    type="number" min={0} max={60}
+                    value={editForm.send_delay_seconds}
+                    onChange={(e) => setEditForm({ ...editForm, send_delay_seconds: parseInt(e.target.value) || 5 })}
+                    className="bg-charcoal-black border-muted-gray/30"
+                  />
+                </div>
+              </div>
+            )}
+
+            {editForm.send_type === 'scheduled' && (
+              <div className="border-t border-muted-gray/20 pt-3">
+                <Label className="text-xs">Scheduled Date & Time</Label>
+                <Input
+                  type="datetime-local"
+                  value={editForm.scheduled_at}
+                  onChange={(e) => setEditForm({ ...editForm, scheduled_at: e.target.value })}
+                  className="bg-charcoal-black border-muted-gray/30 mt-1"
+                />
+              </div>
+            )}
+
+            {editForm.send_type === 'staggered' && (
+              <div className="border-t border-muted-gray/20 pt-3 space-y-3">
+                <div>
+                  <Label className="text-xs">Minutes Between Each Send</Label>
+                  <Input
+                    type="number" min={1} max={120}
+                    value={editForm.stagger_minutes_between}
+                    onChange={(e) => setEditForm({ ...editForm, stagger_minutes_between: parseInt(e.target.value) || 2 })}
+                    className="bg-charcoal-black border-muted-gray/30 mt-1"
+                  />
+                  <p className="text-xs text-muted-gray mt-1">
+                    60 recipients at {editForm.stagger_minutes_between} min = {formatDuration(60 * editForm.stagger_minutes_between)}
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs">Send Window Start</Label>
+                    <Input type="time" value={editForm.send_window_start} onChange={(e) => setEditForm({ ...editForm, send_window_start: e.target.value })} className="bg-charcoal-black border-muted-gray/30 mt-1" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Send Window End</Label>
+                    <Input type="time" value={editForm.send_window_end} onChange={(e) => setEditForm({ ...editForm, send_window_end: e.target.value })} className="bg-charcoal-black border-muted-gray/30 mt-1" />
+                  </div>
+                </div>
+                {editForm.send_window_start && editForm.send_window_end && (
+                  <div className="flex items-start gap-2 text-xs text-blue-300 bg-blue-900/20 rounded p-2">
+                    <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                    <span>Sends outside {editForm.send_window_start} – {editForm.send_window_end} will be pushed to the next day's window.</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {editForm.send_type === 'drip' && (
+              <div className="border-t border-muted-gray/20 pt-3 space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs">Min Minutes Between</Label>
+                    <Input type="number" min={1} max={120} value={editForm.drip_min_minutes} onChange={(e) => setEditForm({ ...editForm, drip_min_minutes: parseInt(e.target.value) || 3 })} className="bg-charcoal-black border-muted-gray/30 mt-1" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Max Minutes Between</Label>
+                    <Input type="number" min={1} max={120} value={editForm.drip_max_minutes} onChange={(e) => setEditForm({ ...editForm, drip_max_minutes: parseInt(e.target.value) || 8 })} className="bg-charcoal-black border-muted-gray/30 mt-1" />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-gray">
+                  60 recipients at {editForm.drip_min_minutes}–{editForm.drip_max_minutes} min = {formatDuration(60 * editForm.drip_min_minutes)} – {formatDuration(60 * editForm.drip_max_minutes)}
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs">Send Window Start</Label>
+                    <Input type="time" value={editForm.send_window_start} onChange={(e) => setEditForm({ ...editForm, send_window_start: e.target.value })} className="bg-charcoal-black border-muted-gray/30 mt-1" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Send Window End</Label>
+                    <Input type="time" value={editForm.send_window_end} onChange={(e) => setEditForm({ ...editForm, send_window_end: e.target.value })} className="bg-charcoal-black border-muted-gray/30 mt-1" />
+                  </div>
+                </div>
+                {editForm.send_window_start && editForm.send_window_end && (
+                  <div className="flex items-start gap-2 text-xs text-blue-300 bg-blue-900/20 rounded p-2">
+                    <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                    <span>Sends outside {editForm.send_window_start} – {editForm.send_window_end} will be pushed to the next day's window.</span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* ===== Recipient Targeting (Edit) ===== */}
@@ -406,6 +586,16 @@ const CampaignDetail = () => {
                     </div>
                   )}
                 </div>
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <Checkbox
+                    checked={editForm.include_manual_contacts}
+                    onCheckedChange={(v) => setEditForm({ ...editForm, include_manual_contacts: !!v })}
+                  />
+                  <div>
+                    <span className="text-sm text-bone-white">Include my manually-added contacts</span>
+                    <p className="text-xs text-muted-gray">By default, contacts you personally added are excluded from campaigns</p>
+                  </div>
+                </label>
               </div>
             )}
 
@@ -687,6 +877,53 @@ const CampaignDetail = () => {
             </div>
           </div>
 
+          {/* Send Frequency info */}
+          <div className="bg-charcoal-black border border-muted-gray/30 rounded-lg p-6 mb-6">
+            <h2 className="text-lg font-medium text-bone-white mb-3">Send Frequency</h2>
+            <div className="flex gap-6 text-sm flex-wrap mb-4">
+              <div>
+                <span className="text-muted-gray">Mode:</span>{' '}
+                <span className="text-bone-white">{FREQUENCY_LABEL_MAP[campaign.send_type] || campaign.send_type}</span>
+              </div>
+              {(campaign.send_type === 'blast' || campaign.send_type === 'manual') && (
+                <>
+                  <div>
+                    <span className="text-muted-gray">Batch Size:</span>{' '}
+                    <span className="text-bone-white">{campaign.batch_size || 10}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-gray">Delay:</span>{' '}
+                    <span className="text-bone-white">{campaign.send_delay_seconds || 5}s between sends</span>
+                  </div>
+                </>
+              )}
+              {campaign.send_type === 'scheduled' && campaign.scheduled_at && (
+                <div>
+                  <span className="text-muted-gray">Scheduled:</span>{' '}
+                  <span className="text-bone-white">{formatDateTime(campaign.scheduled_at)}</span>
+                </div>
+              )}
+              {campaign.send_type === 'staggered' && (
+                <div>
+                  <span className="text-muted-gray">Interval:</span>{' '}
+                  <span className="text-bone-white">{campaign.stagger_minutes_between || 2} min between each send</span>
+                </div>
+              )}
+              {campaign.send_type === 'drip' && (
+                <div>
+                  <span className="text-muted-gray">Range:</span>{' '}
+                  <span className="text-bone-white">{campaign.drip_min_minutes || 3}–{campaign.drip_max_minutes || 8} min (randomized)</span>
+                </div>
+              )}
+              {campaign.send_window_start && campaign.send_window_end && (
+                <div>
+                  <span className="text-muted-gray">Send Window:</span>{' '}
+                  <span className="text-bone-white">{campaign.send_window_start} – {campaign.send_window_end}</span>
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Targeting info */}
           <div className="bg-charcoal-black border border-muted-gray/30 rounded-lg p-6 mb-6">
             <h2 className="text-lg font-medium text-bone-white mb-3">Targeting</h2>
@@ -694,10 +931,6 @@ const CampaignDetail = () => {
               <div>
                 <span className="text-muted-gray">Sources:</span>{' '}
                 <span className="text-bone-white">{activeSources.join(', ') || 'None'}</span>
-              </div>
-              <div>
-                <span className="text-muted-gray">Send Type:</span>{' '}
-                <span className="text-bone-white capitalize">{campaign.send_type}</span>
               </div>
               {campaign.target_temperature?.length > 0 && (
                 <div>
@@ -723,39 +956,30 @@ const CampaignDetail = () => {
                   <span className="text-bone-white">{campaign.target_subscription_tiers.join(', ')}</span>
                 </div>
               )}
+              {(campaign.source_crm_contacts ?? true) && (
+                <div>
+                  <span className="text-muted-gray">Creator's manual contacts:</span>{' '}
+                  <span className="text-bone-white">{campaign.include_manual_contacts ? 'Included' : 'Excluded'}</span>
+                </div>
+              )}
               {campaign.source_manual_emails && (
                 <div>
                   <span className="text-muted-gray">Manual Recipients:</span>{' '}
                   <span className="text-bone-white">{(campaign.manual_recipients || []).length}</span>
                 </div>
               )}
-              {campaign.scheduled_at && (
-                <div>
-                  <span className="text-muted-gray">Scheduled:</span>{' '}
-                  <span className="text-bone-white">{formatDateTime(campaign.scheduled_at)}</span>
-                </div>
-              )}
-              {campaign.drip_delay_days && (
-                <div>
-                  <span className="text-muted-gray">Drip Delay:</span>{' '}
-                  <span className="text-bone-white">{campaign.drip_delay_days} days</span>
-                </div>
-              )}
-              <div>
-                <span className="text-muted-gray">Batch Size:</span>{' '}
-                <span className="text-bone-white">{campaign.batch_size || 10}</span>
-              </div>
-              <div>
-                <span className="text-muted-gray">Send Delay:</span>{' '}
-                <span className="text-bone-white">{campaign.send_delay_seconds || 5}s</span>
-              </div>
             </div>
           </div>
 
           {/* Send results */}
           {campaign.sends?.length > 0 && (
             <div className="bg-charcoal-black border border-muted-gray/30 rounded-lg p-6">
-              <h2 className="text-lg font-medium text-bone-white mb-4">Send Results ({campaign.sends.length})</h2>
+              <h2 className="text-lg font-medium text-bone-white mb-4">
+                Send Results ({campaign.sends_total || campaign.sends.length})
+                {campaign.sends_total > campaign.sends.length && (
+                  <span className="text-sm text-muted-gray font-normal ml-2">showing {campaign.sends.length}</span>
+                )}
+              </h2>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>

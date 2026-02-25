@@ -296,6 +296,9 @@ async def stripe_webhook(request: Request):
             if config_id:
                 from app.services.subscription_service import handle_subscription_activated
                 handle_subscription_activated(subscription, config_id, event.get("id"))
+        elif product == "filmmaker_pro":
+            from app.api.filmmaker_pro import handle_filmmaker_pro_webhook
+            await handle_filmmaker_pro_webhook(customer_id, subscription, is_active=True)
         elif product == "order_dues":
             await _handle_order_dues_event(subscription, is_active=True)
         else:
@@ -324,6 +327,10 @@ async def stripe_webhook(request: Request):
                     handle_payment_failed(subscription, org_id, event.get("id"))
                 elif status == "canceled":
                     handle_subscription_canceled(subscription, org_id, event.get("id"))
+        elif product == "filmmaker_pro":
+            from app.api.filmmaker_pro import handle_filmmaker_pro_webhook
+            is_active = status in ["active", "trialing"]
+            await handle_filmmaker_pro_webhook(customer_id, subscription, is_active=is_active)
         elif product == "order_dues":
             is_active = status in ["active", "trialing"]
             await _handle_order_dues_event(subscription, is_active=is_active)
@@ -341,6 +348,9 @@ async def stripe_webhook(request: Request):
             if org_id:
                 from app.services.subscription_service import handle_subscription_canceled
                 handle_subscription_canceled(subscription, org_id, event.get("id"))
+        elif product == "filmmaker_pro":
+            from app.api.filmmaker_pro import handle_filmmaker_pro_webhook
+            await handle_filmmaker_pro_webhook(customer_id, subscription, is_active=False)
         elif product == "order_dues":
             await _handle_order_dues_event(subscription, is_active=False)
         else:

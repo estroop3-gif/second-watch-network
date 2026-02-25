@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Filter, X } from 'lucide-react';
+import { Plus, Filter, X, Zap, Clock, BarChart3, Droplets, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -37,13 +37,27 @@ const ROLE_OPTIONS = [
 
 const TIER_OPTIONS = ['Free', 'Indie', 'Pro', 'Business', 'Enterprise'];
 
+const SEND_FREQUENCY_MODES = [
+  { value: 'blast', label: 'Blast', icon: Zap, desc: 'Send all at once — max speed, no pacing. Best for small lists or time-sensitive campaigns.' },
+  { value: 'scheduled', label: 'Scheduled', icon: Clock, desc: 'Send all at a specific date & time.' },
+  { value: 'staggered', label: 'Staggered', icon: BarChart3, desc: 'Send in evenly-spaced intervals over a time window. Looks natural to email providers.' },
+  { value: 'drip', label: 'Drip', icon: Droplets, desc: 'Send with randomized intervals within a range. Best deliverability for large lists.' },
+];
+
+const formatDuration = (totalMinutes: number) => {
+  if (totalMinutes < 60) return `~${Math.round(totalMinutes)} min`;
+  const hours = Math.floor(totalMinutes / 60);
+  const mins = Math.round(totalMinutes % 60);
+  return mins > 0 ? `~${hours}h ${mins}m` : `~${hours}h`;
+};
+
 const INITIAL_FORM = {
   name: '',
   description: '',
   subject_template: '',
   html_template: '',
   text_template: '',
-  send_type: 'manual',
+  send_type: 'blast',
   target_temperature: [] as string[],
   target_tags: [] as string[],
   sender_account_ids: [] as string[],
@@ -54,6 +68,15 @@ const INITIAL_FORM = {
   manual_recipients: [] as { email: string; first_name: string; last_name: string; company: string }[],
   target_roles: [] as string[],
   target_subscription_tiers: [] as string[],
+  include_manual_contacts: false,
+  stagger_minutes_between: 2,
+  drip_min_minutes: 3,
+  drip_max_minutes: 8,
+  send_window_start: '',
+  send_window_end: '',
+  scheduled_at: '',
+  batch_size: 10,
+  send_delay_seconds: 5,
 };
 
 const Campaigns = () => {
@@ -253,18 +276,180 @@ const Campaigns = () => {
                 rows={3}
               />
             </div>
-            <div>
-              <Label>Send Type</Label>
-              <Select value={form.send_type} onValueChange={(v) => setForm({ ...form, send_type: v })}>
-                <SelectTrigger className="bg-charcoal-black border-muted-gray/30">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="manual">Manual</SelectItem>
-                  <SelectItem value="scheduled">Scheduled</SelectItem>
-                  <SelectItem value="drip">Drip</SelectItem>
-                </SelectContent>
-              </Select>
+            {/* ===== Send Frequency ===== */}
+            <div className="border border-muted-gray/20 rounded-lg p-4 space-y-4">
+              <Label className="text-base font-medium block">Send Frequency</Label>
+              <RadioGroup
+                value={form.send_type}
+                onValueChange={(v) => setForm({ ...form, send_type: v })}
+                className="space-y-3"
+              >
+                {SEND_FREQUENCY_MODES.map((mode) => {
+                  const Icon = mode.icon;
+                  return (
+                    <label key={mode.value} className="flex items-start gap-3 cursor-pointer">
+                      <RadioGroupItem value={mode.value} className="mt-0.5" />
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 text-sm">
+                          <Icon className="h-4 w-4 text-accent-yellow" />
+                          <span className="text-bone-white font-medium">{mode.label}</span>
+                        </div>
+                        <p className="text-xs text-muted-gray mt-0.5">{mode.desc}</p>
+                      </div>
+                    </label>
+                  );
+                })}
+              </RadioGroup>
+
+              {/* Blast options */}
+              {form.send_type === 'blast' && (
+                <div className="border-t border-muted-gray/20 pt-3 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label className="text-xs">Batch Size</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={form.batch_size}
+                        onChange={(e) => setForm({ ...form, batch_size: parseInt(e.target.value) || 10 })}
+                        className="bg-charcoal-black border-muted-gray/30"
+                      />
+                      <p className="text-xs text-muted-gray mt-1">Emails per scheduler tick</p>
+                    </div>
+                    <div>
+                      <Label className="text-xs">Delay Between Sends (sec)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={60}
+                        value={form.send_delay_seconds}
+                        onChange={(e) => setForm({ ...form, send_delay_seconds: parseInt(e.target.value) || 5 })}
+                        className="bg-charcoal-black border-muted-gray/30"
+                      />
+                      <p className="text-xs text-muted-gray mt-1">Seconds between each email</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Scheduled options */}
+              {form.send_type === 'scheduled' && (
+                <div className="border-t border-muted-gray/20 pt-3">
+                  <Label className="text-xs">Scheduled Date & Time</Label>
+                  <Input
+                    type="datetime-local"
+                    value={form.scheduled_at}
+                    onChange={(e) => setForm({ ...form, scheduled_at: e.target.value })}
+                    className="bg-charcoal-black border-muted-gray/30 mt-1"
+                  />
+                </div>
+              )}
+
+              {/* Staggered options */}
+              {form.send_type === 'staggered' && (
+                <div className="border-t border-muted-gray/20 pt-3 space-y-3">
+                  <div>
+                    <Label className="text-xs">Minutes Between Each Send</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={120}
+                      value={form.stagger_minutes_between}
+                      onChange={(e) => setForm({ ...form, stagger_minutes_between: parseInt(e.target.value) || 2 })}
+                      className="bg-charcoal-black border-muted-gray/30 mt-1"
+                    />
+                    <p className="text-xs text-muted-gray mt-1">
+                      Evenly spaced — e.g., 60 recipients at {form.stagger_minutes_between} min = {formatDuration(60 * form.stagger_minutes_between)}
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label className="text-xs">Send Window Start (optional)</Label>
+                      <Input
+                        type="time"
+                        value={form.send_window_start}
+                        onChange={(e) => setForm({ ...form, send_window_start: e.target.value })}
+                        className="bg-charcoal-black border-muted-gray/30 mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Send Window End (optional)</Label>
+                      <Input
+                        type="time"
+                        value={form.send_window_end}
+                        onChange={(e) => setForm({ ...form, send_window_end: e.target.value })}
+                        className="bg-charcoal-black border-muted-gray/30 mt-1"
+                      />
+                    </div>
+                  </div>
+                  {form.send_window_start && form.send_window_end && (
+                    <div className="flex items-start gap-2 text-xs text-blue-300 bg-blue-900/20 rounded p-2">
+                      <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                      <span>Sends outside {form.send_window_start} – {form.send_window_end} will be pushed to the next day's window.</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Drip options */}
+              {form.send_type === 'drip' && (
+                <div className="border-t border-muted-gray/20 pt-3 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label className="text-xs">Min Minutes Between</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={120}
+                        value={form.drip_min_minutes}
+                        onChange={(e) => setForm({ ...form, drip_min_minutes: parseInt(e.target.value) || 3 })}
+                        className="bg-charcoal-black border-muted-gray/30 mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Max Minutes Between</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={120}
+                        value={form.drip_max_minutes}
+                        onChange={(e) => setForm({ ...form, drip_max_minutes: parseInt(e.target.value) || 8 })}
+                        className="bg-charcoal-black border-muted-gray/30 mt-1"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-gray">
+                    Randomized — e.g., 60 recipients at {form.drip_min_minutes}–{form.drip_max_minutes} min = {formatDuration(60 * form.drip_min_minutes)} – {formatDuration(60 * form.drip_max_minutes)}
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label className="text-xs">Send Window Start (optional)</Label>
+                      <Input
+                        type="time"
+                        value={form.send_window_start}
+                        onChange={(e) => setForm({ ...form, send_window_start: e.target.value })}
+                        className="bg-charcoal-black border-muted-gray/30 mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Send Window End (optional)</Label>
+                      <Input
+                        type="time"
+                        value={form.send_window_end}
+                        onChange={(e) => setForm({ ...form, send_window_end: e.target.value })}
+                        className="bg-charcoal-black border-muted-gray/30 mt-1"
+                      />
+                    </div>
+                  </div>
+                  {form.send_window_start && form.send_window_end && (
+                    <div className="flex items-start gap-2 text-xs text-blue-300 bg-blue-900/20 rounded p-2">
+                      <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                      <span>Sends outside {form.send_window_start} – {form.send_window_end} will be pushed to the next day's window.</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* ===== Recipient Targeting ===== */}
@@ -339,6 +524,16 @@ const Campaigns = () => {
                       </div>
                     )}
                   </div>
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <Checkbox
+                      checked={form.include_manual_contacts}
+                      onCheckedChange={(v) => setForm({ ...form, include_manual_contacts: !!v })}
+                    />
+                    <div>
+                      <span className="text-sm text-bone-white">Include my manually-added contacts</span>
+                      <p className="text-xs text-muted-gray">By default, contacts you personally added are excluded from campaigns</p>
+                    </div>
+                  </label>
                 </div>
               )}
 

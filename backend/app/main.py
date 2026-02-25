@@ -75,6 +75,7 @@ from app.api import organization_backlot  # Organization Backlot seat management
 from app.api import crm, crm_admin  # CRM - Sales & Customer Relationship Management
 from app.api import media_hub  # Media/Marketing Hub
 from app.api import subscription_billing  # Self-service subscription billing
+from app.api import filmmaker_pro  # Filmmaker Pro subscription tier
 
 # Configure structured logging
 setup_logging(level="INFO")
@@ -448,6 +449,7 @@ app.include_router(crm.router, prefix=f"{settings.API_V1_PREFIX}/crm", tags=["CR
 app.include_router(crm_admin.router, prefix=f"{settings.API_V1_PREFIX}/admin/crm", tags=["CRM Admin"])
 app.include_router(media_hub.router, prefix=f"{settings.API_V1_PREFIX}/media-hub", tags=["Media Hub"])
 app.include_router(subscription_billing.router, prefix=f"{settings.API_V1_PREFIX}/subscription-billing", tags=["Subscription Billing"])
+app.include_router(filmmaker_pro.router, prefix=f"{settings.API_V1_PREFIX}/filmmaker-pro", tags=["Filmmaker Pro"])
 
 # Mount Socket.IO for real-time communications
 try:

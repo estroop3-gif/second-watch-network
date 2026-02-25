@@ -17,6 +17,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import FilmmakerApplicationForm from '@/components/forms/FilmmakerApplicationForm';
 import { Card, CardContent } from '@/components/ui/card';
 import { CheckCircle, Star, Rocket, Zap, Building2, Crown, ArrowRight, Film, Shield } from 'lucide-react';
+import { useFilmmakerProCheckout } from '@/hooks/useFilmmakerPro';
+import { useToast } from '@/hooks/use-toast';
 
 const BACKLOT_TIERS = [
   {
@@ -39,8 +41,8 @@ const BACKLOT_TIERS = [
     tagline: 'For solo filmmakers',
     icon: Rocket,
     highlights: ['5 active projects', '6 seats', '150 GB storage'],
-    cta: 'View Plan',
-    ctaLink: '/pricing',
+    cta: 'Subscribe',
+    ctaLink: '/subscribe/backlot/indie',
   },
   {
     key: 'pro',
@@ -51,8 +53,8 @@ const BACKLOT_TIERS = [
     icon: Zap,
     highlights: ['15 active projects', '17 seats', '1 TB storage'],
     popular: true,
-    cta: 'View Plan',
-    ctaLink: '/pricing',
+    cta: 'Subscribe',
+    ctaLink: '/subscribe/backlot/pro',
   },
   {
     key: 'business',
@@ -62,8 +64,8 @@ const BACKLOT_TIERS = [
     tagline: 'For production companies',
     icon: Building2,
     highlights: ['50 active projects', '28 seats', '5 TB storage'],
-    cta: 'View Plan',
-    ctaLink: '/pricing',
+    cta: 'Subscribe',
+    ctaLink: '/subscribe/backlot/business',
   },
   {
     key: 'enterprise',
@@ -73,8 +75,8 @@ const BACKLOT_TIERS = [
     tagline: 'For studios & networks',
     icon: Crown,
     highlights: ['Unlimited everything', 'Unlimited seats', 'Unlimited storage'],
-    cta: 'View Plan',
-    ctaLink: '/pricing',
+    cta: 'Subscribe',
+    ctaLink: '/subscribe/backlot/enterprise',
   },
 ];
 
@@ -83,7 +85,21 @@ const SubscriptionsAndRolesPage = () => {
   const { hasRole } = usePermissions();
   const { profile } = useProfile();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [isFilmmakerModalOpen, setIsFilmmakerModalOpen] = useState(false);
+  const [isOrderComingSoonOpen, setIsOrderComingSoonOpen] = useState(false);
+  const checkoutMutation = useFilmmakerProCheckout();
+
+  const handleFilmmakerProCheckout = async () => {
+    try {
+      const result = await checkoutMutation.mutateAsync({ plan: 'monthly' });
+      if (result?.checkout_url) {
+        window.location.href = result.checkout_url;
+      }
+    } catch {
+      toast({ title: 'Error starting checkout', variant: 'destructive' });
+    }
+  };
 
   const handleBecomeFilmmakerClick = () => {
     if (!session) {
@@ -158,8 +174,8 @@ const SubscriptionsAndRolesPage = () => {
                       <Link to="/order/dashboard">Go to Dashboard</Link>
                     </Button>
                   ) : (
-                    <Button asChild className="w-full bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90">
-                      <Link to="/order/apply">Apply for Membership</Link>
+                    <Button onClick={() => setIsOrderComingSoonOpen(true)} className="w-full bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90">
+                      Apply for Membership
                     </Button>
                   )
                 }
@@ -178,6 +194,7 @@ const SubscriptionsAndRolesPage = () => {
                     'Share status updates and posts',
                     'Submit content for distribution',
                     'Collaborate in The Backlot with advanced posting',
+                    'Upgrade to Filmmaker Pro for $9.99/mo',
                   ]}
                   badge={<Badge variant="outline">Application-Based</Badge>}
                   action={
@@ -192,17 +209,54 @@ const SubscriptionsAndRolesPage = () => {
                     </DialogTrigger>
                   }
                 />
-                <DialogContent className="bg-charcoal-black border-muted-gray text-bone-white max-w-4xl max-h-[90vh] overflow-y-auto">
-                  <DialogHeader>
+                <DialogContent className="bg-charcoal-black border-muted-gray text-bone-white max-w-4xl max-h-[90vh] flex flex-col p-0">
+                  <DialogHeader className="px-6 pt-6 pb-4 flex-shrink-0">
                     <DialogTitle className="text-2xl text-accent-yellow">Filmmaker Application</DialogTitle>
                     <DialogDescription>
                       Help us get to know your work. This application helps maintain trust and quality on our platform.
                     </DialogDescription>
                   </DialogHeader>
-                  <FilmmakerApplicationForm onSuccess={() => setIsFilmmakerModalOpen(false)} />
+                  <div className="overflow-y-auto flex-1 px-6 pb-6">
+                    <FilmmakerApplicationForm onSuccess={() => setIsFilmmakerModalOpen(false)} />
+                  </div>
                 </DialogContent>
               </Dialog>
             </CarouselItem>
+
+            {/* Filmmaker Pro — only visible to approved filmmakers */}
+            {hasRole('filmmaker') && (
+              <CarouselItem className="pl-8 md:basis-1/2 xl:basis-1/3">
+                <RoleCard
+                  title="Filmmaker Pro"
+                  price="$9.99"
+                  description="Professional tools for approved filmmakers to grow their career."
+                  features={[
+                    'Profile analytics & visitor insights',
+                    'Boosted visibility in directory',
+                    'Public rate card & standalone invoicing',
+                    'Advanced availability calendar',
+                    'Portfolio site generator',
+                    'PRO badge on all listings',
+                  ]}
+                  badge={<Badge className="bg-gradient-to-r from-amber-500 to-yellow-400 text-charcoal-black">$9.99/mo</Badge>}
+                  action={
+                    profile?.is_filmmaker_pro ? (
+                      <Button asChild className="w-full bg-amber-500 hover:bg-amber-600 text-charcoal-black">
+                        <Link to="/filmmaker-pro/settings">Manage Subscription</Link>
+                      </Button>
+                    ) : (
+                      <Button
+                        onClick={handleFilmmakerProCheckout}
+                        disabled={checkoutMutation.isPending}
+                        className="w-full bg-amber-500 hover:bg-amber-600 text-charcoal-black"
+                      >
+                        {checkoutMutation.isPending ? 'Loading...' : 'Start Free Trial'}
+                      </Button>
+                    )
+                  }
+                />
+              </CarouselItem>
+            )}
 
             {/* Partner Role */}
             <CarouselItem className="pl-8 md:basis-1/2 xl:basis-1/3">
@@ -310,19 +364,31 @@ const SubscriptionsAndRolesPage = () => {
                     </li>
                   ))}
                 </ul>
-                <Button
-                  asChild
-                  size="sm"
-                  className={`w-full ${
-                    tier.popular
-                      ? 'bg-accent-yellow text-charcoal-black hover:bg-yellow-500'
-                      : 'bg-muted-gray/30 text-bone-white hover:bg-muted-gray/50'
-                  }`}
-                >
-                  <Link to={isOrderMember ? '/order/dashboard' : '/order/apply'}>
-                    {isOrderMember ? 'Go to Dashboard' : 'Apply for Membership'}
-                  </Link>
-                </Button>
+                {isOrderMember ? (
+                  <Button
+                    asChild
+                    size="sm"
+                    className={`w-full ${
+                      tier.popular
+                        ? 'bg-accent-yellow text-charcoal-black hover:bg-yellow-500'
+                        : 'bg-muted-gray/30 text-bone-white hover:bg-muted-gray/50'
+                    }`}
+                  >
+                    <Link to="/order/dashboard">Go to Dashboard</Link>
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={() => setIsOrderComingSoonOpen(true)}
+                    className={`w-full ${
+                      tier.popular
+                        ? 'bg-accent-yellow text-charcoal-black hover:bg-yellow-500'
+                        : 'bg-muted-gray/30 text-bone-white hover:bg-muted-gray/50'
+                    }`}
+                  >
+                    Apply for Membership
+                  </Button>
+                )}
               </CardContent>
             </Card>
           ))}
@@ -421,6 +487,23 @@ const SubscriptionsAndRolesPage = () => {
           </Button>
         </div>
       )}
+
+      {/* Order Coming Soon Dialog */}
+      <Dialog open={isOrderComingSoonOpen} onOpenChange={setIsOrderComingSoonOpen}>
+        <DialogContent className="bg-charcoal-black border-muted-gray text-bone-white">
+          <DialogHeader>
+            <DialogTitle className="text-xl text-accent-yellow">Coming Soon</DialogTitle>
+            <DialogDescription className="text-muted-gray">
+              The Second Watch Order is currently in the process of being implemented. Stay tuned!
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end">
+            <Button variant="outline" onClick={() => setIsOrderComingSoonOpen(false)}>
+              Got it
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
