@@ -257,7 +257,7 @@ Resources:
           # System libraries (WeasyPrint layer)
           LD_LIBRARY_PATH: /opt/lib
           # Deploy marker (change to force env var refresh)
-          DEPLOY_VERSION: "2026-02-14-01"
+          DEPLOY_VERSION: "2026-03-12-01"
           # Database
           DATABASE_URL: !Ref DatabaseUrl
           # Auth
