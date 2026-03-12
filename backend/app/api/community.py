@@ -1,14 +1,15 @@
 """
 Community/Search API Routes
 """
-from fastapi import APIRouter, HTTPException, Header, Body, Query
+from fastapi import APIRouter, HTTPException, Header, Body, Query, BackgroundTasks
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
-from app.core.database import get_client
+from app.core.database import get_client, execute_query, execute_single
 from app.api.users import get_profile_id_from_cognito_id
 from datetime import datetime
 import os
 import json
+import base64
 
 
 # =====================================================
@@ -102,6 +103,108 @@ class ApplicantEmailInput(BaseModel):
     subject: str = Field(..., min_length=1, max_length=200)
     message: str = Field(..., min_length=1, max_length=5000)
     attachments: Optional[List[Dict[str, Any]]] = None  # [{name, url, type, size}]
+
+
+class CollabCreateInput(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    type: str = Field(...)
+    description: str = Field(..., min_length=1, max_length=10000)
+    location: Optional[str] = Field(None, max_length=200)
+    is_remote: bool = False
+    compensation_type: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    tags: Optional[List[str]] = Field(default_factory=list)
+    is_order_only: bool = False
+    backlot_project_id: Optional[str] = None
+    production_id: Optional[str] = None
+    production_title: Optional[str] = Field(None, max_length=300)
+    production_type: Optional[str] = None
+    company: Optional[str] = Field(None, max_length=200)
+    company_id: Optional[str] = None
+    network_id: Optional[str] = None
+    hide_production_info: bool = False
+    job_type: Optional[str] = None
+    day_rate_min: Optional[float] = None
+    day_rate_max: Optional[float] = None
+    salary_min: Optional[float] = None
+    salary_max: Optional[float] = None
+    benefits_info: Optional[str] = Field(None, max_length=2000)
+    requires_local_hire: bool = False
+    requires_order_member: bool = False
+    requires_resume: bool = False
+    requires_reel: bool = False
+    requires_headshot: bool = False
+    requires_self_tape: bool = False
+    tape_instructions: Optional[str] = Field(None, max_length=2000)
+    tape_format_preferences: Optional[str] = Field(None, max_length=500)
+    tape_workflow: Optional[str] = None
+    application_deadline: Optional[str] = None
+    max_applications: Optional[int] = None
+    union_requirements: Optional[List[str]] = None
+    requires_order_membership: bool = False
+    custom_questions: Optional[List[Dict[str, Any]]] = None
+    is_featured: bool = False
+    cast_position_type_id: Optional[str] = None
+    crew_position: Optional[str] = Field(None, max_length=200)
+    crew_department: Optional[str] = Field(None, max_length=200)
+
+
+class CollabUpdateInput(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    type: Optional[str] = None
+    description: Optional[str] = Field(None, min_length=1, max_length=10000)
+    location: Optional[str] = Field(None, max_length=200)
+    is_remote: Optional[bool] = None
+    compensation_type: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    tags: Optional[List[str]] = None
+    is_order_only: Optional[bool] = None
+    production_id: Optional[str] = None
+    production_title: Optional[str] = Field(None, max_length=300)
+    production_type: Optional[str] = None
+    company: Optional[str] = Field(None, max_length=200)
+    company_id: Optional[str] = None
+    network_id: Optional[str] = None
+    hide_production_info: Optional[bool] = None
+    job_type: Optional[str] = None
+    day_rate_min: Optional[float] = None
+    day_rate_max: Optional[float] = None
+    salary_min: Optional[float] = None
+    salary_max: Optional[float] = None
+    benefits_info: Optional[str] = Field(None, max_length=2000)
+    requires_local_hire: Optional[bool] = None
+    requires_order_member: Optional[bool] = None
+    requires_resume: Optional[bool] = None
+    requires_reel: Optional[bool] = None
+    requires_headshot: Optional[bool] = None
+    requires_self_tape: Optional[bool] = None
+    tape_instructions: Optional[str] = Field(None, max_length=2000)
+    tape_format_preferences: Optional[str] = Field(None, max_length=500)
+    tape_workflow: Optional[str] = None
+    application_deadline: Optional[str] = None
+    max_applications: Optional[int] = None
+    union_requirements: Optional[List[str]] = None
+    requires_order_membership: Optional[bool] = None
+    custom_questions: Optional[List[Dict[str, Any]]] = None
+    is_featured: Optional[bool] = None
+    featured_until: Optional[str] = None
+    cast_position_type_id: Optional[str] = None
+    crew_position: Optional[str] = Field(None, max_length=200)
+    crew_department: Optional[str] = Field(None, max_length=200)
+
+
+class ThreadCreateInput(BaseModel):
+    topic_id: str
+    title: str = Field(..., min_length=1, max_length=300)
+    content: str = Field(..., min_length=1, max_length=50000)
+    is_pinned: bool = False
+
+
+class ReplyCreateInput(BaseModel):
+    content: str = Field(..., min_length=1, max_length=20000)
+    parent_reply_id: Optional[str] = None
 
 
 router = APIRouter()
@@ -425,11 +528,20 @@ async def list_community_profiles(
 
 @router.get("/topics")
 async def list_topics():
-    """List all community topics"""
+    """List all community topics with thread counts"""
     try:
-        client = get_client()
-        result = client.table("community_topics").select("*").order("sort_order").execute()
-        return result.data or []
+        rows = execute_query("""
+            SELECT t.*,
+                   COALESCE((
+                       SELECT COUNT(*)
+                       FROM community_topic_threads
+                       WHERE topic_id = t.id
+                   ), 0) AS thread_count
+            FROM community_topics t
+            WHERE t.is_active = TRUE
+            ORDER BY t.sort_order
+        """)
+        return rows or []
     except Exception as e:
         print(f"Error listing topics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -444,27 +556,51 @@ async def list_community_threads(
     topic_id: Optional[str] = None,
     user_id: Optional[str] = None,
     limit: int = 50,
+    offset: int = 0,
+    sort_by: str = "newest",
+    search: Optional[str] = None,
 ):
-    """List community threads with author profiles"""
+    """List community threads with author profiles, pagination, sort, and search"""
     try:
-        client = get_client()
-
-        query = client.table("community_topic_threads").select(
-            "*, topic:community_topics(id, name, slug, icon)"
-        ).order("is_pinned", desc=True).order("created_at", desc=True).limit(limit)
+        where_clauses = []
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
 
         if topic_id:
-            query = query.eq("topic_id", topic_id)
+            where_clauses.append("t.topic_id = :topic_id")
+            params["topic_id"] = topic_id
         if user_id:
-            query = query.eq("user_id", user_id)
+            where_clauses.append("t.user_id = :user_id")
+            params["user_id"] = user_id
+        if search:
+            where_clauses.append("t.title ILIKE :search")
+            params["search"] = f"%{search}%"
 
-        result = query.execute()
-        threads = result.data or []
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        if sort_by == "most_replies":
+            order_sql = "ORDER BY t.is_pinned DESC, t.reply_count DESC, t.created_at DESC"
+        elif sort_by == "most_viewed":
+            order_sql = "ORDER BY t.is_pinned DESC, t.view_count DESC, t.created_at DESC"
+        else:  # newest / last_active (default)
+            order_sql = "ORDER BY t.is_pinned DESC, COALESCE(t.last_reply_at, t.created_at) DESC"
+
+        threads = execute_query(f"""
+            SELECT t.*,
+                   json_build_object(
+                       'id', tp.id, 'name', tp.name, 'slug', tp.slug, 'icon', tp.icon
+                   ) AS topic
+            FROM community_topic_threads t
+            LEFT JOIN community_topics tp ON tp.id = t.topic_id
+            {where_sql}
+            {order_sql}
+            LIMIT :limit OFFSET :offset
+        """, params)
 
         if not threads:
             return []
 
-        # Fetch profiles
+        # Fetch profiles in one query
+        client = get_client()
         user_ids = list(set(t["user_id"] for t in threads if t.get("user_id")))
         if user_ids:
             profiles_result = client.table("profiles").select(
@@ -484,8 +620,20 @@ async def list_community_threads(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _increment_view_count(thread_id: str):
+    """Background task: increment view_count without blocking the response"""
+    try:
+        from app.core.database import execute_query as _eq
+        _eq(
+            "UPDATE community_topic_threads SET view_count = view_count + 1 WHERE id = :id",
+            {"id": thread_id}
+        )
+    except Exception as e:
+        print(f"Error incrementing view_count for thread {thread_id}: {e}")
+
+
 @router.get("/threads/{thread_id}")
-async def get_community_thread(thread_id: str):
+async def get_community_thread(thread_id: str, background_tasks: BackgroundTasks):
     """Get a single community thread"""
     try:
         client = get_client()
@@ -505,6 +653,9 @@ async def get_community_thread(thread_id: str):
                 "id, username, full_name, display_name, avatar_url, role, is_order_member"
             ).eq("id", thread["user_id"]).execute()
             thread["author"] = profile_result.data[0] if profile_result.data else None
+
+        # Increment view count in background so it doesn't slow the response
+        background_tasks.add_task(_increment_view_count, thread_id)
 
         return thread
 
@@ -558,7 +709,7 @@ async def check_forum_ban(user_id: str, client) -> Optional[dict]:
 
 @router.post("/threads")
 async def create_community_thread(
-    thread: dict = Body(...),
+    thread: ThreadCreateInput,
     authorization: str = Header(None)
 ):
     """Create a community thread"""
@@ -576,10 +727,10 @@ async def create_community_thread(
     try:
         thread_data = {
             "user_id": user["id"],
-            "topic_id": thread.get("topic_id"),
-            "title": thread.get("title"),
-            "content": thread.get("content"),
-            "is_pinned": thread.get("is_pinned", False),
+            "topic_id": thread.topic_id,
+            "title": thread.title.strip(),
+            "content": thread.content.strip(),
+            "is_pinned": thread.is_pinned,
         }
 
         result = client.table("community_topic_threads").insert(thread_data).execute()
@@ -596,9 +747,19 @@ async def update_community_thread(
     thread: dict = Body(...),
     authorization: str = Header(None)
 ):
-    """Update a community thread"""
-    await get_current_user_from_token(authorization)
+    """Update a community thread (author or admin only)"""
+    user = await get_current_user_from_token(authorization)
     client = get_client()
+
+    # Ownership check
+    existing = client.table("community_topic_threads").select("user_id").eq("id", thread_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    if existing.data[0]["user_id"] != user["id"]:
+        profile = client.table("profiles").select("is_admin, is_moderator").eq("id", user["id"]).execute()
+        profile_data = profile.data[0] if profile.data else {}
+        if not (profile_data.get("is_admin") or profile_data.get("is_moderator")):
+            raise HTTPException(status_code=403, detail="Not authorized to modify this thread")
 
     try:
         update_data = {}
@@ -619,9 +780,19 @@ async def delete_community_thread(
     thread_id: str,
     authorization: str = Header(None)
 ):
-    """Delete a community thread"""
-    await get_current_user_from_token(authorization)
+    """Delete a community thread (author or admin only)"""
+    user = await get_current_user_from_token(authorization)
     client = get_client()
+
+    # Ownership check
+    existing = client.table("community_topic_threads").select("user_id").eq("id", thread_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    if existing.data[0]["user_id"] != user["id"]:
+        profile = client.table("profiles").select("is_admin, is_moderator").eq("id", user["id"]).execute()
+        profile_data = profile.data[0] if profile.data else {}
+        if not (profile_data.get("is_admin") or profile_data.get("is_moderator")):
+            raise HTTPException(status_code=403, detail="Not authorized to delete this thread")
 
     try:
         client.table("community_topic_threads").delete().eq("id", thread_id).execute()
@@ -674,7 +845,7 @@ async def list_thread_replies(thread_id: str):
 @router.post("/threads/{thread_id}/replies")
 async def create_thread_reply(
     thread_id: str,
-    reply: dict = Body(...),
+    reply: ReplyCreateInput,
     authorization: str = Header(None)
 ):
     """Create a reply to a thread"""
@@ -693,11 +864,24 @@ async def create_thread_reply(
         reply_data = {
             "user_id": user["id"],
             "thread_id": thread_id,
-            "content": reply.get("content"),
-            "parent_reply_id": reply.get("parent_reply_id"),
+            "content": reply.content.strip(),
+            "parent_reply_id": reply.parent_reply_id,
         }
 
         result = client.table("community_topic_replies").insert(reply_data).execute()
+
+        # Increment reply_count and update last_reply_at on the parent thread
+        execute_query(
+            """
+            UPDATE community_topic_threads
+            SET reply_count = reply_count + 1,
+                last_reply_at = NOW(),
+                updated_at = NOW()
+            WHERE id = :thread_id
+            """,
+            {"thread_id": thread_id}
+        )
+
         return result.data[0] if result.data else None
 
     except Exception as e:
@@ -711,16 +895,31 @@ async def update_thread_reply(
     reply: dict = Body(...),
     authorization: str = Header(None)
 ):
-    """Update a reply"""
-    await get_current_user_from_token(authorization)
+    """Update a reply (author or admin only)"""
+    user = await get_current_user_from_token(authorization)
     client = get_client()
 
+    # Ownership check
+    existing = client.table("community_topic_replies").select("user_id").eq("id", reply_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Reply not found")
+    if existing.data[0]["user_id"] != user["id"]:
+        profile = client.table("profiles").select("is_admin, is_moderator").eq("id", user["id"]).execute()
+        profile_data = profile.data[0] if profile.data else {}
+        if not (profile_data.get("is_admin") or profile_data.get("is_moderator")):
+            raise HTTPException(status_code=403, detail="Not authorized to modify this reply")
+
     try:
+        content = reply.get("content", "").strip()
+        if not content:
+            raise HTTPException(status_code=422, detail="Reply content cannot be empty")
         result = client.table("community_topic_replies").update({
-            "content": reply.get("content")
+            "content": content
         }).eq("id", reply_id).execute()
         return result.data[0] if result.data else None
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error updating reply: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -731,12 +930,35 @@ async def delete_thread_reply(
     reply_id: str,
     authorization: str = Header(None)
 ):
-    """Delete a reply"""
-    await get_current_user_from_token(authorization)
+    """Delete a reply (author or admin only)"""
+    user = await get_current_user_from_token(authorization)
     client = get_client()
+
+    # Ownership check and get thread_id for reply_count decrement
+    existing = client.table("community_topic_replies").select("user_id, thread_id").eq("id", reply_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Reply not found")
+    reply_row = existing.data[0]
+    if reply_row["user_id"] != user["id"]:
+        profile = client.table("profiles").select("is_admin, is_moderator").eq("id", user["id"]).execute()
+        profile_data = profile.data[0] if profile.data else {}
+        if not (profile_data.get("is_admin") or profile_data.get("is_moderator")):
+            raise HTTPException(status_code=403, detail="Not authorized to delete this reply")
 
     try:
         client.table("community_topic_replies").delete().eq("id", reply_id).execute()
+
+        # Decrement reply_count on the parent thread (never go below 0)
+        execute_query(
+            """
+            UPDATE community_topic_threads
+            SET reply_count = GREATEST(reply_count - 1, 0),
+                updated_at = NOW()
+            WHERE id = :thread_id
+            """,
+            {"thread_id": reply_row["thread_id"]}
+        )
+
         return {"success": True}
 
     except Exception as e:
@@ -748,6 +970,28 @@ async def delete_thread_reply(
 # COLLABS
 # =====================================================
 
+# ---------------------------------------------------------------------------
+# Cursor helpers for collab board pagination (Optimization #1)
+# Cursor encodes the last item's sort key: {is_featured, created_at, id}
+# ---------------------------------------------------------------------------
+
+def _encode_cursor(row: dict) -> str:
+    created_at = row["created_at"]
+    if hasattr(created_at, "isoformat"):
+        created_at = created_at.isoformat()
+    payload = {
+        "f": bool(row.get("is_featured", False)),
+        "t": str(created_at),
+        "i": str(row["id"]),
+    }
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+
+
+def _decode_cursor(cursor: str) -> dict:
+    payload = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
+    return {"is_featured": payload["f"], "created_at": payload["t"], "id": payload["i"]}
+
+
 @router.get("/collabs")
 async def list_collabs(
     type: Optional[str] = None,
@@ -755,54 +999,128 @@ async def list_collabs(
     compensation_type: Optional[str] = None,
     order_only: bool = False,
     user_id: Optional[str] = None,
-    limit: int = 50,
+    limit: int = Query(20, ge=1, le=200),
+    cursor: Optional[str] = None,
 ):
-    """List community collabs (only approved collabs are shown publicly)"""
+    """
+    List community collabs with cursor-based pagination.
+
+    - Public board (no user_id): queries collab_board_view (materialized, approved+active only).
+    - Owner view (user_id set): queries community_collabs directly so all posts are visible
+      regardless of approval/active status (e.g. "My Job Posts" page).
+
+    Pagination: pass the returned next_cursor as the cursor param for the next page.
+    next_cursor=null means no more pages.
+    """
     try:
-        client = get_client()
+        from app.core.database import execute_query, execute_single
 
-        query = client.table("community_collabs").select("*").eq(
-            "is_active", True
-        ).order("created_at", desc=True).limit(limit)
-
-        # Only show approved collabs in public listing
-        # Note: The column might not exist yet if migration hasn't run
-        try:
-            query = query.eq("approval_status", "approved")
-        except Exception:
-            pass  # Column doesn't exist yet, skip filter
+        filter_clauses: List[str] = []
+        params: Dict[str, Any] = {}
 
         if type and type != "all":
-            query = query.eq("type", type)
+            filter_clauses.append("type = :type")
+            params["type"] = type
         if is_remote is not None:
-            query = query.eq("is_remote", is_remote)
+            filter_clauses.append("is_remote = :is_remote")
+            params["is_remote"] = is_remote
         if compensation_type and compensation_type != "all":
-            query = query.eq("compensation_type", compensation_type)
+            filter_clauses.append("compensation_type = :compensation_type")
+            params["compensation_type"] = compensation_type
         if order_only:
-            query = query.eq("is_order_only", True)
+            filter_clauses.append("is_order_only = TRUE")
+
+        # When user_id is provided we query the base table so the owner sees ALL
+        # their posts (pending, inactive, unapproved). The board view only has approved+active.
         if user_id:
-            query = query.eq("user_id", user_id)
-
-        result = query.execute()
-        collabs = result.data or []
-
-        if not collabs:
-            return []
-
-        # Fetch profiles
-        user_ids = list(set(c["user_id"] for c in collabs if c.get("user_id")))
-        if user_ids:
-            profiles_result = client.table("profiles").select(
-                "id, username, full_name, display_name, avatar_url, role, is_order_member"
-            ).in_("id", user_ids).execute()
-            profile_map = {p["id"]: p for p in (profiles_result.data or [])}
+            filter_clauses.append("user_id = CAST(:user_id AS uuid)")
+            params["user_id"] = user_id
+            source_table = "community_collabs"
         else:
-            profile_map = {}
+            source_table = "collab_board_view"
 
-        for c in collabs:
-            c["profile"] = profile_map.get(c.get("user_id"))
+        filter_sql = (" AND ".join(filter_clauses)) or "TRUE"
 
-        return collabs
+        # Total count — no cursor applied
+        total_row = execute_single(
+            f"SELECT COUNT(*) AS total FROM {source_table} WHERE {filter_sql}",
+            params,
+        )
+        total = total_row["total"] if total_row else 0
+
+        # Cursor condition — "give me rows that come AFTER the cursor in sort order"
+        # Sort: is_featured DESC, created_at DESC, id DESC
+        cursor_sql = "TRUE"
+        if cursor:
+            try:
+                c = _decode_cursor(cursor)
+                params.update({
+                    "c_featured": c["is_featured"],
+                    "c_ts": c["created_at"],
+                    "c_id": c["id"],
+                })
+                cursor_sql = """(
+                    (is_featured = FALSE AND :c_featured = TRUE)
+                    OR (is_featured = :c_featured AND created_at < CAST(:c_ts AS timestamptz))
+                    OR (is_featured = :c_featured
+                        AND created_at = CAST(:c_ts AS timestamptz)
+                        AND id < CAST(:c_id AS uuid))
+                )"""
+            except Exception:
+                pass
+
+        params["limit"] = limit
+
+        rows = execute_query(f"""
+            SELECT *
+            FROM {source_table}
+            WHERE ({filter_sql})
+              AND ({cursor_sql})
+            ORDER BY is_featured DESC, created_at DESC, id DESC
+            LIMIT :limit
+        """, params)
+
+        rows = rows or []
+
+        if not rows:
+            return {"collabs": [], "total": total, "limit": limit, "next_cursor": None}
+
+        # Reshape flat view columns into nested profile/network objects.
+        # Base table queries (user_id path) won't have poster_*/network_* columns,
+        # so all the .pop() calls safely return None.
+        for r in rows:
+            r["profile"] = {
+                "id": r.get("user_id"),
+                "username": r.pop("poster_username", None),
+                "full_name": r.pop("poster_full_name", None),
+                "display_name": r.pop("poster_display_name", None),
+                "avatar_url": r.pop("poster_avatar_url", None),
+                "role": r.pop("poster_role", None),
+                "is_order_member": r.pop("poster_is_order_member", None),
+            }
+            network_name = r.pop("network_name", None)
+            if r.get("network_id") and network_name:
+                r["network"] = {
+                    "id": r["network_id"],
+                    "name": network_name,
+                    "logo_url": r.pop("network_logo_url", None),
+                    "slug": r.pop("network_slug", None),
+                    "category": r.pop("network_category", None),
+                }
+            else:
+                r.pop("network_logo_url", None)
+                r.pop("network_slug", None)
+                r.pop("network_category", None)
+                r["network"] = None
+
+        next_cursor = _encode_cursor(rows[-1]) if len(rows) == limit else None
+
+        return {
+            "collabs": rows,
+            "total": total,
+            "limit": limit,
+            "next_cursor": next_cursor,
+        }
 
     except Exception as e:
         print(f"Error listing collabs: {e}")
@@ -946,12 +1264,19 @@ async def get_collab(collab_id: str):
 
 @router.post("/collabs")
 async def create_collab(
-    collab: dict = Body(...),
+    collab: CollabCreateInput,
     authorization: str = Header(None)
 ):
     """Create a collab"""
     user = await get_current_user_from_token(authorization)
     client = get_client()
+
+    # Resolve Cognito sub → profile UUID so community_collabs.user_id is a proper FK
+    from app.api.users import get_profile_id_from_cognito_id
+    profile_id = get_profile_id_from_cognito_id(user["id"]) or user["id"]
+
+    # Work with a plain dict for the rest of the function
+    collab = collab.model_dump()
 
     try:
         # Validate production_id exists if provided
@@ -983,7 +1308,7 @@ async def create_collab(
                 backlot_project_id = None
 
         collab_data = {
-            "user_id": user["id"],
+            "user_id": profile_id,
             "title": collab.get("title"),
             "type": collab.get("type"),
             "description": collab.get("description"),
@@ -1042,6 +1367,18 @@ async def create_collab(
         }
 
         result = client.table("community_collabs").insert(collab_data).execute()
+
+        # Refresh the board view so the new collab is visible immediately.
+        # Must use execute_autocommit because CONCURRENTLY cannot run inside a transaction.
+        try:
+            from app.core.database import execute_autocommit as _refresh
+            import asyncio
+            await asyncio.to_thread(
+                _refresh, "REFRESH MATERIALIZED VIEW CONCURRENTLY collab_board_view"
+            )
+        except Exception as _e:
+            print(f"[collab_board] view refresh failed: {_e}")
+
         return result.data[0] if result.data else None
 
     except Exception as e:
@@ -1052,39 +1389,34 @@ async def create_collab(
 @router.put("/collabs/{collab_id}")
 async def update_collab(
     collab_id: str,
-    collab: dict = Body(...),
+    collab: CollabUpdateInput,
     authorization: str = Header(None)
 ):
     """Update a collab"""
-    await get_current_user_from_token(authorization)
+    user = await get_current_user_from_token(authorization)
+    cognito_id = user["id"]
+    profile_id = get_profile_id_from_cognito_id(cognito_id)
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
     client = get_client()
 
-    try:
-        update_data = {}
-        allowed_fields = [
-            "title", "type", "description", "location", "is_remote",
-            "compensation_type", "start_date", "end_date", "tags", "is_order_only",
-            "requires_local_hire", "requires_order_member", "requires_reel",
-            "requires_headshot", "requires_resume", "requires_self_tape",
-            "tape_instructions", "tape_format_preferences", "tape_workflow",
-            "cast_position_type_id", "application_deadline", "max_applications",
-            "production_id", "production_title", "production_type", "company", "company_id", "network_id",
-            "hide_production_info", "job_type",
-            "day_rate_min", "day_rate_max", "salary_min", "salary_max", "benefits_info",
-            "union_requirements", "requires_order_membership", "custom_questions",
-            "is_featured", "featured_until",
-            "crew_position", "crew_department"
-        ]
-        # JSONB fields need explicit JSON serialization
-        jsonb_fields = {"tags", "custom_questions"}
+    existing = client.table("community_collabs").select("user_id").eq("id", collab_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Collab not found")
+    if existing.data[0]["user_id"] != profile_id:
+        admin_check = client.table("profiles").select("is_admin").eq("id", profile_id).execute()
+        if not (admin_check.data and admin_check.data[0].get("is_admin")):
+            raise HTTPException(status_code=403, detail="Not authorized")
 
-        for field in allowed_fields:
-            if field in collab:
-                value = collab[field]
-                if field in jsonb_fields and isinstance(value, list):
-                    update_data[field] = json.dumps(value)
-                else:
-                    update_data[field] = value
+    try:
+        # Only update fields that were explicitly provided (not None)
+        jsonb_fields = {"tags", "custom_questions"}
+        update_data = {}
+        for field, value in collab.model_dump(exclude_none=True).items():
+            if field in jsonb_fields and isinstance(value, list):
+                update_data[field] = json.dumps(value)
+            else:
+                update_data[field] = value
 
         result = client.table("community_collabs").update(update_data).eq("id", collab_id).execute()
         return result.data[0] if result.data else None
@@ -1100,8 +1432,20 @@ async def delete_collab(
     authorization: str = Header(None)
 ):
     """Delete a collab"""
-    await get_current_user_from_token(authorization)
+    user = await get_current_user_from_token(authorization)
+    cognito_id = user["id"]
+    profile_id = get_profile_id_from_cognito_id(cognito_id)
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
     client = get_client()
+
+    existing = client.table("community_collabs").select("user_id").eq("id", collab_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Collab not found")
+    if existing.data[0]["user_id"] != profile_id:
+        admin_check = client.table("profiles").select("is_admin").eq("id", profile_id).execute()
+        if not (admin_check.data and admin_check.data[0].get("is_admin")):
+            raise HTTPException(status_code=403, detail="Not authorized")
 
     try:
         client.table("community_collabs").delete().eq("id", collab_id).execute()
@@ -1118,8 +1462,20 @@ async def deactivate_collab(
     authorization: str = Header(None)
 ):
     """Deactivate a collab"""
-    await get_current_user_from_token(authorization)
+    user = await get_current_user_from_token(authorization)
+    cognito_id = user["id"]
+    profile_id = get_profile_id_from_cognito_id(cognito_id)
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
     client = get_client()
+
+    existing = client.table("community_collabs").select("user_id").eq("id", collab_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Collab not found")
+    if existing.data[0]["user_id"] != profile_id:
+        admin_check = client.table("profiles").select("is_admin").eq("id", profile_id).execute()
+        if not (admin_check.data and admin_check.data[0].get("is_admin")):
+            raise HTTPException(status_code=403, detail="Not authorized")
 
     try:
         client.table("community_collabs").update({"is_active": False}).eq("id", collab_id).execute()
@@ -1278,6 +1634,7 @@ async def get_trending_discussions(timeframe: str = "7d", limit: int = 5):
 async def apply_to_collab(
     collab_id: str,
     application: CollabApplicationInput,
+    background_tasks: BackgroundTasks,
     authorization: str = Header(None)
 ):
     """Apply to a community collab"""
@@ -1294,6 +1651,11 @@ async def apply_to_collab(
     client = get_client()
 
     try:
+        # Check for forum ban
+        ban = await check_forum_ban(user_id, client)
+        if ban:
+            raise HTTPException(status_code=403, detail=f"You are restricted from posting. Reason: {ban.get('reason', 'Policy violation')}")
+
         # Check if collab exists and is active
         collab_result = client.table("community_collabs").select("*").eq(
             "id", collab_id
@@ -1388,19 +1750,35 @@ async def apply_to_collab(
             "status": "applied",
         }
 
+        # Fix #10: Validate selected_credit_ids — strip any that no longer exist
+        if application.selected_credit_ids:
+            valid_credits = client.table("filmmaker_credits").select("id").in_(
+                "id", application.selected_credit_ids
+            ).execute()
+            valid_ids = {row["id"] for row in (valid_credits.data or [])}
+            application_data["selected_credit_ids"] = [
+                cid for cid in application.selected_credit_ids if cid in valid_ids
+            ]
+
         result = client.table("community_collab_applications").insert(application_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to submit application")
 
-        # Calculate match score for the application (async, non-blocking)
-        try:
-            from app.jobs.score_applications import ApplicationScoringJob
-            application_id = result.data[0]["id"]
-            await ApplicationScoringJob.score_single_application(str(application_id))
-        except Exception as score_error:
-            # Log but don't fail the application submission
-            print(f"Error calculating match score: {score_error}")
+        # Fix #5: Score application in background (non-blocking — doesn't delay the response)
+        new_application_id = str(result.data[0]["id"])
+
+        def _score_in_background(app_id: str):
+            import asyncio
+            try:
+                from app.jobs.score_applications import ApplicationScoringJob
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(ApplicationScoringJob.score_single_application(app_id))
+                loop.close()
+            except Exception as score_error:
+                print(f"[apply_to_collab] background scoring error (non-fatal): {score_error}")
+
+        background_tasks.add_task(_score_in_background, new_application_id)
 
         # If save_as_template is True, create a template
         if application.save_as_template and application.template_name:
@@ -1823,7 +2201,9 @@ async def promote_application(
 ):
     """Promote an application (boost visibility)"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    user_id = get_profile_id_from_cognito_id(user["id"])
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
     client = get_client()
 
     try:
@@ -2072,7 +2452,9 @@ async def send_application_message(
 ):
     """Send a message for an application (applicant or collab owner only)"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    user_id = get_profile_id_from_cognito_id(user["id"])
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
     client = get_client()
 
     try:
@@ -2111,8 +2493,18 @@ async def send_application_message(
             "*, sender:profiles(id, username, display_name, avatar_url)"
         ).eq("id", result.data[0]["id"]).single().execute()
 
-        # TODO: Send notification to the other party
-        # TODO: Broadcast via WebSocket for real-time updates
+        # Broadcast real-time to both parties via Socket.IO (Fix #1)
+        try:
+            from app.socketio_app import broadcast_application_message
+            import asyncio
+            asyncio.create_task(broadcast_application_message(
+                application_id=application_id,
+                owner_id=collab_owner_id,
+                applicant_id=applicant_id,
+                message=message_result.data,
+            ))
+        except Exception as ws_err:
+            print(f"[send_application_message] socket broadcast error (non-fatal): {ws_err}")
 
         return message_result.data
 
@@ -3902,10 +4294,15 @@ async def get_user_directory(
     - 'connected': Already connected
     """
     user = await get_current_user_from_token(authorization)
-    current_user_id = user["id"]
+    cognito_sub = user["id"]
     client = get_client()
 
     try:
+        # Resolve Cognito sub → profile UUID (get_current_user_from_token returns sub, not profile id)
+        current_user_id = get_profile_id_from_cognito_id(cognito_sub)
+        if not current_user_id:
+            raise HTTPException(status_code=401, detail="Profile not found")
+
         # Build base query for profiles (no nested join — client doesn't support it)
         query = client.table("profiles").select(
             "id, username, full_name, display_name, avatar_url, role, "

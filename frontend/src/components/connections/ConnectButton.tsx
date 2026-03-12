@@ -51,7 +51,7 @@ const ConnectButton: React.FC<Props> = ({ peerId, className, size = 'default', f
     );
   }
 
-  if (state === 'outboundPending') {
+  if (state === 'outboundPending' || sendRequest.isSuccess) {
     return (
       <TooltipProvider>
         <Tooltip>

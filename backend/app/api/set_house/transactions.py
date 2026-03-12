@@ -301,55 +301,59 @@ async def quick_booking(
     profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
 
-    from app.core.database import execute_insert
+    from app.core.database import get_db_session, _convert_row
+    from sqlalchemy import text
 
-    # Create transaction
-    transaction = execute_insert(
-        """
-        INSERT INTO set_house_transactions (
-            organization_id, transaction_type, initiated_by_user_id,
-            primary_custodian_user_id, scheduled_start, scheduled_end, notes, status
-        ) VALUES (
-            :org_id, 'booking_confirmed', :initiated_by,
-            :custodian_user_id, :scheduled_start, :scheduled_end, :notes, 'confirmed'
-        )
-        RETURNING *
-        """,
-        {
+    # Build individual space_id params (psycopg2 doesn't expand list params in text())
+    space_params = {}
+    space_placeholders = []
+    for i, sid in enumerate(space_ids):
+        key = f"sid_{i}"
+        space_params[key] = sid
+        space_placeholders.append(f":{key}")
+    space_in_clause = ", ".join(space_placeholders) if space_placeholders else "NULL"
+
+    with get_db_session() as db:
+        # Create transaction
+        txn_result = db.execute(text("""
+            INSERT INTO set_house_transactions (
+                organization_id, transaction_type, initiated_by_user_id,
+                primary_custodian_user_id, scheduled_start, scheduled_end, notes, status
+            ) VALUES (
+                :org_id, 'booking_confirmed', :initiated_by,
+                :custodian_user_id, :scheduled_start, :scheduled_end, :notes, 'confirmed'
+            )
+            RETURNING *
+        """), {
             "org_id": org_id,
             "initiated_by": profile_id,
             "custodian_user_id": custodian_user_id,
             "scheduled_start": scheduled_start,
             "scheduled_end": scheduled_end,
             "notes": notes
-        }
-    )
+        })
+        txn_row = txn_result.fetchone()
+        if not txn_row:
+            raise HTTPException(status_code=500, detail="Failed to create booking")
+        transaction = _convert_row(dict(txn_row._mapping))
 
-    if not transaction:
-        raise HTTPException(status_code=500, detail="Failed to create booking")
+        # Insert transaction items and batch-update space statuses — all in same transaction
+        items = []
+        for space_id in space_ids:
+            item_result = db.execute(text("""
+                INSERT INTO set_house_transaction_items (transaction_id, space_id)
+                VALUES (:transaction_id, :space_id)
+                RETURNING *
+            """), {"transaction_id": transaction["id"], "space_id": space_id})
+            item_row = item_result.fetchone()
+            if item_row:
+                items.append(_convert_row(dict(item_row._mapping)))
 
-    # Add spaces as transaction items
-    items = []
-    for space_id in space_ids:
-        item = execute_insert(
-            """
-            INSERT INTO set_house_transaction_items (transaction_id, space_id)
-            VALUES (:transaction_id, :space_id)
-            RETURNING *
-            """,
-            {"transaction_id": transaction["id"], "space_id": space_id}
-        )
-        if item:
-            items.append(item)
-
-        # Update space status to reserved
-        execute_insert(
-            """
-            UPDATE set_house_spaces SET status = 'reserved', updated_at = NOW()
-            WHERE id = :space_id
-            """,
-            {"space_id": space_id}
-        )
+        if space_ids:
+            db.execute(text(f"""
+                UPDATE set_house_spaces SET status = 'reserved', updated_at = NOW()
+                WHERE id IN ({space_in_clause})
+            """), space_params)
 
     transaction["items"] = items
     return {"transaction": transaction}
@@ -365,32 +369,32 @@ async def quick_checkout(
     profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
 
-    from app.core.database import execute_insert, execute_query
+    from app.core.database import execute_insert
 
+    # Single CTE: update transaction + all linked spaces atomically
     transaction = execute_insert(
         """
-        UPDATE set_house_transactions
-        SET status = 'in_use', started_at = NOW(), actual_start = NOW(), updated_at = NOW()
-        WHERE id = :transaction_id AND organization_id = :org_id
-        RETURNING *
+        WITH updated_txn AS (
+            UPDATE set_house_transactions
+            SET status = 'in_use', started_at = NOW(), actual_start = NOW(), updated_at = NOW()
+            WHERE id = :transaction_id AND organization_id = :org_id
+            RETURNING *
+        ),
+        updated_spaces AS (
+            UPDATE set_house_spaces SET status = 'booked', updated_at = NOW()
+            WHERE id IN (
+                SELECT space_id FROM set_house_transaction_items
+                WHERE transaction_id = :transaction_id AND space_id IS NOT NULL
+            )
+            RETURNING id
+        )
+        SELECT * FROM updated_txn
         """,
         {"transaction_id": transaction_id, "org_id": org_id}
     )
 
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
-
-    # Update spaces to booked status
-    items = execute_query(
-        "SELECT space_id FROM set_house_transaction_items WHERE transaction_id = :transaction_id AND space_id IS NOT NULL",
-        {"transaction_id": transaction_id}
-    )
-
-    for item in items:
-        execute_insert(
-            "UPDATE set_house_spaces SET status = 'booked', updated_at = NOW() WHERE id = :space_id",
-            {"space_id": item["space_id"]}
-        )
 
     return {"transaction": transaction}
 
@@ -405,31 +409,31 @@ async def quick_checkin(
     profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
 
-    from app.core.database import execute_insert, execute_query
+    from app.core.database import execute_insert
 
+    # Single CTE: update transaction + restore all linked spaces atomically
     transaction = execute_insert(
         """
-        UPDATE set_house_transactions
-        SET status = 'completed', ended_at = NOW(), actual_end = NOW(), updated_at = NOW()
-        WHERE id = :transaction_id AND organization_id = :org_id
-        RETURNING *
+        WITH updated_txn AS (
+            UPDATE set_house_transactions
+            SET status = 'completed', ended_at = NOW(), actual_end = NOW(), updated_at = NOW()
+            WHERE id = :transaction_id AND organization_id = :org_id
+            RETURNING *
+        ),
+        restored_spaces AS (
+            UPDATE set_house_spaces SET status = 'available', updated_at = NOW()
+            WHERE id IN (
+                SELECT space_id FROM set_house_transaction_items
+                WHERE transaction_id = :transaction_id AND space_id IS NOT NULL
+            )
+            RETURNING id
+        )
+        SELECT * FROM updated_txn
         """,
         {"transaction_id": transaction_id, "org_id": org_id}
     )
 
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
-
-    # Update spaces back to available
-    items = execute_query(
-        "SELECT space_id FROM set_house_transaction_items WHERE transaction_id = :transaction_id AND space_id IS NOT NULL",
-        {"transaction_id": transaction_id}
-    )
-
-    for item in items:
-        execute_insert(
-            "UPDATE set_house_spaces SET status = 'available', updated_at = NOW() WHERE id = :space_id",
-            {"space_id": item["space_id"]}
-        )
 
     return {"transaction": transaction}

@@ -130,6 +130,7 @@ async def search_nearby(
         """
         SELECT ml.*, s.name as space_name, s.space_type, s.description,
                s.square_footage, s.features, s.amenities,
+               s.photos as space_photos,
                o.name as organization_name, o.city, o.state,
                ms.marketplace_name, ms.is_verified,
                (SELECT image_url FROM set_house_space_images si
@@ -180,18 +181,19 @@ async def get_listing(
         SELECT ml.*, s.name as space_name, s.space_type, s.description,
                s.square_footage, s.ceiling_height_feet, s.dimensions,
                s.max_occupancy, s.features, s.amenities,
+               s.photos as space_photos,
                s.floor_plan_url, s.virtual_tour_url,
                s.access_instructions as space_access_instructions,
                s.parking_info, s.loading_dock_info,
                o.name as organization_name, o.city, o.state,
-               o.address_line1, o.postal_code, o.phone, o.email,
+               o.address_line1, o.postal_code,
                ms.marketplace_name, ms.marketplace_description, ms.is_verified,
                ms.cancellation_policy, ms.cancellation_notice_hours, ms.cancellation_fee_percent
         FROM set_house_marketplace_listings ml
         JOIN set_house_spaces s ON s.id = ml.space_id
         JOIN organizations o ON o.id = ml.organization_id
         LEFT JOIN set_house_marketplace_settings ms ON ms.organization_id = ml.organization_id
-        WHERE ml.id = :listing_id AND ml.is_listed = TRUE
+        WHERE ml.id = :listing_id
         """,
         {"listing_id": listing_id}
     )
@@ -423,13 +425,22 @@ async def list_set_houses(
 
     set_houses = execute_query(
         f"""
-        SELECT ms.*, o.name, o.city, o.state, o.logo_url,
-               (SELECT COUNT(*) FROM set_house_marketplace_listings ml
-                WHERE ml.organization_id = ms.organization_id AND ml.is_listed = TRUE) as listing_count,
-               (SELECT MIN(ml.daily_rate) FROM set_house_marketplace_listings ml
-                WHERE ml.organization_id = ms.organization_id AND ml.is_listed = TRUE) as min_daily_rate
+        SELECT ms.*,
+               ms.marketplace_location as location_display,
+               ms.organization_id as id,
+               o.name, o.city, o.state, o.logo_url,
+               COALESCE(agg.listing_count, 0) as listing_count,
+               agg.min_daily_rate
         FROM set_house_marketplace_settings ms
         JOIN organizations o ON o.id = ms.organization_id
+        LEFT JOIN (
+            SELECT organization_id,
+                   COUNT(*) as listing_count,
+                   MIN(daily_rate) as min_daily_rate
+            FROM set_house_marketplace_listings
+            WHERE is_listed = TRUE
+            GROUP BY organization_id
+        ) agg ON agg.organization_id = ms.organization_id
         WHERE {where_clause}
         ORDER BY ms.successful_bookings_count DESC, o.name
         LIMIT :limit OFFSET :offset

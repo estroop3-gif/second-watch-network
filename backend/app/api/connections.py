@@ -3,7 +3,7 @@ Connections API Routes
 """
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Optional
-from app.core.database import get_client
+from app.core.database import get_client, execute_query, execute_single
 from app.core.deps import get_user_profile
 from app.schemas.connections import Connection, ConnectionCreate, ConnectionUpdate
 
@@ -25,13 +25,16 @@ async def create_connection_request(
             raise HTTPException(status_code=400, detail="Cannot connect with yourself")
 
         # Check if a connection already exists between the two users (either direction)
-        existing = client.table("connections").select("*").or_(
-            f"and(requester_id.eq.{requester_id},recipient_id.eq.{recipient_id}),"
-            f"and(requester_id.eq.{recipient_id},recipient_id.eq.{requester_id})"
-        ).order("created_at", desc=True).limit(1).execute()
+        existing_rows = execute_query(
+            """SELECT * FROM connections
+               WHERE (requester_id = :a AND recipient_id = :b)
+                  OR (requester_id = :b AND recipient_id = :a)
+               ORDER BY created_at DESC LIMIT 1""",
+            {"a": requester_id, "b": recipient_id}
+        )
 
-        if existing.data:
-            conn = existing.data[0]
+        if existing_rows:
+            conn = existing_rows[0]
             current_status = conn.get("status")
 
             # If pending or accepted, return existing connection (idempotent)
@@ -48,7 +51,7 @@ async def create_connection_request(
                 return updated.data[0]
 
         # No existing connection — create new
-        data = connection.model_dump()
+        data = connection.model_dump(exclude_none=True)
         data["requester_id"] = requester_id
         data["status"] = "pending"
 
@@ -62,23 +65,30 @@ async def create_connection_request(
 
 @router.get("/", response_model=List[Connection])
 async def list_connections(
-    user_id: str,
     status: Optional[str] = None,
     skip: int = 0,
-    limit: int = 50
+    limit: int = 50,
+    profile=Depends(get_user_profile),
 ):
-    """List user's connections"""
+    """List authenticated user's connections."""
     try:
-        client = get_client()
-        query = client.table("connections").select("*").or_(
-            f"requester_id.eq.{user_id},recipient_id.eq.{user_id}"
-        )
+        user_id = str(profile["id"])
+        params = {"user_id": user_id}
+        where_clauses = ["(requester_id = :user_id OR recipient_id = :user_id)"]
 
         if status:
-            query = query.eq("status", status)
+            where_clauses.append("status = :status")
+            params["status"] = status
 
-        response = query.range(skip, skip + limit - 1).order("created_at", desc=True).execute()
-        return response.data
+        where_sql = " AND ".join(where_clauses)
+        rows = execute_query(
+            f"""SELECT * FROM connections
+                WHERE {where_sql}
+                ORDER BY created_at DESC
+                LIMIT :limit OFFSET :skip""",
+            {**params, "limit": limit, "skip": skip}
+        )
+        return rows
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -108,138 +118,158 @@ async def delete_connection(connection_id: str):
 
 
 @router.get("/relationship/{peer_id}")
-async def get_connection_relationship(peer_id: str, user_id: str):
-    """Get connection relationship between current user and a peer"""
+async def get_connection_relationship(
+    peer_id: str,
+    profile=Depends(get_user_profile),
+):
+    """Get connection relationship between authenticated user and a peer."""
     try:
-        client = get_client()
-        response = client.table("connections").select("*").or_(
-            f"and(requester_id.eq.{user_id},recipient_id.eq.{peer_id}),and(requester_id.eq.{peer_id},recipient_id.eq.{user_id})"
-        ).order("created_at", desc=True).limit(1).execute()
-
-        return response.data[0] if response.data else None
+        user_id = str(profile["id"])
+        rows = execute_query(
+            """SELECT * FROM connections
+               WHERE (requester_id = :a AND recipient_id = :b)
+                  OR (requester_id = :b AND recipient_id = :a)
+               ORDER BY created_at DESC LIMIT 1""",
+            {"a": user_id, "b": peer_id}
+        )
+        return rows[0] if rows else None
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/activity")
-async def get_friends_activity(user_id: str, limit: int = 10):
+async def get_friends_activity(
+    limit: int = 10,
+    profile=Depends(get_user_profile),
+):
     """
     Get activity from connected users (friends).
     Returns recent watchlist additions, ratings, and watch history.
     """
     try:
-        client = get_client()
+        user_id = str(profile["id"])
 
-        # Get list of connected user IDs (accepted connections)
-        connections_response = client.table("connections").select("requester_id, recipient_id").eq(
-            "status", "accepted"
-        ).or_(
-            f"requester_id.eq.{user_id},recipient_id.eq.{user_id}"
-        ).execute()
+        # Get list of accepted connected user IDs
+        conn_rows = execute_query(
+            """SELECT requester_id, recipient_id FROM connections
+               WHERE (requester_id = :uid OR recipient_id = :uid)
+                 AND status = 'accepted'""",
+            {"uid": user_id}
+        )
 
-        # Extract friend IDs
         friend_ids = set()
-        for conn in connections_response.data:
-            if conn["requester_id"] == user_id:
-                friend_ids.add(conn["recipient_id"])
+        for conn in conn_rows:
+            if str(conn["requester_id"]) == user_id:
+                friend_ids.add(str(conn["recipient_id"]))
             else:
-                friend_ids.add(conn["requester_id"])
+                friend_ids.add(str(conn["requester_id"]))
 
         if not friend_ids:
             return {"activities": [], "total": 0}
 
-        friend_ids_list = list(friend_ids)
+        # Build a parameterised IN list
+        id_params = {f"fid{i}": fid for i, fid in enumerate(friend_ids)}
+        in_clause = ", ".join(f":{k}" for k in id_params)
+
         activities = []
 
-        # Get recent watchlist additions from friends
+        # Watchlist additions
         try:
-            watchlist_response = client.table("world_watchlist").select(
-                "user_id, world_id, created_at, worlds(id, title, slug, thumbnail_url)"
-            ).in_("user_id", friend_ids_list).order(
-                "created_at", desc=True
-            ).limit(limit).execute()
-
-            for item in watchlist_response.data:
-                if item.get("worlds"):
-                    activities.append({
-                        "type": "watchlist_add",
-                        "user_id": item["user_id"],
-                        "world_id": item["world_id"],
-                        "world_title": item["worlds"].get("title"),
-                        "world_slug": item["worlds"].get("slug"),
-                        "world_poster": item["worlds"].get("thumbnail_url"),
-                        "timestamp": item["created_at"],
-                    })
+            rows = execute_query(
+                f"""SELECT ww.user_id, ww.world_id, ww.created_at,
+                           w.title, w.slug, w.thumbnail_url
+                    FROM world_watchlist ww
+                    JOIN worlds w ON w.id = ww.world_id
+                    WHERE ww.user_id IN ({in_clause})
+                    ORDER BY ww.created_at DESC LIMIT :lim""",
+                {**id_params, "lim": limit}
+            )
+            for item in rows:
+                activities.append({
+                    "type": "watchlist_add",
+                    "user_id": item["user_id"],
+                    "world_id": item["world_id"],
+                    "world_title": item.get("title"),
+                    "world_slug": item.get("slug"),
+                    "world_poster": item.get("thumbnail_url"),
+                    "timestamp": item["created_at"],
+                })
         except Exception:
-            pass  # Watchlist table may not exist
+            pass
 
-        # Get recent ratings from friends
+        # Ratings
         try:
-            ratings_response = client.table("world_ratings").select(
-                "user_id, world_id, rating, review, created_at, worlds(id, title, slug, thumbnail_url)"
-            ).in_("user_id", friend_ids_list).order(
-                "created_at", desc=True
-            ).limit(limit).execute()
-
-            for item in ratings_response.data:
-                if item.get("worlds"):
-                    activities.append({
-                        "type": "rating",
-                        "user_id": item["user_id"],
-                        "world_id": item["world_id"],
-                        "world_title": item["worlds"].get("title"),
-                        "world_slug": item["worlds"].get("slug"),
-                        "world_poster": item["worlds"].get("thumbnail_url"),
-                        "rating": item["rating"],
-                        "review": item.get("review"),
-                        "timestamp": item["created_at"],
-                    })
+            rows = execute_query(
+                f"""SELECT wr.user_id, wr.world_id, wr.rating, wr.review, wr.created_at,
+                           w.title, w.slug, w.thumbnail_url
+                    FROM world_ratings wr
+                    JOIN worlds w ON w.id = wr.world_id
+                    WHERE wr.user_id IN ({in_clause})
+                    ORDER BY wr.created_at DESC LIMIT :lim""",
+                {**id_params, "lim": limit}
+            )
+            for item in rows:
+                activities.append({
+                    "type": "rating",
+                    "user_id": item["user_id"],
+                    "world_id": item["world_id"],
+                    "world_title": item.get("title"),
+                    "world_slug": item.get("slug"),
+                    "world_poster": item.get("thumbnail_url"),
+                    "rating": item["rating"],
+                    "review": item.get("review"),
+                    "timestamp": item["created_at"],
+                })
         except Exception:
-            pass  # Ratings table may not exist
+            pass
 
-        # Get recent watch history from friends
+        # Watch history (≥80% watched)
         try:
-            watch_response = client.table("watch_history").select(
-                "user_id, world_id, episode_id, progress_percent, updated_at, worlds(id, title, slug, thumbnail_url)"
-            ).in_("user_id", friend_ids_list).gte(
-                "progress_percent", 80  # Only show if mostly watched
-            ).order(
-                "updated_at", desc=True
-            ).limit(limit).execute()
-
-            for item in watch_response.data:
-                if item.get("worlds"):
-                    activities.append({
-                        "type": "watched",
-                        "user_id": item["user_id"],
-                        "world_id": item["world_id"],
-                        "world_title": item["worlds"].get("title"),
-                        "world_slug": item["worlds"].get("slug"),
-                        "world_poster": item["worlds"].get("thumbnail_url"),
-                        "episode_id": item.get("episode_id"),
-                        "progress_percent": item.get("progress_percent"),
-                        "timestamp": item["updated_at"],
-                    })
+            rows = execute_query(
+                f"""SELECT wh.user_id, wh.world_id, wh.episode_id,
+                           wh.progress_percent, wh.updated_at,
+                           w.title, w.slug, w.thumbnail_url
+                    FROM watch_history wh
+                    JOIN worlds w ON w.id = wh.world_id
+                    WHERE wh.user_id IN ({in_clause})
+                      AND wh.progress_percent >= 80
+                    ORDER BY wh.updated_at DESC LIMIT :lim""",
+                {**id_params, "lim": limit}
+            )
+            for item in rows:
+                activities.append({
+                    "type": "watched",
+                    "user_id": item["user_id"],
+                    "world_id": item["world_id"],
+                    "world_title": item.get("title"),
+                    "world_slug": item.get("slug"),
+                    "world_poster": item.get("thumbnail_url"),
+                    "episode_id": item.get("episode_id"),
+                    "progress_percent": item.get("progress_percent"),
+                    "timestamp": item["updated_at"],
+                })
         except Exception:
-            pass  # Watch history table may not exist
+            pass
 
-        # Sort all activities by timestamp, most recent first
-        activities.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        # Sort all activities by timestamp DESC and cap at limit
+        activities.sort(key=lambda x: x.get("timestamp") or "", reverse=True)
         activities = activities[:limit]
 
-        # Get user profiles for the friend IDs in the activities
-        activity_user_ids = list(set(a["user_id"] for a in activities))
+        # Attach profile info for each unique user in results
+        activity_user_ids = list({a["user_id"] for a in activities})
         if activity_user_ids:
-            profiles_response = client.table("profiles").select(
-                "id, full_name, display_name, avatar_url"
-            ).in_("id", activity_user_ids).execute()
-
-            profiles_by_id = {p["id"]: p for p in profiles_response.data}
-
+            uid_params = {f"uid{i}": uid for i, uid in enumerate(activity_user_ids)}
+            uid_in = ", ".join(f":{k}" for k in uid_params)
+            profile_rows = execute_query(
+                f"""SELECT id, full_name, display_name, avatar_url
+                    FROM profiles WHERE id IN ({uid_in})""",
+                uid_params
+            )
+            profiles_by_id = {str(p["id"]): p for p in profile_rows}
             for activity in activities:
-                profile = profiles_by_id.get(activity["user_id"], {})
-                activity["user_name"] = profile.get("full_name") or profile.get("display_name") or "Friend"
-                activity["user_avatar"] = profile.get("avatar_url")
+                p = profiles_by_id.get(str(activity["user_id"]), {})
+                activity["user_name"] = p.get("full_name") or p.get("display_name") or "Friend"
+                activity["user_avatar"] = p.get("avatar_url")
 
         return {"activities": activities, "total": len(activities)}
     except Exception as e:

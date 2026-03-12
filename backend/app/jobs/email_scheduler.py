@@ -1743,6 +1743,35 @@ async def rollup_profile_analytics():
         logger.error(f"rollup_profile_analytics error: {e}")
 
 
+async def refresh_collab_board_view():
+    """Refresh the collab_board_view materialized view. Runs every 5 minutes.
+    Uses execute_autocommit because CONCURRENTLY cannot run inside a transaction block."""
+    try:
+        from app.core.database import execute_autocommit
+        execute_autocommit("REFRESH MATERIALIZED VIEW CONCURRENTLY collab_board_view")
+        logger.info("refresh_collab_board_view: done")
+    except Exception as e:
+        logger.error(f"refresh_collab_board_view error: {e}")
+
+
+async def expire_featured_collabs():
+    """Expire featured collab listings whose featured_until timestamp has passed. Runs daily."""
+    try:
+        from app.core.database import execute_query
+        result = execute_query("""
+            UPDATE community_collabs
+            SET is_featured = FALSE
+            WHERE is_featured = TRUE
+              AND featured_until IS NOT NULL
+              AND featured_until < NOW()
+            RETURNING id
+        """, {})
+        expired_count = len(result) if result else 0
+        logger.info(f"expire_featured_collabs: expired {expired_count} featured listings")
+    except Exception as e:
+        logger.error(f"expire_featured_collabs error: {e}")
+
+
 def start_email_scheduler():
     """Initialize and start the APScheduler for email jobs."""
     try:
@@ -1762,8 +1791,10 @@ def start_email_scheduler():
         scheduler.add_job(reset_monthly_bandwidth, "interval", seconds=86400, id="reset_monthly_bandwidth")
         scheduler.add_job(recalculate_org_storage, "interval", seconds=604800, id="recalculate_org_storage")
         scheduler.add_job(rollup_profile_analytics, "interval", seconds=86400, id="rollup_profile_analytics")
+        scheduler.add_job(expire_featured_collabs, "interval", seconds=86400, id="expire_featured_collabs")
+        scheduler.add_job(refresh_collab_board_view, "interval", seconds=300, id="refresh_collab_board_view")
         scheduler.start()
-        logger.info("Email scheduler started with 13 jobs")
+        logger.info("Email scheduler started with 15 jobs")
         return scheduler
     except ImportError:
         logger.warning("APScheduler not installed — email scheduler disabled. Install with: pip install apscheduler")

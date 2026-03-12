@@ -90,29 +90,15 @@ def require_org_access(org_id: str, user_id: str, roles: List[str] = None) -> No
 
 
 def generate_quote_number(org_id: str) -> str:
-    """Generate a unique quote number."""
-    result = execute_single(
-        """
-        SELECT COUNT(*) + 1 as num
-        FROM gear_rental_quotes
-        WHERE rental_house_org_id = :org_id
-        """,
-        {"org_id": org_id}
-    )
+    """Generate a globally unique quote number using a DB sequence (race-condition safe)."""
+    result = execute_single("SELECT nextval('gear_quote_number_seq') AS num", {})
     num = result["num"] if result else 1
     return f"Q-{num:05d}"
 
 
 def generate_order_number(org_id: str) -> str:
-    """Generate a unique order number."""
-    result = execute_single(
-        """
-        SELECT COUNT(*) + 1 as num
-        FROM gear_rental_orders
-        WHERE rental_house_org_id = :org_id
-        """,
-        {"org_id": org_id}
-    )
+    """Generate a globally unique order number using a DB sequence (race-condition safe)."""
+    result = execute_single("SELECT nextval('gear_order_number_seq') AS num", {})
     num = result["num"] if result else 1
     return f"RO-{num:05d}"
 
@@ -634,6 +620,17 @@ async def update_order_status(
         """,
         {"id": order_id, "status": data.status, "notes": data.notes}
     )
+
+    # Increment successful_rentals_count on the rental house when order completes
+    if data.status == "completed":
+        execute_query(
+            """
+            UPDATE gear_marketplace_settings
+            SET successful_rentals_count = COALESCE(successful_rentals_count, 0) + 1
+            WHERE organization_id = :org_id
+            """,
+            {"org_id": order["rental_house_org_id"]}
+        )
 
     # Update budget actual if order is completed and has reconciled final_amount
     if data.status in ("completed", "cancelled") and order.get("backlot_project_id"):

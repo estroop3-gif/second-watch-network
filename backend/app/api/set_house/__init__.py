@@ -18,6 +18,7 @@ from .work_orders import router as work_orders_router
 from .cart import router as cart_router
 from .verification import router as verification_router
 from .external_platforms import router as external_platforms_router
+from .personal import router as personal_router
 
 router = APIRouter(tags=["Set House"])
 
@@ -34,3 +35,4 @@ router.include_router(work_orders_router)
 router.include_router(cart_router)
 router.include_router(verification_router)
 router.include_router(external_platforms_router)
+router.include_router(personal_router)

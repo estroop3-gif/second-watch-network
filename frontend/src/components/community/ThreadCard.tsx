@@ -112,7 +112,13 @@ const ThreadCard: React.FC<ThreadCardProps> = ({ thread, onClick }) => {
         </div>
 
         {/* Actions */}
-        <div className="flex-shrink-0 self-center flex items-center gap-1">
+        <div className="flex-shrink-0 self-center flex items-center gap-2">
+          {(thread as any).view_count > 0 && (
+            <span className="flex items-center gap-1 text-xs text-muted-gray/50">
+              <Eye className="w-3 h-3" />
+              {(thread as any).view_count}
+            </span>
+          )}
           {isAuthenticated && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
@@ -135,7 +141,6 @@ const ThreadCard: React.FC<ThreadCardProps> = ({ thread, onClick }) => {
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          <Eye className="w-4 h-4 text-muted-gray/50" />
         </div>
       </div>
     </div>

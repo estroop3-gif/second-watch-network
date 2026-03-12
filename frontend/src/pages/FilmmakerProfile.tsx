@@ -31,7 +31,7 @@ const FilmmakerProfile = () => {
   // Check if this is the current user's own profile
   const isOwnProfile = authProfile?.username === username || user?.email?.split('@')[0] === username;
 
-  const { data: profile, isLoading: loading, error: queryError } = useQuery<FilmmakerProfileData | null>({
+  const { data: profile, isLoading: loading, error: queryError, isFetching } = useQuery<FilmmakerProfileData | null>({
     queryKey: ['filmmaker-profile-by-username', username],
     queryFn: async () => {
       if (!username) return null;
@@ -60,7 +60,8 @@ const FilmmakerProfile = () => {
   });
 
   const error = queryError ? (queryError as Error).message : null;
-  const profileNotFound = !loading && !error && !profile;
+  // Don't show "not found" while a background refetch is in progress (handles stale cache)
+  const profileNotFound = !loading && !isFetching && !error && !profile;
 
   // Polling fallback for profile updates (replacing realtime)
   useEffect(() => {
@@ -73,7 +74,7 @@ const FilmmakerProfile = () => {
     return () => clearInterval(interval);
   }, [profile?.user_id, username, queryClient]);
 
-  if (loading) {
+  if (loading || (isFetching && !profile)) {
     return (
       <div className="flex justify-center items-center min-h-[60vh]">
         <Loader2 className="h-12 w-12 animate-spin text-accent-yellow" />
@@ -128,7 +129,7 @@ const FilmmakerProfile = () => {
               </Avatar>
               <h1 className="text-2xl font-bold font-heading">{profile.full_name}</h1>
               {profile.display_name && <p className="text-lg text-accent-yellow -mt-1">{profile.display_name}</p>}
-              <p className="text-muted-gray">@{profile.profile.username}</p>
+              {profile.profile?.username && <p className="text-muted-gray">@{profile.profile.username}</p>}
               {profile.accepting_work && (
                 <Badge variant="secondary" className="mt-2 bg-green-500/20 text-green-300 border-green-500/50">
                   Accepting Work

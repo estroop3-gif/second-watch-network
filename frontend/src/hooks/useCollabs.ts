@@ -1,6 +1,9 @@
 /**
  * useCollabs - Hook for fetching and managing community collabs
+ * Optimization #1: Cursor-based pagination (no page-drift on live board).
+ * Optimization #7: Backend queries collab_board_view (materialized).
  */
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { CommunityCollab, CollabType, CompensationType } from '@/types/community';
@@ -67,6 +70,10 @@ interface CollabInput {
   tape_workflow?: string;
 }
 
+// Cursor-based pagination state — one cursor stack per filter combination.
+// Each entry in the stack is the next_cursor returned by the backend.
+// Stack[0] is always null (first page), stack[N] is the cursor for page N+1.
+
 export function useCollabs(options: UseCollabsOptions = {}) {
   const {
     type = 'all',
@@ -74,28 +81,49 @@ export function useCollabs(options: UseCollabsOptions = {}) {
     compensationType = 'all',
     orderOnly = false,
     userId,
-    limit = 50,
+    limit = 20,
   } = options;
 
   const queryClient = useQueryClient();
+  // cursorStack[0] = null (first page), cursorStack[1] = cursor for page 2, etc.
+  const [cursorStack, setCursorStack] = useState<(string | null)[]>([null]);
+  const currentCursor = cursorStack[cursorStack.length - 1];
+  const currentPage = cursorStack.length - 1;
 
-  const queryKey = ['community-collabs', { type, isRemote, compensationType, orderOnly, userId, limit }];
+  const filterKey = { type, isRemote, compensationType, orderOnly, userId, limit };
+  const queryKey = ['community-collabs', filterKey, currentCursor];
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey,
     queryFn: async () => {
-      const collabsData = await api.listCollabs({
+      const response = await api.listCollabs({
         type: type !== 'all' ? type : undefined,
         isRemote: isRemote !== null ? isRemote : undefined,
         compensationType: compensationType !== 'all' ? compensationType : undefined,
         orderOnly,
         userId,
         limit,
+        cursor: currentCursor ?? undefined,
       });
-
-      return (collabsData || []) as CommunityCollab[];
+      return response as { collabs: CommunityCollab[]; total: number; next_cursor: string | null };
     },
+    // User-specific queries must always be fresh; general list stays fresh for 60s
+    staleTime: userId ? 0 : 60_000,
   });
+
+  const loadMore = () => {
+    if (data?.next_cursor) {
+      setCursorStack((prev) => [...prev, data.next_cursor]);
+    }
+  };
+
+  const loadPrev = () => {
+    if (cursorStack.length > 1) {
+      setCursorStack((prev) => prev.slice(0, -1));
+    }
+  };
+
+  const resetPagination = () => setCursorStack([null]);
 
   const createCollab = useMutation({
     mutationFn: async (input: CollabInput) => {
@@ -239,7 +267,14 @@ export function useCollabs(options: UseCollabsOptions = {}) {
   });
 
   return {
-    collabs: data || [],
+    collabs: data?.collabs || [],
+    total: data?.total || 0,
+    hasMore: !!data?.next_cursor,
+    hasPrev: currentPage > 0,
+    currentPage,
+    loadMore,
+    loadPrev,
+    resetPagination,
     isLoading,
     error,
     refetch,

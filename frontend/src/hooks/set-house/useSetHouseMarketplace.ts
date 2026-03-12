@@ -146,6 +146,7 @@ export function useSetHouses(options?: UseSetHousesOptions) {
     queryKey: ['set-houses', options],
     queryFn: () => fetchWithAuth(url, token!),
     enabled: !!token,
+    staleTime: 0,
     select: (data) => ({
       setHouses: data.set_houses as MarketplaceOrganizationEnriched[],
       total: data.total as number,

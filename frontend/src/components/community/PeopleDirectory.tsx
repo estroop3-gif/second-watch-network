@@ -352,7 +352,7 @@ function UserCard({ user, onConnect, isConnecting }: UserCardProps) {
   return (
     <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4 hover:border-muted-gray/40 transition-colors">
       {/* User Info */}
-      <Link to={`/profile/${user.id}`} className="flex items-center gap-3 mb-3">
+      <Link to={`/profile/${user.username || user.id}`} className="flex items-center gap-3 mb-3">
         <Avatar className="w-12 h-12">
           <AvatarImage src={user.avatar_url || undefined} alt={displayName} />
           <AvatarFallback className="bg-muted-gray/30 text-bone-white">

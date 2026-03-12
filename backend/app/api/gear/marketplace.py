@@ -59,7 +59,6 @@ def transform_listing_to_nested(listing: Dict[str, Any]) -> Dict[str, Any]:
             "description": listing.get("asset_description"),
             "make": listing.get("make"),
             "model": listing.get("model"),
-            "manufacturer": listing.get("make"),  # Alias for frontend compatibility
             "serial_number": listing.get("serial_number"),
             "barcode": listing.get("barcode"),
             "status": listing.get("asset_status"),
@@ -68,8 +67,7 @@ def transform_listing_to_nested(listing: Dict[str, Any]) -> Dict[str, Any]:
             "category_id": listing.get("category_id"),
             "category_name": listing.get("category_name"),
             "photos_current": listing.get("photos") or [],
-            "photos_baseline": listing.get("photos") or [],
-            "photo_urls": listing.get("photos") or [],  # Alias for frontend compatibility
+            "photo_urls": listing.get("photos") or [],
         },
         # Nested organization object
         "organization": {
@@ -331,8 +329,17 @@ async def search_marketplace(
     params: Dict[str, Any] = {"limit": limit, "offset": offset}
 
     if q:
-        conditions.append("(a.name ILIKE :q OR a.description ILIKE :q OR a.make ILIKE :q OR a.model ILIKE :q)")
-        params["q"] = f"%{q}%"
+        # Full-text search uses the GIN index on gear_assets for fast word-boundary matching.
+        # Falls back gracefully to no results rather than a sequential scan.
+        conditions.append("""
+            to_tsvector('english',
+                COALESCE(a.name, '') || ' ' ||
+                COALESCE(a.make, '') || ' ' ||
+                COALESCE(a.model, '') || ' ' ||
+                COALESCE(a.description, '')
+            ) @@ plainto_tsquery('english', :q)
+        """)
+        params["q"] = q
 
     if category_id:
         conditions.append("a.category_id = :category_id")
@@ -426,14 +433,22 @@ async def search_marketplace(
                      AND COALESCE(gms.work_order_reserves_dates, FALSE) = TRUE)
                   )
             )
+
+            -- Filter out listings with overlapping blackout dates (JSONB array)
+            AND NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(COALESCE(ml.blackout_dates, '[]'::jsonb)) AS bd
+                WHERE (bd->>'start')::date <= :available_to
+                  AND (bd->>'end')::date >= :available_from
+            )
         """)
         params["available_from"] = available_from
         params["available_to"] = available_to
 
     where_clause = " AND ".join(conditions)
 
-    # Get listings with organization and asset details
-    listings = execute_query(
+    # Single query: window function delivers accurate total alongside the page data,
+    # eliminating the second COUNT(*) round-trip to the database.
+    rows = execute_query(
         f"""
         SELECT
             ml.id,
@@ -472,7 +487,9 @@ async def search_marketplace(
             ms.lister_type,
             ms.is_verified,
             ms.offers_delivery,
-            a.photos_current as photos
+            a.photos_current as photos,
+            ml.blackout_dates,
+            COUNT(*) OVER() AS total_count
         FROM gear_marketplace_listings ml
         JOIN gear_marketplace_settings ms ON ms.organization_id = ml.organization_id
         JOIN gear_assets a ON a.id = ml.asset_id
@@ -485,49 +502,8 @@ async def search_marketplace(
         params
     )
 
-    # Get total count
-    count_result = execute_single(
-        f"""
-        SELECT COUNT(*) as total
-        FROM gear_marketplace_listings ml
-        JOIN gear_marketplace_settings ms ON ms.organization_id = ml.organization_id
-        JOIN gear_assets a ON a.id = ml.asset_id
-        WHERE {where_clause}
-        """,
-        params
-    )
-
-    # Filter blackout dates if date range provided
-    if available_from and available_to:
-        filtered_listings = []
-        for listing in listings:
-            # Get blackout dates for this listing
-            blackout_result = execute_single(
-                "SELECT blackout_dates FROM gear_marketplace_listings WHERE id = :id",
-                {"id": listing["id"]}
-            )
-
-            if blackout_result:
-                blackout_dates = blackout_result.get("blackout_dates", []) or []
-                is_blacked_out = False
-
-                for bd in blackout_dates:
-                    if bd.get("start") and bd.get("end"):
-                        try:
-                            bd_start = datetime.strptime(bd["start"], "%Y-%m-%d").date()
-                            bd_end = datetime.strptime(bd["end"], "%Y-%m-%d").date()
-                            if bd_start <= available_to and bd_end >= available_from:
-                                is_blacked_out = True
-                                break
-                        except (ValueError, TypeError):
-                            continue
-
-                if not is_blacked_out:
-                    filtered_listings.append(listing)
-            else:
-                filtered_listings.append(listing)
-
-        listings = filtered_listings
+    listings = rows
+    total_count = rows[0]["total_count"] if rows else 0
 
     # Transform flat results into nested structure expected by frontend
     transformed_listings = [transform_listing_to_nested(listing) for listing in listings]
@@ -567,7 +543,7 @@ async def search_marketplace(
 
         return {
             "organizations": sorted_orgs,
-            "total": count_result["total"] if count_result else 0,
+            "total": total_count,
             "limit": limit,
             "offset": offset
         }
@@ -581,7 +557,7 @@ async def search_marketplace(
 
     return {
         "listings": transformed_listings,
-        "total": count_result["total"] if count_result else 0,
+        "total": total_count,
         "limit": limit,
         "offset": offset
     }
@@ -646,7 +622,6 @@ async def get_listing_detail(
 class ReportListingInput(BaseModel):
     reason: str  # spam, fraud, prohibited_item, misleading, other
     details: Optional[str] = None
-    reporter_id: str
 
 
 @router.post("/listings/{listing_id}/report")
@@ -656,6 +631,8 @@ async def report_listing(
     user=Depends(get_current_user)
 ):
     """Report a marketplace listing for review."""
+    reporter_id = get_profile_id(user)
+
     # Verify the listing exists
     listing = execute_single(
         """
@@ -691,7 +668,7 @@ async def report_listing(
             """,
             {
                 "listing_id": listing_id,
-                "reporter_id": data.reporter_id,
+                "reporter_id": reporter_id,
                 "reason": data.reason,
                 "details": data.details,
             }
@@ -746,6 +723,7 @@ async def list_marketplace_organizations(
             ms.offers_delivery,
             ms.accepts_stripe,
             ms.accepts_invoice,
+            COALESCE(ms.successful_rentals_count, 0) as successful_rentals_count,
             (SELECT COUNT(*) FROM gear_marketplace_listings ml WHERE ml.organization_id = o.id AND ml.is_listed = TRUE) as listing_count
         FROM gear_marketplace_settings ms
         JOIN organizations o ON o.id = ms.organization_id
@@ -756,7 +734,20 @@ async def list_marketplace_organizations(
         params
     )
 
-    return {"organizations": organizations}
+    count_result = execute_single(
+        f"""
+        SELECT COUNT(*) as total
+        FROM gear_marketplace_settings ms
+        JOIN organizations o ON o.id = ms.organization_id
+        WHERE {where_clause}
+        """,
+        {k: v for k, v in params.items() if k not in ("limit", "offset")}
+    )
+
+    return {
+        "organizations": organizations,
+        "total": total_count,
+    }
 
 
 @router.get("/organizations/{org_id}")
@@ -1666,38 +1657,61 @@ async def search_marketplace_nearby(
         params["profile_id"] = profile_id
         gear_houses = execute_query(query, params)
 
-        # Enrich with top categories and featured items
-        enriched = []
-        for gh in gear_houses:
-            # Get top categories
-            top_categories = execute_query(
+        # Enrich with top categories and featured items — batch queries to avoid N+1
+        from collections import defaultdict
+
+        org_ids = [gh["id"] for gh in gear_houses]
+
+        if org_ids:
+            # One query for all categories across all gear houses
+            all_categories = execute_query(
                 """
-                SELECT c.id, c.name, COUNT(*) as count
+                SELECT ml.organization_id, c.id, c.name, COUNT(*) as count
                 FROM gear_marketplace_listings ml
                 JOIN gear_assets a ON a.id = ml.asset_id
                 JOIN gear_categories c ON c.id = a.category_id
-                WHERE ml.organization_id = :org_id AND ml.is_listed = TRUE
-                GROUP BY c.id, c.name
-                ORDER BY count DESC
-                LIMIT 4
+                WHERE ml.organization_id = ANY(:org_ids) AND ml.is_listed = TRUE
+                GROUP BY ml.organization_id, c.id, c.name
+                ORDER BY ml.organization_id, count DESC
                 """,
-                {"org_id": gh["id"]}
+                {"org_ids": org_ids}
             )
 
-            # Get featured items (up to 4)
-            featured_items = execute_query(
+            # One query for all featured items across all gear houses
+            all_featured = execute_query(
                 """
-                SELECT
-                    ml.id, ml.daily_rate, ml.weekly_rate, ml.monthly_rate,
+                SELECT DISTINCT ON (ml.organization_id, ml.id)
+                    ml.organization_id, ml.id, ml.daily_rate, ml.weekly_rate, ml.monthly_rate,
                     a.id as asset_id, a.name, a.photos_current as photos
                 FROM gear_marketplace_listings ml
                 JOIN gear_assets a ON a.id = ml.asset_id
-                WHERE ml.organization_id = :org_id AND ml.is_listed = TRUE
-                ORDER BY ml.created_at DESC
-                LIMIT 4
+                WHERE ml.organization_id = ANY(:org_ids) AND ml.is_listed = TRUE
+                ORDER BY ml.organization_id, ml.id, ml.created_at DESC
                 """,
-                {"org_id": gh["id"]}
+                {"org_ids": org_ids}
             )
+
+            # Group categories by org (keep top 4 per org)
+            cats_by_org = defaultdict(list)
+            for row in all_categories:
+                oid = row["organization_id"]
+                if len(cats_by_org[oid]) < 4:
+                    cats_by_org[oid].append(row)
+
+            # Group featured items by org (keep top 4 per org, most recent first)
+            featured_by_org = defaultdict(list)
+            for row in all_featured:
+                oid = row["organization_id"]
+                if len(featured_by_org[oid]) < 4:
+                    featured_by_org[oid].append(row)
+        else:
+            cats_by_org = defaultdict(list)
+            featured_by_org = defaultdict(list)
+
+        enriched = []
+        for gh in gear_houses:
+            top_categories = cats_by_org.get(gh["id"], [])
+            featured_items = featured_by_org.get(gh["id"], [])
 
             # Calculate delivery eligibility
             can_deliver = False
@@ -1740,7 +1754,7 @@ async def search_marketplace_nearby(
 
         return {
             "gear_houses": enriched,
-            "total": count_result["total"] if count_result else 0,
+            "total": total_count,
             "user_location": {"lat": lat, "lng": lng},
             "radius_miles": radius_miles
         }
@@ -1879,7 +1893,7 @@ async def search_marketplace_nearby(
 
         return {
             "listings": transformed,
-            "total": count_result["total"] if count_result else 0,
+            "total": total_count,
             "user_location": {"lat": lat, "lng": lng},
             "radius_miles": radius_miles
         }

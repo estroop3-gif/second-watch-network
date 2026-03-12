@@ -83,9 +83,10 @@ const Connections = () => {
   const { data: connections = [], isLoading, refetch } = useQuery({
     queryKey: ['connections', user?.id],
     enabled: !!user?.id,
+    staleTime: 2 * 60 * 1000,
     queryFn: async () => {
       if (!user?.id) return [];
-      const data = await api.listConnections(user.id);
+      const data = await api.listConnections();
       return data as Connection[];
     },
   });

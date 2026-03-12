@@ -17,6 +17,9 @@ import {
   ChevronRight,
   ChevronLeft,
   Info,
+  CheckCircle2,
+  FileText,
+  ArrowRight,
 } from 'lucide-react';
 import { format, differenceInDays, addDays } from 'date-fns';
 
@@ -55,8 +58,8 @@ interface RequestQuoteDialogProps {
   };
 }
 
-// Steps in the quote request flow
-type Step = 'items' | 'delivery' | 'review';
+// Steps in the quote request flow (success is a terminal screen, not a wizard step)
+type Step = 'items' | 'delivery' | 'review' | 'success';
 
 export function RequestQuoteDialog({
   isOpen,
@@ -104,6 +107,8 @@ export function RequestQuoteDialog({
     country: 'US',
   });
   const [selectedShippingRate, setSelectedShippingRate] = useState<ShippingRate | null>(null);
+
+  const [submittedRequestNumber, setSubmittedRequestNumber] = useState<string | null>(null);
 
   const { mutate: createRequest, isPending } = useCreateRentalRequest();
   const { toast } = useToast();
@@ -304,22 +309,20 @@ export function RequestQuoteDialog({
       },
       {
         onSuccess: (response: any) => {
+          const reqNumber =
+            response?.request?.request_number ||
+            response?.request_number ||
+            null;
+          setSubmittedRequestNumber(reqNumber);
+          setCurrentStep('success');
           if (response.warning) {
-            // Show warning toast with details
             toast({
               title: 'Request Submitted with Changes',
               description: response.warning.message,
               variant: 'default',
               duration: 5000,
             });
-          } else {
-            toast({
-              title: 'Quote Request Submitted',
-              description: 'The rental house will respond with pricing options.',
-              variant: 'default',
-            });
           }
-          onSubmitted();
         },
         onError: (error: any) => {
           if (error.response?.data?.unavailable_items) {
@@ -362,17 +365,22 @@ export function RequestQuoteDialog({
     items: 'Request Details',
     delivery: 'Delivery Method',
     review: 'Review & Submit',
+    success: 'Request Submitted',
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={() => onClose()}>
+    <Dialog open={isOpen} onOpenChange={() => { if (currentStep === 'success') onSubmitted(); onClose(); }}>
       <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Send className="h-5 w-5" />
+            {currentStep === 'success'
+              ? <CheckCircle2 className="h-5 w-5 text-green-400" />
+              : <Send className="h-5 w-5" />
+            }
             {stepTitles[currentStep]}
           </DialogTitle>
-          {/* Step indicator */}
+          {/* Step indicator — hidden on success screen */}
+          {currentStep !== 'success' && (
           <div className="flex items-center gap-2 pt-2">
             {(['items', 'delivery', 'review'] as Step[]).map((step, index) => (
               <div key={step} className="flex items-center">
@@ -399,9 +407,48 @@ export function RequestQuoteDialog({
               </div>
             ))}
           </div>
+          )}
         </DialogHeader>
 
         <div className="space-y-6 py-4">
+          {/* SUCCESS SCREEN */}
+          {currentStep === 'success' && (
+            <div className="flex flex-col items-center gap-6 py-6 text-center">
+              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-green-500/20">
+                <CheckCircle2 className="h-10 w-10 text-green-400" />
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-xl font-semibold text-bone-white">Quote Request Sent!</h3>
+                {submittedRequestNumber && (
+                  <div className="flex items-center justify-center gap-2 text-sm text-muted-gray">
+                    <FileText className="h-4 w-4" />
+                    Request #{submittedRequestNumber}
+                  </div>
+                )}
+                <p className="max-w-sm text-sm text-muted-gray">
+                  The rental house will review your request and send you a formal quote.
+                  You'll be notified when they respond.
+                </p>
+              </div>
+              <div className="flex w-full flex-col gap-2 sm:flex-row">
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() => { onSubmitted(); onClose(); }}
+                >
+                  Done
+                </Button>
+                <Button
+                  className="flex-1 gap-2"
+                  onClick={() => { onSubmitted(); onClose(); }}
+                >
+                  <ArrowRight className="h-4 w-4" />
+                  View My Requests
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* STEP 1: Items & Request Details */}
           {currentStep === 'items' && (
             <>
@@ -859,6 +906,7 @@ export function RequestQuoteDialog({
           )}
         </div>
 
+        {currentStep !== 'success' && (
         <DialogFooter className="gap-2">
           {currentStep !== 'items' && (
             <Button variant="outline" onClick={goToPreviousStep}>
@@ -898,6 +946,7 @@ export function RequestQuoteDialog({
             </Button>
           )}
         </DialogFooter>
+        )}
       </DialogContent>
     </Dialog>
   );

@@ -14,8 +14,13 @@ export default defineConfig(({ mode }) => {
 
   return {
   server: {
-    host: "::",
+    host: "0.0.0.0",
     port: 8080,
+    hmr: {
+      host: 'localhost',
+      port: 8080,
+      protocol: 'ws',
+    },
     // Only proxy /api requests when using local backend
     ...(useLocalProxy && {
       proxy: {

@@ -43,6 +43,7 @@ import FullTimeCompFields from '@/components/shared/FullTimeCompFields';
 import FeaturePostToggle from '@/components/shared/FeaturePostToggle';
 import PositionSelector, { POSITIONS } from '@/components/shared/PositionSelector';
 import CastPositionSelector from '@/components/shared/CastPositionSelector';
+import { LocationAutocomplete } from '@/components/ui/location-autocomplete';
 
 interface BacklotProjectData {
   id: string;
@@ -555,11 +556,11 @@ const CollabForm: React.FC<CollabFormProps> = ({ onClose, onSuccess, editCollab,
               </button>
             </div>
             {!formData.is_remote && (
-              <Input
+              <LocationAutocomplete
                 value={formData.location}
-                onChange={(e) => setFormData({ ...formData, location: e.target.value })}
+                onChange={(loc) => setFormData({ ...formData, location: loc.displayName })}
                 placeholder="City, State or Region"
-                className="bg-charcoal-black/50 border-muted-gray/30"
+                mode="city"
               />
             )}
           </div>

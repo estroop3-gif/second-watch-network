@@ -614,6 +614,20 @@ def is_user_online(user_id: str) -> bool:
     return user_id in connected_users and len(connected_users[user_id]) > 0
 
 
+async def broadcast_application_message(application_id: str, owner_id: str, applicant_id: str, message: dict):
+    """
+    Push a new application message in real-time to both the collab owner and the applicant.
+    Replaces polling in useApplicationMessages.ts.
+    """
+    payload = {
+        'application_id': application_id,
+        'message': message,
+    }
+    for user_id in set([owner_id, applicant_id]):
+        await send_to_user(user_id, 'new_application_message', payload)
+    logger.debug(f"[Socket] broadcast_application_message app={application_id}")
+
+
 async def broadcast_new_community_member(profile_id: str, full_name: str = None):
     """
     Broadcast that a new community member has joined.

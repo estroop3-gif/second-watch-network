@@ -36,11 +36,12 @@ const Filmmakers = () => {
   const [showThreadForm, setShowThreadForm] = useState(false);
   const [threadFormTopicId, setThreadFormTopicId] = useState<string | undefined>();
   const [viewingThread, setViewingThread] = useState<CommunityThread | undefined>();
+  const [initialThreadId] = useState<string | null>(() => searchParams.get('thread'));
 
   const handleTabChange = (tab: CommunityTabType) => {
     // Navigate to dedicated page for "My Posts"
     if (tab === 'my-posts') {
-      navigate('/my-job-posts');
+      navigate('/my-posts');
       return;
     }
 
@@ -109,6 +110,17 @@ const Filmmakers = () => {
     setViewingThread(thread);
   };
 
+  // Auto-open thread from URL param on initial load (deep link support)
+  useEffect(() => {
+    if (initialThreadId && activeTab === 'topics') {
+      import('@/lib/api').then(({ api }) => {
+        api.getCommunityThread(initialThreadId).then((thread) => {
+          if (thread) setViewingThread(thread as CommunityThread);
+        }).catch(() => {});
+      });
+    }
+  }, [initialThreadId]);
+
   const handleCloseThreadForm = () => {
     setShowThreadForm(false);
     setThreadFormTopicId(undefined);
@@ -116,6 +128,10 @@ const Filmmakers = () => {
 
   const handleCloseThreadView = () => {
     setViewingThread(undefined);
+    // Remove ?thread= param from URL when closing thread view
+    const newParams = new URLSearchParams(searchParams);
+    newParams.delete('thread');
+    setSearchParams(newParams, { replace: true });
   };
 
   // If viewing a thread, show the thread view instead of tabs

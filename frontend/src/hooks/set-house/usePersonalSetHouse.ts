@@ -35,6 +35,7 @@ async function fetchWithAuth(url: string, token: string, options?: RequestInit) 
     } catch {
       if (errorText) errorDetail += ` - ${errorText}`;
     }
+    console.error(`[Personal Set House API] Error on ${options?.method || 'GET'} ${url}: ${errorDetail}`);
     throw new Error(errorDetail);
   }
 
@@ -76,6 +77,12 @@ export interface QuickAddSpaceInput {
   space_type?: SpaceType;
   square_footage?: number;
   description?: string;
+  address_line1?: string;
+  address_line2?: string;
+  city?: string;
+  state?: string;
+  zip_code?: string;
+  hide_address?: boolean;
   photos?: string[];
   daily_rate?: number;
   hourly_rate?: number;
@@ -128,6 +135,8 @@ export function usePersonalSetHouse() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['personal-set-house'] });
+      queryClient.invalidateQueries({ queryKey: ['my-space-listings'] });
+      queryClient.invalidateQueries({ queryKey: ['set-houses'] });
     },
   });
 
@@ -139,6 +148,7 @@ export function usePersonalSetHouse() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['personal-set-house'] });
+      queryClient.invalidateQueries({ queryKey: ['my-space-listings'] });
     },
   });
 
@@ -149,6 +159,7 @@ export function usePersonalSetHouse() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['personal-set-house'] });
+      queryClient.invalidateQueries({ queryKey: ['my-space-listings'] });
     },
   });
 
@@ -174,6 +185,7 @@ export function usePersonalSetHouse() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['personal-set-house'] });
+      queryClient.invalidateQueries({ queryKey: ['my-space-listings'] });
     },
   });
 
@@ -195,6 +207,7 @@ export function usePersonalSetHouse() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['personal-set-house'] });
+      queryClient.invalidateQueries({ queryKey: ['my-space-listings'] });
     },
   });
 
@@ -205,6 +218,7 @@ export function usePersonalSetHouse() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['personal-set-house'] });
+      queryClient.invalidateQueries({ queryKey: ['my-space-listings'] });
     },
   });
 
@@ -221,4 +235,57 @@ export function usePersonalSetHouse() {
     createListing,
     deleteListing,
   };
+}
+
+// ============================================================================
+// Community Listings (My Posts page)
+// ============================================================================
+
+export interface SpaceMarketplaceListing {
+  id: string;
+  space_id: string;
+  organization_id: string;
+  is_listed: boolean;
+  daily_rate: number;
+  hourly_rate?: number;
+  half_day_rate?: number;
+  weekly_rate?: number;
+  monthly_rate?: number;
+  deposit_amount?: number;
+  deposit_percent?: number;
+  insurance_required?: boolean;
+  min_booking_hours?: number;
+  max_booking_days?: number;
+  booking_notes?: string;
+  created_at?: string;
+  updated_at?: string;
+  space: {
+    id: string;
+    name: string;
+    space_type?: string;
+    square_footage?: number;
+    description?: string;
+    photos?: string[];
+    status?: string;
+    current_condition?: string;
+  };
+}
+
+export interface MySpaceListingsResponse {
+  listings: SpaceMarketplaceListing[];
+  personal_org_id: string | null;
+}
+
+/**
+ * Get ALL marketplace listings for the current user across personal + Set House orgs.
+ * Used by My Posts page.
+ */
+export function useMySpaceListings() {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  return useQuery<MySpaceListingsResponse>({
+    queryKey: ['my-space-listings'],
+    queryFn: () => fetchWithAuth('/api/v1/set-house/personal/my-community-listings', token!),
+    enabled: !!token,
+  });
 }

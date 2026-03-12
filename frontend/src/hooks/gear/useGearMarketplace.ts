@@ -4,6 +4,7 @@
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/context/AuthContext';
+import { api } from '@/lib/api';
 import type {
   GearMarketplaceSettings,
   GearMarketplaceListing,
@@ -63,21 +64,25 @@ import type {
   CommunityPreferencesUpdate,
 } from '@/types/gear';
 
-const API_BASE = import.meta.env.VITE_API_URL || '';
-
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 
-async function fetchWithAuth(url: string, token: string, options?: RequestInit) {
-  const fullUrl = `${API_BASE}${url}`;
-  console.log(`[Marketplace API] ${options?.method || 'GET'} ${fullUrl}`);
+/**
+ * Thin fetch wrapper that uses the shared `api` singleton for auth headers
+ * and base URL, eliminating duplicate auth logic while preserving the
+ * structured error detail shape that cart validation relies on.
+ *
+ * The `token` parameter is kept for call-site compatibility but is no longer
+ * used — auth is handled by the api singleton.
+ */
+async function fetchWithAuth(url: string, _token: string, options?: RequestInit) {
+  const fullUrl = `${api.getBaseUrl()}${url}`;
 
   const response = await fetch(fullUrl, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
+      ...api.getHeaders(),
       ...options?.headers,
     },
   });
@@ -90,7 +95,6 @@ async function fetchWithAuth(url: string, token: string, options?: RequestInit) 
     try {
       errorData = JSON.parse(errorText);
 
-      // Handle different error formats
       if (typeof errorData.detail === 'string') {
         errorMessage = errorData.detail;
       } else if (typeof errorData.detail === 'object' && errorData.detail !== null) {
@@ -103,19 +107,13 @@ async function fetchWithAuth(url: string, token: string, options?: RequestInit) 
       if (errorText) errorMessage += ` - ${errorText}`;
     }
 
-    console.error(`[Marketplace API] Error: ${errorMessage}`);
-    console.error(`[Marketplace API] Full error data:`, errorData);
-
-    // Throw the parsed error data so the caller can access structured info
     const error: any = new Error(errorMessage);
     error.detail = errorData?.detail;
     error.status = response.status;
     throw error;
   }
 
-  const data = await response.json();
-  console.log(`[Marketplace API] Response:`, data);
-  return data;
+  return response.json();
 }
 
 function buildQueryString(params: Record<string, unknown>): string {
@@ -135,27 +133,51 @@ function buildQueryString(params: Record<string, unknown>): string {
 
 export interface UseMarketplaceSearchOptions {
   enabled?: boolean;
+  groupByOrg?: boolean;
+  cartOrgIds?: string[];
 }
 
+/**
+ * Unified marketplace search hook.
+ * Use groupByOrg=true to get results grouped by rental house (with cartOrgIds for prioritization).
+ * Use groupByOrg=false (default) for a flat listing result.
+ *
+ * Backward-compat: second arg may also be a plain boolean (legacy enabled flag).
+ */
 export function useMarketplaceSearch(
   filters: GearMarketplaceSearchFilters,
-  options?: UseMarketplaceSearchOptions
+  options?: UseMarketplaceSearchOptions | boolean
 ) {
   const { session } = useAuth();
   const token = session?.access_token;
 
-  const queryString = buildQueryString(filters);
+  // Normalise: legacy callers pass a boolean; new callers pass an options object
+  const opts: UseMarketplaceSearchOptions =
+    typeof options === 'boolean' ? { enabled: options } : (options ?? {});
+
+  const { groupByOrg = false, cartOrgIds } = opts;
+
+  const fullFilters = {
+    ...filters,
+    ...(groupByOrg && {
+      group_by_org: true,
+      priority_org_ids: cartOrgIds?.length ? cartOrgIds.join(',') : undefined,
+    }),
+  };
+
+  const queryString = buildQueryString(fullFilters);
 
   const query = useQuery({
-    queryKey: ['marketplace-search', filters],
+    queryKey: ['marketplace-search', fullFilters],
     queryFn: () =>
       fetchWithAuth(`/api/v1/gear/marketplace/search${queryString}`, token!),
-    enabled: !!token && (options?.enabled ?? true),
-    select: (data) => data as MarketplaceSearchResponse,
+    enabled: !!token && (opts.enabled ?? true),
+    staleTime: 5 * 60 * 1000, // 5 minutes — listings don't change frequently
   });
 
   return {
     listings: query.data?.listings ?? [],
+    organizations: query.data?.organizations ?? [],
     total: query.data?.total ?? 0,
     isLoading: query.isLoading,
     error: query.error,
@@ -164,40 +186,14 @@ export function useMarketplaceSearch(
 }
 
 /**
- * Marketplace search with results grouped by organization/rental house.
- * Prioritizes organizations that have items in the quote/cart.
+ * @deprecated Use useMarketplaceSearch with options.groupByOrg=true instead.
  */
 export function useMarketplaceSearchGrouped(
   filters: GearMarketplaceSearchFilters,
   cartOrgIds?: string[],
-  options?: UseMarketplaceSearchOptions
+  options?: { enabled?: boolean }
 ) {
-  const { session } = useAuth();
-  const token = session?.access_token;
-
-  // Build filters with grouping enabled
-  const groupedFilters = {
-    ...filters,
-    group_by_org: true,
-    priority_org_ids: cartOrgIds?.join(',') || undefined,
-  };
-
-  const queryString = buildQueryString(groupedFilters);
-
-  const query = useQuery({
-    queryKey: ['marketplace-search-grouped', groupedFilters],
-    queryFn: () =>
-      fetchWithAuth(`/api/v1/gear/marketplace/search${queryString}`, token!),
-    enabled: !!token && (options?.enabled ?? true),
-  });
-
-  return {
-    organizations: query.data?.organizations ?? [],
-    total: query.data?.total ?? 0,
-    isLoading: query.isLoading,
-    error: query.error,
-    refetch: query.refetch,
-  };
+  return useMarketplaceSearch(filters, { ...options, groupByOrg: true, cartOrgIds });
 }
 
 export function useMarketplaceListing(listingId: string | null) {
@@ -224,6 +220,8 @@ export function useMarketplaceOrganizations(filters?: {
   lister_type?: string;
   verified_only?: boolean;
   location?: string;
+  limit?: number;
+  offset?: number;
 }) {
   const { session } = useAuth();
   const token = session?.access_token;
@@ -235,12 +233,11 @@ export function useMarketplaceOrganizations(filters?: {
     queryFn: () =>
       fetchWithAuth(`/api/v1/gear/marketplace/organizations${queryString}`, token!),
     enabled: !!token,
-    select: (data) => data as MarketplaceOrganizationsResponse,
   });
 
   return {
-    organizations: query.data?.organizations ?? [],
-    total: query.data?.total ?? 0,
+    organizations: (query.data as any)?.organizations ?? [],
+    total: (query.data as any)?.total ?? 0,
     isLoading: query.isLoading,
     error: query.error,
     refetch: query.refetch,
@@ -1820,6 +1817,7 @@ export function useMarketplaceNearbySearch(params: MarketplaceNearbySearchParams
     queryFn: () =>
       fetchWithAuth(`/api/v1/gear/marketplace/search/nearby${queryString}`, token!),
     enabled: !!token && !!params && !!params.lat && !!params.lng,
+    staleTime: 5 * 60 * 1000, // 5 minutes — listings don't change frequently
   });
 
   // Determine response type based on result_mode

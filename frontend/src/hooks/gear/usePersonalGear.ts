@@ -11,6 +11,7 @@ import type {
   QuickAddAssetInput,
   QuickAddAssetResponse,
   EnsurePersonalOrgResponse,
+  GearMarketplaceListing,
 } from '@/types/gear';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -60,7 +61,8 @@ async function fetchWithAuth(url: string, token: string, options?: RequestInit) 
  * Creates one if it doesn't exist.
  */
 export function useEnsurePersonalOrg() {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
 
   return useMutation<EnsurePersonalOrgResponse, Error>({
     mutationFn: async () => {
@@ -76,7 +78,8 @@ export function useEnsurePersonalOrg() {
  * Get all assets and listings for user's personal gear org.
  */
 export function usePersonalGear() {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
 
   return useQuery<PersonalGearResponse>({
     queryKey: ['personal-gear'],
@@ -93,7 +96,8 @@ export function usePersonalGear() {
  * Simplified flow for lite users.
  */
 export function useQuickAddAsset() {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   return useMutation<QuickAddAssetResponse, Error, QuickAddAssetInput>({
@@ -118,7 +122,8 @@ export function useQuickAddAsset() {
  * Delete an asset from user's personal gear.
  */
 export function useDeletePersonalAsset() {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   return useMutation<{ success: boolean; deleted_asset_id: string }, Error, string>({
@@ -140,7 +145,8 @@ export function useDeletePersonalAsset() {
  * Update an asset and its listing in user's personal gear.
  */
 export function useUpdatePersonalAsset() {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   return useMutation<QuickAddAssetResponse, Error, { assetId: string; input: QuickAddAssetInput }>({
@@ -160,10 +166,30 @@ export function useUpdatePersonalAsset() {
 }
 
 /**
+ * Get ALL marketplace listings for the current user across personal gear org
+ * AND any Gear House orgs they belong to.
+ * Single endpoint — avoids fragile multi-source logic in the UI.
+ */
+export function useMyGearListings() {
+  const { session } = useAuth();
+  const token = session?.access_token;
+
+  return useQuery<{ listings: GearMarketplaceListing[]; personal_org_id: string | null }>({
+    queryKey: ['my-gear-listings'],
+    queryFn: async () => {
+      if (!token) throw new Error('Not authenticated');
+      return fetchWithAuth('/api/v1/gear/personal/my-community-listings', token);
+    },
+    enabled: !!token,
+  });
+}
+
+/**
  * Toggle an asset's marketplace listing status (listed/unlisted).
  */
 export function useTogglePersonalAssetListing() {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   return useMutation<{ asset_id: string; is_listed: boolean }, Error, string>({

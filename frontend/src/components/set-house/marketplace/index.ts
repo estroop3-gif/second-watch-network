@@ -4,3 +4,4 @@
  */
 export { MarketplaceView } from './MarketplaceView';
 export { default as SetHouseCard, SetHouseListItem } from './SetHouseCard';
+export { default as SetHouseListingCard } from './SetHouseListingCard';

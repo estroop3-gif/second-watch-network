@@ -2,7 +2,7 @@
  * MarketplaceView.tsx
  * Main marketplace browser for searching and browsing rental listings
  */
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Search,
   Filter,
@@ -21,6 +21,13 @@ import {
   Tag,
   DollarSign,
   X,
+  ClipboardList,
+  FilterX,
+  Clock,
+  CheckCircle2,
+  XCircle,
+  AlertCircle,
+  Calendar,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -42,7 +49,7 @@ import {
 } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 
-import { useMarketplaceSearch, useMarketplaceSearchGrouped, useMarketplaceOrganizations } from '@/hooks/gear/useGearMarketplace';
+import { useMarketplaceSearch, useMarketplaceOrganizations, useMyRentalRequests } from '@/hooks/gear/useGearMarketplace';
 import { useGearCategories } from '@/hooks/gear';
 import { ListingCard } from './ListingCard';
 import { ListingDetailDialog } from './ListingDetailDialog';
@@ -52,7 +59,8 @@ import { AssetPickerDialog } from './AssetPickerDialog';
 import { ListForSaleDialog } from './ListForSaleDialog';
 import { MessageSellerModal } from './MessageSellerModal';
 import { ReportListingModal } from './ReportListingModal';
-import type { GearMarketplaceListing, GearMarketplaceSearchFilters, ListerType, ListingType, MarketplaceOrganizationGroup } from '@/types/gear';
+import GearHouseDrawer from './GearHouseDrawer';
+import type { GearMarketplaceListing, GearMarketplaceSearchFilters, ListerType, ListingType, MarketplaceOrganizationGroup, MarketplaceOrganizationEnriched, GearRentalRequest, RentalRequestStatus } from '@/types/gear';
 
 interface MarketplaceViewProps {
   orgId: string;
@@ -70,21 +78,31 @@ export function MarketplaceView({
   // View state
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [groupByOrg, setGroupByOrg] = useState(true); // Default to grouped view
-  const [activeTab, setActiveTab] = useState<'browse' | 'rental_houses' | 'my_listings'>('browse');
+  const [activeTab, setActiveTab] = useState<'browse' | 'rental_houses' | 'my_listings' | 'my_requests'>('browse');
   const [browseMode, setBrowseMode] = useState<'rentals' | 'for_sale'>('rentals');
   const [isAssetPickerOpen, setIsAssetPickerOpen] = useState(false);
   const [isListForSaleOpen, setIsListForSaleOpen] = useState(false);
 
   // Search and filter state
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('');
   const [listerTypeFilter, setListerTypeFilter] = useState<ListerType | ''>('');
   const [priceRange, setPriceRange] = useState<{ min?: number; max?: number }>({});
   const [verifiedOnly, setVerifiedOnly] = useState(false);
+  const [orgFilter, setOrgFilter] = useState<string>('');
   const [dateRange, setDateRange] = useState<{
     available_from?: string;
     available_to?: string;
   }>({});
+  // Pagination for Rental Houses tab
+  const [orgsLimit, setOrgsLimit] = useState(12);
+
+  // Debounce search input (300ms)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   // Dialog state
   const [selectedListing, setSelectedListing] = useState<GearMarketplaceListing | null>(null);
@@ -94,15 +112,18 @@ export function MarketplaceView({
   const [isMessageSellerOpen, setIsMessageSellerOpen] = useState(false);
   const [isReportListingOpen, setIsReportListingOpen] = useState(false);
   const [messageReportListing, setMessageReportListing] = useState<GearMarketplaceListing | null>(null);
+  const [selectedGearHouse, setSelectedGearHouse] = useState<MarketplaceOrganizationEnriched | null>(null);
+  const [isGearHouseDrawerOpen, setIsGearHouseDrawerOpen] = useState(false);
 
   // Build filters
   const filters: GearMarketplaceSearchFilters = {
-    search: searchQuery || undefined,
+    search: debouncedSearch || undefined,
     category_id: categoryFilter || undefined,
     lister_type: listerTypeFilter || undefined,
     min_price: priceRange.min,
     max_price: priceRange.max,
     verified_only: verifiedOnly || undefined,
+    organization_id: orgFilter || undefined,
     // Filter by listing type based on browse mode
     listing_type: browseMode === 'rentals' ? 'rent' : 'sale',
     // Date availability filters
@@ -116,21 +137,17 @@ export function MarketplaceView({
     return Array.from(orgIds);
   }, [quoteItems]);
 
-  // Data fetching - use grouped search when groupByOrg is true
-  const { listings, total: flatTotal, isLoading: flatLoading } = useMarketplaceSearch(filters, { enabled: !groupByOrg });
-  const { organizations: groupedOrgs, total: groupedTotal, isLoading: groupedLoading } = useMarketplaceSearchGrouped(
-    filters,
+  // Single unified search hook — only one query mounts regardless of groupByOrg
+  const { listings, organizations: groupedOrgs, total, isLoading } = useMarketplaceSearch(filters, {
+    groupByOrg,
     cartOrgIds,
-    { enabled: groupByOrg }
-  );
-  const { organizations, isLoading: orgsLoading } = useMarketplaceOrganizations({
+  });
+  const { organizations, total: orgsTotal, isLoading: orgsLoading } = useMarketplaceOrganizations({
     lister_type: listerTypeFilter || undefined,
     verified_only: verifiedOnly || undefined,
+    limit: orgsLimit,
   });
   const { categories } = useGearCategories(orgId);
-
-  const isLoading = groupByOrg ? groupedLoading : flatLoading;
-  const total = groupByOrg ? groupedTotal : flatTotal;
 
   const handleViewListing = (listing: GearMarketplaceListing) => {
     setSelectedListing(listing);
@@ -223,10 +240,19 @@ export function MarketplaceView({
           <Settings className="h-4 w-4" />
           My Listings
         </Button>
+        <Button
+          variant={activeTab === 'my_requests' ? 'default' : 'ghost'}
+          size="sm"
+          onClick={() => setActiveTab('my_requests')}
+          className="gap-2"
+        >
+          <ClipboardList className="h-4 w-4" />
+          My Requests
+        </Button>
       </div>
 
       {/* Search & Filters - Only show for browse/rental_houses tabs */}
-      {activeTab !== 'my_listings' && (
+      {activeTab !== 'my_listings' && activeTab !== 'my_requests' && (
         <div className="space-y-4">
           {/* Browse Mode Toggle - Only show in browse tab */}
           {activeTab === 'browse' && (
@@ -383,8 +409,47 @@ export function MarketplaceView({
                   <List className="h-4 w-4" />
                 </Button>
               </div>
+
+              {/* Clear All Filters */}
+              {(searchQuery || categoryFilter || listerTypeFilter || verifiedOnly || orgFilter || dateRange.available_from || dateRange.available_to || priceRange.min || priceRange.max) && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1.5 border-l border-white/10 pl-3 text-muted-gray hover:text-bone-white"
+                  onClick={() => {
+                    setSearchQuery('');
+                    setDebouncedSearch('');
+                    setCategoryFilter('');
+                    setListerTypeFilter('');
+                    setPriceRange({});
+                    setVerifiedOnly(false);
+                    setOrgFilter('');
+                    setDateRange({});
+                  }}
+                >
+                  <FilterX className="h-4 w-4" />
+                  Clear All
+                </Button>
+              )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Org filter banner — shows when browsing a specific rental house */}
+      {activeTab === 'browse' && orgFilter && (
+        <div className="flex items-center gap-2 rounded-lg border border-accent-yellow/30 bg-accent-yellow/10 px-3 py-2 text-sm text-accent-yellow">
+          <Store className="h-4 w-4 shrink-0" />
+          <span>Showing listings from one rental house</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-auto h-6 px-2 text-accent-yellow hover:bg-accent-yellow/20"
+            onClick={() => setOrgFilter('')}
+          >
+            <X className="h-3 w-3 mr-1" />
+            Clear
+          </Button>
         </div>
       )}
 
@@ -416,8 +481,25 @@ export function MarketplaceView({
       ) : activeTab === 'rental_houses' ? (
         <RentalHousesContent
           organizations={organizations}
-          isLoading={isLoading}
+          isLoading={orgsLoading}
+          total={orgsTotal}
+          onViewOrg={(org) => {
+            const enriched: MarketplaceOrganizationEnriched = {
+              id: org.id,
+              name: org.name,
+              marketplace_name: org.marketplace_name,
+              marketplace_logo_url: org.logo_url,
+              location_display: org.marketplace_location,
+              lister_type: org.lister_type,
+              is_verified: org.is_verified,
+            };
+            setSelectedGearHouse(enriched);
+            setIsGearHouseDrawerOpen(true);
+          }}
+          onLoadMore={() => setOrgsLimit((prev) => prev + 12)}
         />
+      ) : activeTab === 'my_requests' ? (
+        <MyRequestsContent />
       ) : (
         <MyListingsTab
           orgId={orgId}
@@ -441,6 +523,17 @@ export function MarketplaceView({
         isInQuote={selectedListing ? quoteItems.some((item) => item.id === selectedListing.id) : false}
         onMessageSeller={handleMessageSeller}
         onReportListing={handleReportListing}
+        selectedDateRange={dateRange}
+      />
+
+      {/* Gear House Drawer */}
+      <GearHouseDrawer
+        gearHouse={selectedGearHouse}
+        open={isGearHouseDrawerOpen}
+        onOpenChange={setIsGearHouseDrawerOpen}
+        onAddToCart={handleAddToQuote}
+        selectedItems={quoteItems}
+        backlotProjectId={backlotProjectId}
       />
 
       {/* Request Quote Dialog */}
@@ -706,9 +799,12 @@ interface RentalHouse {
 interface RentalHousesContentProps {
   organizations: RentalHouse[];
   isLoading: boolean;
+  total?: number;
+  onViewOrg?: (org: RentalHouse) => void;
+  onLoadMore?: () => void;
 }
 
-function RentalHousesContent({ organizations, isLoading }: RentalHousesContentProps) {
+function RentalHousesContent({ organizations, isLoading, total, onViewOrg, onLoadMore }: RentalHousesContentProps) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -730,11 +826,13 @@ function RentalHousesContent({ organizations, isLoading }: RentalHousesContentPr
   }
 
   return (
+    <div className="space-y-6">
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {organizations.map((org) => (
         <Card
           key={org.id}
           className="cursor-pointer border-white/10 bg-white/5 transition-colors hover:border-white/20"
+          onClick={() => onViewOrg?.(org)}
         >
           <CardHeader className="flex flex-row items-center gap-4">
             <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-white/10">
@@ -784,6 +882,124 @@ function RentalHousesContent({ organizations, isLoading }: RentalHousesContentPr
           </CardContent>
         </Card>
       ))}
+    </div>
+    {/* Load more pagination */}
+    {organizations.length < (total ?? 0) && (
+      <div className="flex justify-center pt-2">
+        <Button variant="outline" size="sm" onClick={onLoadMore}>
+          Load more
+        </Button>
+      </div>
+    )}
+    </div>
+  );
+}
+
+// ============================================================================
+// MY REQUESTS CONTENT
+// ============================================================================
+
+const REQUEST_STATUS_CONFIG: Record<RentalRequestStatus, { label: string; icon: React.ReactNode; className: string }> = {
+  draft:     { label: 'Draft',     icon: <Clock className="h-3 w-3" />,         className: 'bg-white/10 text-muted-gray' },
+  submitted: { label: 'Submitted', icon: <Clock className="h-3 w-3" />,         className: 'bg-blue-500/20 text-blue-400' },
+  quoted:    { label: 'Quoted',    icon: <AlertCircle className="h-3 w-3" />,    className: 'bg-accent-yellow/20 text-accent-yellow' },
+  approved:  { label: 'Approved',  icon: <CheckCircle2 className="h-3 w-3" />,  className: 'bg-green-500/20 text-green-400' },
+  rejected:  { label: 'Rejected',  icon: <XCircle className="h-3 w-3" />,       className: 'bg-primary-red/20 text-primary-red' },
+  cancelled: { label: 'Cancelled', icon: <XCircle className="h-3 w-3" />,       className: 'bg-white/10 text-muted-gray' },
+  converted: { label: 'Converted', icon: <CheckCircle2 className="h-3 w-3" />, className: 'bg-green-500/20 text-green-400' },
+};
+
+function MyRequestsContent() {
+  const [statusFilter, setStatusFilter] = useState<string>('');
+  const { data, isLoading } = useMyRentalRequests(statusFilter ? { status: statusFilter } : undefined);
+  const requests: GearRentalRequest[] = data?.requests ?? [];
+
+  const formatDate = (d: string) =>
+    new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-gray" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Status filter */}
+      <div className="flex items-center gap-3">
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v === 'all' ? '' : v)}>
+          <SelectTrigger className="w-[180px]">
+            <SelectValue placeholder="All Statuses" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Statuses</SelectItem>
+            {(Object.keys(REQUEST_STATUS_CONFIG) as RentalRequestStatus[]).map((s) => (
+              <SelectItem key={s} value={s}>
+                {REQUEST_STATUS_CONFIG[s].label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <span className="text-sm text-muted-gray">{requests.length} request{requests.length !== 1 ? 's' : ''}</span>
+      </div>
+
+      {requests.length === 0 ? (
+        <div className="flex flex-col items-center justify-center rounded-lg border border-white/10 bg-white/5 py-16">
+          <ClipboardList className="mb-4 h-12 w-12 text-muted-gray" />
+          <h3 className="mb-2 text-lg font-medium text-bone-white">No requests yet</h3>
+          <p className="text-sm text-muted-gray">
+            When you submit a rental quote request, it will appear here.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {requests.map((req) => {
+            const cfg = REQUEST_STATUS_CONFIG[req.status] ?? REQUEST_STATUS_CONFIG.submitted;
+            return (
+              <div
+                key={req.id}
+                className="flex items-start gap-4 rounded-lg border border-white/10 bg-white/5 p-4"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium text-bone-white truncate">{req.title}</span>
+                    {req.request_number && (
+                      <span className="text-xs text-muted-gray">#{req.request_number}</span>
+                    )}
+                    <Badge className={cn('flex items-center gap-1 text-xs', cfg.className)}>
+                      {cfg.icon}
+                      {cfg.label}
+                    </Badge>
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-muted-gray">
+                    {req.rental_house_name && (
+                      <span className="flex items-center gap-1">
+                        <Store className="h-3 w-3" />
+                        {req.rental_house_name}
+                      </span>
+                    )}
+                    <span className="flex items-center gap-1">
+                      <Calendar className="h-3 w-3" />
+                      {formatDate(req.rental_start_date)} – {formatDate(req.rental_end_date)}
+                    </span>
+                    {req.item_count !== undefined && (
+                      <span>{req.item_count} item{req.item_count !== 1 ? 's' : ''}</span>
+                    )}
+                    <span>Submitted {formatDate(req.requested_at)}</span>
+                  </div>
+                </div>
+                {req.quote_count !== undefined && req.quote_count > 0 && (
+                  <Badge className="shrink-0 bg-accent-yellow/20 text-accent-yellow border-accent-yellow/30">
+                    {req.quote_count} quote{req.quote_count !== 1 ? 's' : ''}
+                  </Badge>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

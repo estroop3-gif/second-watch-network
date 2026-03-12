@@ -422,10 +422,15 @@ async def update_organization_settings(
     if "work_order_statuses" in params and isinstance(params["work_order_statuses"], list):
         params["work_order_statuses"] = json.dumps(params["work_order_statuses"])
 
+    # Only use allowed fields in INSERT — never trust data.keys() directly (SQL injection risk)
+    safe_fields = [f for f in allowed_fields if f in data]
+    insert_columns = ', '.join(safe_fields)
+    insert_values = ', '.join([f':{f}' for f in safe_fields])
+
     settings = execute_insert(
         f"""
-        INSERT INTO set_house_organization_settings (organization_id, {', '.join(data.keys())})
-        VALUES (:org_id, {', '.join([f':{k}' for k in data.keys()])})
+        INSERT INTO set_house_organization_settings (organization_id, {insert_columns})
+        VALUES (:org_id, {insert_values})
         ON CONFLICT (organization_id) DO UPDATE SET
             {', '.join(updates)}, updated_at = NOW()
         RETURNING *

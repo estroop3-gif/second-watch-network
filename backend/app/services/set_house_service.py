@@ -1079,7 +1079,8 @@ def list_marketplace_listings(
         f"""
         SELECT ml.*, s.name as space_name, s.space_type, s.description,
                s.square_footage, s.features, s.amenities,
-               o.name as organization_name,
+               s.photos as space_photos,
+               o.name as organization_name, o.city, o.state,
                ms.marketplace_name, ms.is_verified,
                (SELECT image_url FROM set_house_space_images si
                 WHERE si.space_id = s.id AND si.is_primary = TRUE

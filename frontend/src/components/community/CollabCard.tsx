@@ -20,7 +20,8 @@ import {
   FileText,
   Film,
   Tv,
-  HelpCircle
+  HelpCircle,
+  UserCheck
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import {
@@ -38,6 +39,10 @@ interface CollabCardProps {
   isOwnCollab?: boolean;
   applicationCount?: number;
 }
+
+// available_for_hire listings are resumes/profiles, not job posts.
+// Applying to them makes no sense — the poster wants to BE hired.
+const isHireable = (type: string) => type === 'available_for_hire';
 
 const collabTypeConfig: Record<string, { label: string; icon: React.ElementType; color: string }> = {
   looking_for_crew: { label: 'Looking for Crew', icon: Users, color: 'bg-blue-600' },
@@ -121,11 +126,17 @@ const CollabCard: React.FC<CollabCardProps> = ({
         </div>
       </div>
 
-      {/* Company Name (if present) */}
-      {collab.company && (
+      {/* Company / Project Name */}
+      {(collab.company || (collab.production_title && !collab.hide_production_info)) && (
         <div className="flex items-center gap-1 text-xs text-muted-gray mb-2">
           <Building2 className="w-3 h-3" />
-          <span>{collab.company}</span>
+          {collab.company && <span>{collab.company}</span>}
+          {collab.company && collab.production_title && !collab.hide_production_info && (
+            <span className="text-muted-gray/50">·</span>
+          )}
+          {collab.production_title && !collab.hide_production_info && (
+            <span className="text-bone-white/70">{collab.production_title}</span>
+          )}
         </div>
       )}
 
@@ -296,6 +307,18 @@ const CollabCard: React.FC<CollabCardProps> = ({
                   {applicationCount}
                 </Badge>
               )}
+            </Button>
+          ) : isHireable(collab.type) ? (
+            // "Available for Hire" = the poster wants to BE hired.
+            // Show "View Profile" instead of "Apply" — direct employers to their profile.
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-green-500/50 text-green-400 hover:bg-green-600 hover:text-white"
+              onClick={() => onViewDetails?.(collab)}
+            >
+              <UserCheck className="w-3 h-3 mr-1" />
+              View Profile
             </Button>
           ) : (
             <Button

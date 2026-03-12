@@ -174,32 +174,17 @@ def generate_request_number(org_id: str) -> str:
 
 
 def generate_quote_number(org_id: str) -> str:
-    """Generate a unique quote number."""
-    result = execute_single(
-        """
-        SELECT COUNT(*) + 1 as num
-        FROM gear_rental_quotes
-        WHERE rental_house_org_id = :org_id
-        """,
-        {"org_id": org_id}
-    )
+    """Generate a globally unique quote number using a DB sequence (race-condition safe)."""
+    result = execute_single("SELECT nextval('gear_quote_number_seq') AS num", {})
     num = result["num"] if result else 1
     return f"Q-{num:05d}"
 
 
 def generate_order_number(org_id: str) -> str:
-    """Generate a unique order number."""
-    result = execute_single(
-        """
-        SELECT COUNT(*) + 1 as num
-        FROM gear_rental_orders
-        WHERE rental_house_org_id = :org_id
-        """,
-        {"org_id": org_id}
-    )
+    """Generate a globally unique order number using a DB sequence (race-condition safe)."""
+    result = execute_single("SELECT nextval('gear_order_number_seq') AS num", {})
     num = result["num"] if result else 1
     return f"RO-{num:05d}"
-
 
 async def validate_item_availability(
     asset_id: str,

@@ -1,8 +1,11 @@
 /**
  * useApplicationMessages - Hook for managing application messages
+ * Fix #1: Replaced polling with Socket.IO real-time events.
  */
+import { useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { useSocket } from '@/hooks/useSocket';
 
 export interface ApplicationMessage {
   id: string;
@@ -37,13 +40,9 @@ interface SendMessageInput {
 export function useApplicationMessages(applicationId: string | null) {
   const queryClient = useQueryClient();
   const queryKey = ['application-messages', applicationId];
+  const { socket } = useSocket();
 
-  const {
-    data,
-    isLoading,
-    error,
-    refetch,
-  } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey,
     queryFn: async () => {
       if (!applicationId) return { messages: [], total: 0, limit: 50, offset: 0 };
@@ -51,8 +50,29 @@ export function useApplicationMessages(applicationId: string | null) {
       return response as MessagesResponse;
     },
     enabled: !!applicationId,
-    refetchInterval: 30000, // Poll every 30 seconds for new messages
+    // No refetchInterval — Socket.IO handles live delivery
   });
+
+  // Real-time: inject incoming message from Socket.IO directly into the cache
+  const handleNewMessage = useCallback(
+    (payload: { application_id: string; message: ApplicationMessage }) => {
+      if (payload.application_id !== applicationId) return;
+      queryClient.setQueryData<MessagesResponse>(queryKey, (old) => {
+        if (!old) return { messages: [payload.message], total: 1, limit: 50, offset: 0 };
+        // Guard against duplicates (the sender gets it via optimistic update already)
+        if (old.messages.some((m) => m.id === payload.message.id)) return old;
+        return { ...old, messages: [...old.messages, payload.message], total: old.total + 1 };
+      });
+      queryClient.invalidateQueries({ queryKey: ['application-unread-count', applicationId] });
+    },
+    [applicationId, queryClient, queryKey],
+  );
+
+  useEffect(() => {
+    if (!socket || !applicationId) return;
+    socket.on('new_application_message', handleNewMessage);
+    return () => { socket.off('new_application_message', handleNewMessage); };
+  }, [socket, applicationId, handleNewMessage]);
 
   const sendMessage = useMutation({
     mutationFn: async (input: SendMessageInput) => {
@@ -61,14 +81,10 @@ export function useApplicationMessages(applicationId: string | null) {
       return response as ApplicationMessage;
     },
     onSuccess: (newMessage) => {
-      // Optimistically add the new message to the cache
       queryClient.setQueryData<MessagesResponse>(queryKey, (old) => {
         if (!old) return { messages: [newMessage], total: 1, limit: 50, offset: 0 };
-        return {
-          ...old,
-          messages: [...old.messages, newMessage],
-          total: old.total + 1,
-        };
+        if (old.messages.some((m) => m.id === newMessage.id)) return old;
+        return { ...old, messages: [...old.messages, newMessage], total: old.total + 1 };
       });
     },
   });
@@ -79,39 +95,42 @@ export function useApplicationMessages(applicationId: string | null) {
       await api.put(`/community/collab-applications/${applicationId}/messages/mark-read`);
     },
     onSuccess: () => {
-      // Update the cache to mark all messages as read
       queryClient.setQueryData<MessagesResponse>(queryKey, (old) => {
         if (!old) return old;
-        return {
-          ...old,
-          messages: old.messages.map((msg) => ({ ...msg, is_read: true })),
-        };
+        return { ...old, messages: old.messages.map((msg) => ({ ...msg, is_read: true })) };
       });
-      // Also invalidate unread count
       queryClient.invalidateQueries({ queryKey: ['application-unread-count', applicationId] });
     },
   });
 
-  return {
-    messages: data?.messages || [],
-    total: data?.total || 0,
-    isLoading,
-    error,
-    refetch,
-    sendMessage,
-    markAsRead,
-  };
+  return { messages: data?.messages || [], total: data?.total || 0, isLoading, error, refetch, sendMessage, markAsRead };
 }
 
 export function useApplicationUnreadCount(applicationId: string | null) {
+  const { socket } = useSocket();
+  const queryClient = useQueryClient();
+  const queryKey = ['application-unread-count', applicationId];
+
+  // Invalidate unread count whenever a socket message arrives for this application
+  useEffect(() => {
+    if (!socket || !applicationId) return;
+    const handler = (payload: { application_id: string }) => {
+      if (payload.application_id === applicationId) {
+        queryClient.invalidateQueries({ queryKey });
+      }
+    };
+    socket.on('new_application_message', handler);
+    return () => { socket.off('new_application_message', handler); };
+  }, [socket, applicationId, queryClient, queryKey]);
+
   return useQuery({
-    queryKey: ['application-unread-count', applicationId],
+    queryKey,
     queryFn: async () => {
       if (!applicationId) return { unread_count: 0 };
       const response = await api.get(`/community/collab-applications/${applicationId}/messages/unread-count`);
       return response as { unread_count: number };
     },
     enabled: !!applicationId,
-    refetchInterval: 60000, // Poll every minute
+    // No refetchInterval — socket triggers invalidation instead
   });
 }

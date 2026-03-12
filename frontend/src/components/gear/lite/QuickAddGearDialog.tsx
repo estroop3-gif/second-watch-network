@@ -52,6 +52,7 @@ interface QuickAddGearDialogProps {
   onClose: () => void;
   onSuccess?: () => void;
   editAsset?: PersonalGearAsset | null;
+  defaultListingType?: ListingType;
 }
 
 // Common gear categories for lite users
@@ -86,6 +87,7 @@ export function QuickAddGearDialog({
   onClose,
   onSuccess,
   editAsset,
+  defaultListingType,
 }: QuickAddGearDialogProps) {
   // Edit mode detection
   const isEditMode = !!editAsset;
@@ -103,7 +105,7 @@ export function QuickAddGearDialog({
   const [photos, setPhotos] = useState<string[]>([]);
 
   // Form state - Step 3: Pricing
-  const [listingType, setListingType] = useState<ListingType>('rent');
+  const [listingType, setListingType] = useState<ListingType>(defaultListingType ?? 'rent');
   const [dailyRate, setDailyRate] = useState('');
   const [weeklyRate, setWeeklyRate] = useState('');
   const [salePrice, setSalePrice] = useState('');
@@ -140,7 +142,7 @@ export function QuickAddGearDialog({
       setManufacturer('');
       setModel('');
       setPhotos([]);
-      setListingType('rent');
+      setListingType(defaultListingType ?? 'rent');
       setDailyRate('');
       setWeeklyRate('');
       setSalePrice('');
@@ -182,7 +184,7 @@ export function QuickAddGearDialog({
     try {
       const input: QuickAddAssetInput = {
         name,
-        category_id: category || undefined,
+        category_id: undefined, // gear_categories is org-scoped; not applicable for personal gear
         manufacturer: manufacturer || undefined,
         model: model || undefined,
         photos,

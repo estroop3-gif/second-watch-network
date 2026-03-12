@@ -128,16 +128,18 @@ export interface CommunityThread {
   topic_id: string;
   user_id: string;
   title: string;
-  body: string;
+  content: string;
   is_pinned: boolean;
   is_locked: boolean;
   reply_count: number;
+  view_count: number;
+  last_reply_at: string | null;
   last_activity_at: string;
   created_at: string;
   updated_at: string;
   // Joined data
   topic?: CommunityTopic;
-  profile?: {
+  author?: {
     username: string | null;
     full_name: string | null;
     display_name: string | null;
@@ -152,11 +154,12 @@ export interface CommunityReply {
   id: string;
   thread_id: string;
   user_id: string;
-  body: string;
+  content: string;
+  parent_reply_id?: string | null;
   created_at: string;
   updated_at: string;
   // Joined profile data
-  profile?: {
+  author?: {
     username: string | null;
     full_name: string | null;
     display_name: string | null;

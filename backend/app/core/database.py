@@ -164,6 +164,17 @@ def execute_insert(query: str, params: dict = None) -> dict:
         return _convert_row(dict(row._mapping)) if row else None
 
 
+def execute_autocommit(query: str, params: dict = None) -> None:
+    """
+    Execute a statement that cannot run inside a transaction block.
+    Examples: REFRESH MATERIALIZED VIEW CONCURRENTLY, CREATE INDEX CONCURRENTLY.
+    Uses AUTOCOMMIT isolation so no transaction is opened.
+    """
+    engine = _get_engine()
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.execute(text(query), params or {})
+
+
 def execute_update(query: str, params: dict = None) -> int:
     """
     Execute an UPDATE query and return the number of affected rows.

@@ -3,7 +3,7 @@
  * Embedded marketplace browser for the Community page with location-based search
  * Supports toggling between Gear House and Set House listings
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   Search,
   Filter,
@@ -54,14 +54,19 @@ import type {
 } from '@/types/gear';
 
 // Set House imports
-import { useSetHouses } from '@/hooks/set-house/useSetHouseMarketplace';
-import { SetHouseCard, SetHouseListItem } from '@/components/set-house/marketplace';
-import type { MarketplaceOrganizationEnriched as SetHouseMarketplaceOrganizationEnriched } from '@/types/set-house';
+import {
+  useSetHouseMarketplaceSearch,
+  useSetHouseMarketplaceNearbySearch,
+} from '@/hooks/set-house/useSetHouseMarketplace';
+import { SetHouseListingCard } from '@/components/set-house/marketplace';
 
 import { useAuth } from '@/context/AuthContext';
 import { useNavigate } from 'react-router-dom';
+import { QuickAddGearDialog } from '@/components/gear/lite/QuickAddGearDialog';
+import { QuickAddSpaceDialog } from '@/components/gear/lite/QuickAddSpaceDialog';
 
 type RentalType = 'gear' | 'sets';
+type SearchMode = 'all' | 'nearby';
 
 const CommunityMarketplaceTab: React.FC = () => {
   const { user } = useAuth();
@@ -70,7 +75,10 @@ const CommunityMarketplaceTab: React.FC = () => {
   // Rental type toggle (gear vs sets)
   const [rentalType, setRentalType] = useState<RentalType>('gear');
 
-  // Location and preferences from community hook
+  // Search mode — default to "all" so listings appear immediately without location
+  const [searchMode, setSearchMode] = useState<SearchMode>('all');
+
+  // Location and preferences from community hook (called unconditionally per hooks rules)
   const {
     currentLocation,
     profileLocation,
@@ -91,28 +99,25 @@ const CommunityMarketplaceTab: React.FC = () => {
   const [listerTypeFilter, setListerTypeFilter] = useState<ListerType | ''>('');
   const [verifiedOnly, setVerifiedOnly] = useState(false);
 
+  // List Gear modal
+  const [showListGearDialog, setShowListGearDialog] = useState(false);
+  const [showListSpaceDialog, setShowListSpaceDialog] = useState(false);
+
   // Dialog state
   const [selectedListing, setSelectedListing] = useState<GearMarketplaceListing | null>(null);
-  const [selectedGearHouse, setSelectedGearHouse] = useState<MarketplaceOrganizationEnriched | null>(null);
+  const [selectedGearHouse, setSelectedGearHouse] = useState<GearMarketplaceOrganizationEnriched | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [isQuoteDialogOpen, setIsQuoteDialogOpen] = useState(false);
   const [quoteItems, setQuoteItems] = useState<GearMarketplaceListing[]>([]);
 
-  // Initialize location on mount
-  useEffect(() => {
-    if (!currentLocation) {
-      initializeLocation();
-    }
-  }, []);
-
-  // Location-based search (when location is available)
+  // Location-based search — only active in 'nearby' mode with a valid location
   const nearbySearch = useMarketplaceNearbySearch(
-    currentLocation
+    searchMode === 'nearby' && currentLocation
       ? {
           lat: currentLocation.latitude,
           lng: currentLocation.longitude,
           radius_miles: radiusMiles,
-          result_mode: 'gear_houses', // Show gear houses for rentals
+          result_mode: 'gear_houses',
           q: searchQuery || undefined,
           lister_type: listerTypeFilter || undefined,
           verified_only: verifiedOnly || undefined,
@@ -120,33 +125,53 @@ const CommunityMarketplaceTab: React.FC = () => {
       : null
   );
 
-  // Fallback search when no location
-  const fallbackFilters: GearMarketplaceSearchFilters = {
-    search: searchQuery || undefined,
-    listing_type: 'rent',
-    lister_type: listerTypeFilter || undefined,
-    verified_only: verifiedOnly || undefined,
-  };
-  const fallbackSearch = useMarketplaceSearch(fallbackFilters, { enabled: !currentLocation });
+  // All-listings search — only active in 'all' mode
+  const allSearch = useMarketplaceSearch(
+    {
+      search: searchQuery || undefined,
+      listing_type: 'rent',
+      lister_type: listerTypeFilter || undefined,
+      verified_only: verifiedOnly || undefined,
+    },
+    { enabled: searchMode === 'all' }
+  );
 
-  // Use nearby results when we have location, otherwise fallback
   const gearHouses = nearbySearch.gearHouses;
-  const listings = fallbackSearch.listings;
-  const gearTotal = currentLocation ? nearbySearch.total : fallbackSearch.total;
-  const isGearLoading = currentLocation ? nearbySearch.isLoading : fallbackSearch.isLoading;
+  const listings = allSearch.listings;
+  const gearTotal = searchMode === 'all' ? allSearch.total : nearbySearch.total;
+  const isGearLoading = searchMode === 'all' ? allSearch.isLoading : nearbySearch.isLoading;
 
-  // Set House search (uses search query and verified filter)
-  const setHouseSearch = useSetHouses({
+  // Set Marketplace — individual space listings
+  const setAllSearch = useSetHouseMarketplaceSearch({
     search: searchQuery || undefined,
-    isVerified: verifiedOnly || undefined,
+    limit: 30,
   });
-  const setHouses = setHouseSearch.setHouses || [];
-  const setHouseTotal = setHouseSearch.total || 0;
-  const isSetHouseLoading = setHouseSearch.isLoading;
+
+  const setNearbySearch = useSetHouseMarketplaceNearbySearch({
+    lat: currentLocation?.latitude ?? 0,
+    lng: currentLocation?.longitude ?? 0,
+    limit: 30,
+  });
+
+  const setListings =
+    searchMode === 'nearby'
+      ? (setNearbySearch.data?.listings ?? [])
+      : (setAllSearch.data?.listings ?? []);
+
+  const isSetHouseLoading =
+    searchMode === 'nearby' ? setNearbySearch.isLoading : setAllSearch.isLoading;
 
   // Unified loading and data based on rental type
   const isLoading = rentalType === 'gear' ? isGearLoading : isSetHouseLoading;
-  const total = rentalType === 'gear' ? gearTotal : setHouseTotal;
+  const total = rentalType === 'gear' ? gearTotal : setListings.length;
+
+  // Handle "Near Me" click — trigger location detection only on explicit request
+  const handleNearMeClick = async () => {
+    setSearchMode('nearby');
+    if (!currentLocation) {
+      await initializeLocation();
+    }
+  };
 
   // Handle view mode change
   const handleViewModeChange = (mode: ViewMode) => {
@@ -191,18 +216,15 @@ const CommunityMarketplaceTab: React.FC = () => {
   };
 
   const handleListYourGear = () => {
-    // Navigate to My Gear (lite) for simplified listing flow
-    navigate('/my-gear');
+    setShowListGearDialog(true);
+  };
+
+  const handleListYourSpace = () => {
+    setShowListSpaceDialog(true);
   };
 
   const handleViewGearHouse = (gearHouse: GearMarketplaceOrganizationEnriched) => {
-    // Navigate to gear house profile
     navigate(`/community/gear-house/${gearHouse.id}`);
-  };
-
-  const handleViewSetHouse = (setHouse: SetHouseMarketplaceOrganizationEnriched) => {
-    // Navigate to set house profile
-    navigate(`/community/set-house/${setHouse.id}`);
   };
 
   return (
@@ -245,7 +267,7 @@ const CommunityMarketplaceTab: React.FC = () => {
               )}
             >
               <Building2 className="h-4 w-4" />
-              Spaces
+              Set Marketplace
             </Button>
           </div>
         </div>
@@ -256,24 +278,32 @@ const CommunityMarketplaceTab: React.FC = () => {
               Request Quote ({quoteItems.length})
             </Button>
           )}
-          {user && (
+          {user && rentalType === 'gear' && (
             <Button onClick={handleListYourGear} variant="outline" className="gap-2">
               <Plus className="h-4 w-4" />
               List Your Gear
             </Button>
           )}
+          {user && rentalType === 'sets' && (
+            <Button onClick={handleListYourSpace} variant="outline" className="gap-2">
+              <Plus className="h-4 w-4" />
+              List Your Space
+            </Button>
+          )}
         </div>
       </div>
 
-      {/* Location Bar */}
-      <MarketplaceLocationBar
-        currentLocation={currentLocation}
-        radiusMiles={radiusMiles}
-        onRadiusChange={handleRadiusChange}
-        onRequestBrowserLocation={requestBrowserLocation}
-        onSetManualLocation={setManualLocation}
-        isUpdating={isUpdating}
-      />
+      {/* Location Bar — only visible in nearby mode */}
+      {searchMode === 'nearby' && (
+        <MarketplaceLocationBar
+          currentLocation={currentLocation}
+          radiusMiles={radiusMiles}
+          onRadiusChange={handleRadiusChange}
+          onRequestBrowserLocation={requestBrowserLocation}
+          onSetManualLocation={setManualLocation}
+          isUpdating={isUpdating}
+        />
+      )}
 
       {/* Search & Filters */}
       <div className="flex flex-col gap-4 rounded-lg border border-white/10 bg-white/5 p-4 lg:flex-row lg:items-center">
@@ -288,6 +318,33 @@ const CommunityMarketplaceTab: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {/* All / Near Me toggle */}
+          <div className="flex items-center gap-1 bg-white/5 rounded-lg p-0.5">
+            <button
+              className={cn(
+                'px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
+                searchMode === 'all'
+                  ? 'bg-white/15 text-bone-white'
+                  : 'text-muted-gray hover:text-bone-white'
+              )}
+              onClick={() => setSearchMode('all')}
+            >
+              All
+            </button>
+            <button
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
+                searchMode === 'nearby'
+                  ? 'bg-white/15 text-bone-white'
+                  : 'text-muted-gray hover:text-bone-white'
+              )}
+              onClick={handleNearMeClick}
+            >
+              <MapPin className="w-3 h-3" />
+              Near Me
+            </button>
+          </div>
+
           <Select
             value={listerTypeFilter}
             onValueChange={(value) => setListerTypeFilter(value === 'all' ? '' : value as ListerType)}
@@ -313,45 +370,112 @@ const CommunityMarketplaceTab: React.FC = () => {
             Verified Only
           </Button>
 
-          <div className="flex items-center gap-1 border-l border-white/10 pl-2">
-            <Button
-              variant={viewMode === 'map' ? 'default' : 'ghost'}
-              size="icon"
-              onClick={() => handleViewModeChange('map')}
-              title="Map view"
-            >
-              <Map className="h-4 w-4" />
-            </Button>
-            <Button
-              variant={viewMode === 'grid' ? 'default' : 'ghost'}
-              size="icon"
-              onClick={() => handleViewModeChange('grid')}
-              title="Grid view"
-            >
-              <Grid className="h-4 w-4" />
-            </Button>
-            <Button
-              variant={viewMode === 'list' ? 'default' : 'ghost'}
-              size="icon"
-              onClick={() => handleViewModeChange('list')}
-              title="List view"
-            >
-              <List className="h-4 w-4" />
-            </Button>
-          </div>
+          {/* Map/grid/list toggles — only in nearby mode */}
+          {searchMode === 'nearby' && (
+            <div className="flex items-center gap-1 border-l border-white/10 pl-2">
+              <Button
+                variant={viewMode === 'map' ? 'default' : 'ghost'}
+                size="icon"
+                onClick={() => handleViewModeChange('map')}
+                title="Map view"
+              >
+                <Map className="h-4 w-4" />
+              </Button>
+              <Button
+                variant={viewMode === 'grid' ? 'default' : 'ghost'}
+                size="icon"
+                onClick={() => handleViewModeChange('grid')}
+                title="Grid view"
+              >
+                <Grid className="h-4 w-4" />
+              </Button>
+              <Button
+                variant={viewMode === 'list' ? 'default' : 'ghost'}
+                size="icon"
+                onClick={() => handleViewModeChange('list')}
+                title="List view"
+              >
+                <List className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
+
+          {/* Grid/list toggles in all mode (no map) */}
+          {searchMode === 'all' && (
+            <div className="flex items-center gap-1 border-l border-white/10 pl-2">
+              <Button
+                variant={viewMode === 'grid' ? 'default' : 'ghost'}
+                size="icon"
+                onClick={() => handleViewModeChange('grid')}
+                title="Grid view"
+              >
+                <Grid className="h-4 w-4" />
+              </Button>
+              <Button
+                variant={viewMode === 'list' ? 'default' : 'ghost'}
+                size="icon"
+                onClick={() => handleViewModeChange('list')}
+                title="List view"
+              >
+                <List className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
         </div>
       </div>
 
       {/* Content */}
-      {isLoading ? (
+      {isLoading && rentalType === 'sets' ? (
+        // Skeleton grid for Set Houses
+        <div className="space-y-4">
+          <div className="h-4 w-32 rounded bg-white/10 animate-pulse" />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div key={i} className="rounded-lg border border-white/10 bg-white/5 p-4 space-y-3 animate-pulse">
+                <div className="flex items-start gap-3">
+                  <div className="h-12 w-12 rounded-lg bg-white/10" />
+                  <div className="flex-1 space-y-2">
+                    <div className="h-4 w-3/4 rounded bg-white/10" />
+                    <div className="h-3 w-1/2 rounded bg-white/10" />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <div className="h-5 w-16 rounded-full bg-white/10" />
+                  <div className="h-5 w-20 rounded-full bg-white/10" />
+                </div>
+                <div className="h-3 w-full rounded bg-white/10" />
+                <div className="flex items-center justify-between pt-3 border-t border-white/10">
+                  <div className="h-3 w-24 rounded bg-white/10" />
+                  <div className="h-3 w-16 rounded bg-white/10" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : isLoading ? (
         <div className="flex items-center justify-center py-12">
           <Loader2 className="h-8 w-8 animate-spin text-muted-gray" />
         </div>
       ) : rentalType === 'gear' ? (
-        // Gear House Content
+        // Gear Content
         <>
-          {viewMode === 'map' && currentLocation ? (
-            // Map View
+          {searchMode === 'nearby' && !currentLocation ? (
+            // Detecting location state
+            <div className="flex flex-col items-center justify-center rounded-lg border border-white/10 bg-white/5 py-16">
+              <Loader2 className="mb-4 h-8 w-8 animate-spin text-muted-gray" />
+              <p className="text-sm text-muted-gray">Detecting your location…</p>
+              <p className="text-xs text-muted-gray mt-1">
+                Or{' '}
+                <button
+                  className="underline hover:text-bone-white transition-colors"
+                  onClick={() => setManualLocation({ latitude: 0, longitude: 0, display_name: '' })}
+                >
+                  enter a location manually
+                </button>
+              </p>
+            </div>
+          ) : searchMode === 'nearby' && viewMode === 'map' && currentLocation ? (
+            // Map View (nearby mode only)
             <div className="h-[500px]">
               <MarketplaceMapView
                 gearHouses={gearHouses}
@@ -360,7 +484,7 @@ const CommunityMarketplaceTab: React.FC = () => {
                 onViewGearHouse={handleViewGearHouse}
               />
             </div>
-          ) : currentLocation && gearHouses.length === 0 ? (
+          ) : searchMode === 'nearby' && gearHouses.length === 0 ? (
             <div className="flex flex-col items-center justify-center rounded-lg border border-white/10 bg-white/5 py-16">
               <Package className="mb-4 h-12 w-12 text-muted-gray" />
               <h3 className="mb-2 text-lg font-medium text-bone-white">No gear houses found nearby</h3>
@@ -374,8 +498,8 @@ const CommunityMarketplaceTab: React.FC = () => {
                 </Button>
               )}
             </div>
-          ) : currentLocation ? (
-            // Grid/List View with Gear Houses (location-based)
+          ) : searchMode === 'nearby' ? (
+            // Grid/List View with Gear Houses (nearby mode)
             <div className="space-y-4">
               <p className="text-sm text-muted-gray">
                 Showing {gearHouses.length} gear house{gearHouses.length !== 1 ? 's' : ''} within {radiusMiles} miles
@@ -399,11 +523,12 @@ const CommunityMarketplaceTab: React.FC = () => {
               </div>
             </div>
           ) : listings.length === 0 ? (
+            // All mode — no results
             <div className="flex flex-col items-center justify-center rounded-lg border border-white/10 bg-white/5 py-16">
               <Package className="mb-4 h-12 w-12 text-muted-gray" />
               <h3 className="mb-2 text-lg font-medium text-bone-white">No rentals found</h3>
               <p className="text-sm text-muted-gray mb-4">
-                Set your location to find gear houses near you, or try adjusting your search filters.
+                Try adjusting your search filters or check back later for new listings.
               </p>
               {user && (
                 <Button onClick={handleListYourGear} variant="outline" className="gap-2">
@@ -413,7 +538,7 @@ const CommunityMarketplaceTab: React.FC = () => {
               )}
             </div>
           ) : (
-            // Fallback to listings when no location (legacy behavior)
+            // All mode — listing grid
             <div className="space-y-4">
               <p className="text-sm text-muted-gray">
                 Showing {listings.length} of {total} rentals
@@ -440,28 +565,30 @@ const CommunityMarketplaceTab: React.FC = () => {
           )}
         </>
       ) : (
-        // Set House Content
+        // Set House Content — individual space listing cards
         <>
-          {setHouses.length === 0 ? (
+          {setListings.length === 0 ? (
             <div className="flex flex-col items-center justify-center rounded-lg border border-white/10 bg-white/5 py-16">
               <Building2 className="mb-4 h-12 w-12 text-muted-gray" />
-              <h3 className="mb-2 text-lg font-medium text-bone-white">No set houses found</h3>
+              <h3 className="mb-2 text-lg font-medium text-bone-white">No spaces listed yet</h3>
               <p className="text-sm text-muted-gray mb-4">
-                Try adjusting your search filters or check back later for new listings.
+                {searchMode === 'nearby'
+                  ? 'No spaces found near you. Try expanding your search or browse all spaces.'
+                  : 'Be the first to list a space on the Set Marketplace.'}
               </p>
               {user && (
-                <Button onClick={() => navigate('/set-house')} variant="outline" className="gap-2">
+                <Button onClick={handleListYourSpace} variant="outline" className="gap-2">
                   <Plus className="h-4 w-4" />
-                  List your space
+                  List Your Space
                 </Button>
               )}
             </div>
           ) : (
             <div className="space-y-4">
               <p className="text-sm text-muted-gray">
-                Showing {setHouses.length} set house{setHouses.length !== 1 ? 's' : ''}
+                Showing {setListings.length} space{setListings.length !== 1 ? 's' : ''}
+                {searchMode === 'nearby' ? ' nearby' : ' on the Set Marketplace'}
               </p>
-
               <div
                 className={cn(
                   viewMode === 'grid'
@@ -469,21 +596,14 @@ const CommunityMarketplaceTab: React.FC = () => {
                     : 'flex flex-col gap-3'
                 )}
               >
-                {setHouses.map((setHouse) =>
-                  viewMode === 'list' ? (
-                    <SetHouseListItem
-                      key={setHouse.id}
-                      setHouse={setHouse}
-                      onViewSpaces={() => handleViewSetHouse(setHouse)}
-                    />
-                  ) : (
-                    <SetHouseCard
-                      key={setHouse.id}
-                      setHouse={setHouse}
-                      onViewSpaces={() => handleViewSetHouse(setHouse)}
-                    />
-                  )
-                )}
+                {setListings.map((listing) => (
+                  <SetHouseListingCard
+                    key={listing.id}
+                    listing={listing as any}
+                    viewMode={viewMode === 'map' ? 'grid' : viewMode}
+                    onView={() => navigate(`/set-house/listing/${listing.id}`)}
+                  />
+                ))}
               </div>
             </div>
           )}
@@ -511,6 +631,23 @@ const CommunityMarketplaceTab: React.FC = () => {
         items={quoteItems}
         onRemoveItem={handleRemoveFromQuote}
         onSubmitted={handleQuoteSubmitted}
+      />
+
+      {/* List Gear Dialog */}
+      <QuickAddGearDialog
+        open={showListGearDialog}
+        onClose={() => setShowListGearDialog(false)}
+        onSuccess={() => {
+          setShowListGearDialog(false);
+          // allSearch auto-refreshes via ['marketplace-search'] invalidation in useQuickAddAsset
+        }}
+      />
+
+      {/* List Space Dialog */}
+      <QuickAddSpaceDialog
+        open={showListSpaceDialog}
+        onClose={() => setShowListSpaceDialog(false)}
+        onSuccess={() => setShowListSpaceDialog(false)}
       />
     </div>
   );

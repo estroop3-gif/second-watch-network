@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
+import { DebugPanel } from "@/components/debug/DebugPanel";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
@@ -252,10 +253,12 @@ const AsyncVerificationPage = React.lazy(() =>
   import("./pages/gear/AsyncVerificationPage").then(m => ({ default: m.AsyncVerificationPage }))
 );
 const MyGearLite = React.lazy(() => import("./pages/MyGearLite"));
+const GearListingDetailPage = React.lazy(() => import("./pages/gear/GearListingDetailPage"));
 
 // Set House Pages
 const SetHousePage = React.lazy(() => import("./pages/set-house/SetHousePage"));
 const SetHouseWorkspacePage = React.lazy(() => import("./pages/set-house/SetHouseWorkspacePage"));
+const SetHouseListingDetailPage = React.lazy(() => import("./pages/set-house/SetHouseListingDetailPage"));
 
 // Watch/Streaming Pages
 const WatchHome = React.lazy(() => import("./pages/watch/WatchHome"));
@@ -328,6 +331,7 @@ const App = () => (
                   <TooltipProvider>
             <Toaster />
             <Sonner />
+            {import.meta.env.DEV && <DebugPanel />}
             <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
               <ScrollToTop />
               <Suspense fallback={<LoadingSpinner />}>
@@ -449,11 +453,11 @@ const App = () => (
                     <Route path="/notifications" element={<Notifications />} />
                     <Route path="/connections" element={<Connections />} />
                     <Route path="/my-applications" element={<MyApplications />} />
-                    <Route path="/my-job-posts" element={<MyJobPosts />} />
+                    <Route path="/my-posts" element={<MyJobPosts />} />
                     <Route path="/applications-received" element={<ApplicationsReceived />} />
                     <Route path="/messages" element={<Messages />} />
                     <Route path="/my-profile" element={<MyProfile />} />
-                    <Route path="/filmmakers" element={<ProfileRequiredGate><Filmmakers /></ProfileRequiredGate>} />
+                    <Route path="/filmmakers" element={<Suspense fallback={<LoadingSpinner />}><ProfileRequiredGate><Filmmakers /></ProfileRequiredGate></Suspense>} />
                     <Route path="/the-backlot" element={<TheBacklot />} />
                     <Route path="/the-backlot/threads/:threadId" element={<ThreadPage />} />
 
@@ -505,8 +509,12 @@ const App = () => (
                     {/* Set House Routes - restricted to non-free users */}
                     <Route element={<PermissionRoute requiredRoles={['filmmaker', 'admin', 'superadmin', 'moderator', 'partner', 'order_member', 'premium', 'sales_rep']} redirectTo="/dashboard" />}>
                       <Route path="/set-house" element={<SetHousePage />} />
+                      <Route path="/set-house/listing/:listingId" element={<SetHouseListingDetailPage />} />
                       <Route path="/set-house/:orgId" element={<SetHouseWorkspacePage />} />
                     </Route>
+
+                    {/* Gear Listing Detail - public sale listing detail page */}
+                    <Route path="/gear/listing/:listingId" element={<GearListingDetailPage />} />
 
                     {/* My Gear (Lite) - accessible to all authenticated users */}
                     <Route path="/my-gear" element={<MyGearLite />} />

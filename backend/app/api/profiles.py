@@ -402,6 +402,15 @@ async def get_filmmaker_profile_by_username(username: str):
             "is_order_member, show_order_membership, status_message"
         ).eq("username", username).execute()
 
+        # Fallback: if no match by username, try treating it as a profile UUID
+        if not profile_result.data:
+            import re
+            if re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', username, re.I):
+                profile_result = client.table("profiles").select(
+                    "id, username, email, avatar_url, full_name, display_name, location_visible, "
+                    "is_order_member, show_order_membership, status_message"
+                ).eq("id", username).execute()
+
         if not profile_result.data:
             raise HTTPException(status_code=404, detail="Profile not found")
 
@@ -413,10 +422,8 @@ async def get_filmmaker_profile_by_username(username: str):
             "user_id", user_id
         ).execute()
 
-        if not filmmaker_result.data:
-            raise HTTPException(status_code=404, detail="Filmmaker profile not found")
-
-        filmmaker = filmmaker_result.data[0]
+        # Use empty dict if no filmmaker profile — still show basic profile info
+        filmmaker = filmmaker_result.data[0] if filmmaker_result.data else {}
 
         # Get credits (separate queries — nested joins not supported)
         # Only show approved credits on public profile

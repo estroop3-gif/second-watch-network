@@ -1112,13 +1112,13 @@ class APIClient {
     })
   }
 
-  async listConnections(userId: string, params?: { status?: string; skip?: number; limit?: number }) {
-    const query = new URLSearchParams({ user_id: userId })
+  async listConnections(params?: { status?: string; skip?: number; limit?: number }) {
+    const query = new URLSearchParams()
     if (params?.status) query.append('status', params.status)
     if (params?.skip !== undefined) query.append('skip', params.skip.toString())
     if (params?.limit !== undefined) query.append('limit', params.limit.toString())
-    
-    return this.request<any[]>(`/api/v1/connections/?${query}`)
+    const qs = query.toString()
+    return this.request<any[]>(`/api/v1/connections/${qs ? `?${qs}` : ''}`)
   }
 
   async updateConnection(connectionId: string, status: string) {
@@ -1134,8 +1134,8 @@ class APIClient {
     })
   }
 
-  async getConnectionRelationship(peerId: string, userId: string) {
-    return this.request<any>(`/api/v1/connections/relationship/${peerId}?user_id=${userId}`)
+  async getConnectionRelationship(peerId: string) {
+    return this.request<any>(`/api/v1/connections/relationship/${peerId}`)
   }
 
   async searchUsers(query: string, limit: number = 10) {
@@ -1868,11 +1868,14 @@ class APIClient {
   }
 
   // Community Threads
-  async listCommunityThreads(params?: { topicId?: string; userId?: string; limit?: number }) {
+  async listCommunityThreads(params?: { topicId?: string; userId?: string; limit?: number; offset?: number; sortBy?: string; search?: string }) {
     const searchParams = new URLSearchParams()
     if (params?.topicId) searchParams.append('topic_id', params.topicId)
     if (params?.userId) searchParams.append('user_id', params.userId)
     if (params?.limit) searchParams.append('limit', params.limit.toString())
+    if (params?.offset) searchParams.append('offset', params.offset.toString())
+    if (params?.sortBy) searchParams.append('sort_by', params.sortBy)
+    if (params?.search) searchParams.append('search', params.search)
 
     return this.request<any[]>(`/api/v1/community/threads?${searchParams}`)
   }
@@ -1934,6 +1937,7 @@ class APIClient {
     orderOnly?: boolean;
     userId?: string;
     limit?: number;
+    cursor?: string;
   }) {
     const searchParams = new URLSearchParams()
     if (params?.type && params.type !== 'all') searchParams.append('type', params.type)
@@ -1944,8 +1948,9 @@ class APIClient {
     if (params?.orderOnly) searchParams.append('order_only', 'true')
     if (params?.userId) searchParams.append('user_id', params.userId)
     if (params?.limit) searchParams.append('limit', params.limit.toString())
+    if (params?.cursor) searchParams.append('cursor', params.cursor)
 
-    return this.request<any[]>(`/api/v1/community/collabs?${searchParams}`)
+    return this.request<{ collabs: any[]; total: number; next_cursor: string | null }>(`/api/v1/community/collabs?${searchParams}`)
   }
 
   async getCollab(collabId: string) {

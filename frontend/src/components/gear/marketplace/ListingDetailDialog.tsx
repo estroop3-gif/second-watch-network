@@ -10,6 +10,7 @@ import {
   Store,
   MapPin,
   Calendar,
+  CalendarRange,
   Shield,
   DollarSign,
   Plus,
@@ -22,6 +23,7 @@ import {
   MessageSquare,
   Flag,
 } from 'lucide-react';
+import { parseLocalDate } from '@/lib/dateUtils';
 
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -45,6 +47,8 @@ interface ListingDetailDialogProps {
   isInQuote: boolean;
   onMessageSeller?: (listing: GearMarketplaceListing) => void;
   onReportListing?: (listing: GearMarketplaceListing) => void;
+  /** Dates already selected in the search filter bar — shown as an availability preview */
+  selectedDateRange?: { available_from?: string; available_to?: string };
 }
 
 export function ListingDetailDialog({
@@ -56,6 +60,7 @@ export function ListingDetailDialog({
   isInQuote,
   onMessageSeller,
   onReportListing,
+  selectedDateRange,
 }: ListingDetailDialogProps) {
   const [activeImageIndex, setActiveImageIndex] = useState(0);
 
@@ -323,6 +328,44 @@ export function ListingDetailDialog({
             ) : (
               /* RENTAL LISTING UI */
               <>
+                {/* Date range availability preview */}
+                {(selectedDateRange?.available_from || selectedDateRange?.available_to) && (() => {
+                  const fromStr = selectedDateRange.available_from;
+                  const toStr = selectedDateRange.available_to;
+                  const fromDate = fromStr ? parseLocalDate(fromStr) : null;
+                  const toDate = toStr ? parseLocalDate(toStr) : null;
+                  const days =
+                    fromDate && toDate
+                      ? Math.max(1, Math.ceil((toDate.getTime() - fromDate.getTime()) / 86400000) + 1)
+                      : null;
+                  const estCost = days && listing.daily_rate ? days * listing.daily_rate : null;
+                  const fmt = (d: Date) =>
+                    d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                  return (
+                    <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
+                      <div className="flex items-center gap-2 text-sm">
+                        <CalendarRange className="h-4 w-4 shrink-0 text-blue-400" />
+                        <span className="text-blue-300">Your dates:</span>
+                        <span className="font-medium text-bone-white">
+                          {fromDate ? fmt(fromDate) : '—'}
+                          {toDate && fromDate && ' – '}
+                          {toDate && !fromDate ? fmt(toDate) : toDate ? fmt(toDate) : ''}
+                        </span>
+                      </div>
+                      {(days || estCost) && (
+                        <div className="mt-1 flex items-center gap-3 text-xs text-muted-gray">
+                          {days && <span>{days} day{days !== 1 ? 's' : ''}</span>}
+                          {estCost && (
+                            <span className="font-medium text-green-400">
+                              Est. {formatPrice(estCost)}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* Pricing */}
                 <div className="rounded-lg border border-white/10 bg-white/5 p-4">
                   <h4 className="mb-4 font-medium text-bone-white">Rental Rates</h4>

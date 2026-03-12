@@ -9,6 +9,9 @@ interface UseThreadsOptions {
   topicId?: string;
   userId?: string;
   limit?: number;
+  offset?: number;
+  sortBy?: string;
+  search?: string;
 }
 
 interface ThreadInput {
@@ -32,15 +35,16 @@ export function useTopics() {
       const data = await api.listCommunityTopics();
       return data as CommunityTopic[];
     },
+    staleTime: 60_000,
   });
 }
 
 // Fetch threads for a topic
 export function useThreads(options: UseThreadsOptions = {}) {
-  const { topicId, userId, limit = 50 } = options;
+  const { topicId, userId, limit = 50, offset = 0, sortBy = 'newest', search } = options;
   const queryClient = useQueryClient();
 
-  const queryKey = ['community-threads', { topicId, userId, limit }];
+  const queryKey = ['community-threads', { topicId, userId, limit, offset, sortBy, search }];
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey,
@@ -49,11 +53,15 @@ export function useThreads(options: UseThreadsOptions = {}) {
         topicId,
         userId,
         limit,
+        offset,
+        sortBy,
+        search,
       });
 
       return (threadsData || []) as CommunityThread[];
     },
-    enabled: true,
+    enabled: !!topicId || !!userId,
+    staleTime: 30_000,
   });
 
   const createThread = useMutation({

@@ -1,5 +1,7 @@
 /**
  * CollabDetailModal - Full detail view of a collab post
+ * Fix #2: "available_for_hire" listings show "View Profile" instead of "Apply Now".
+ * Fix #9: Fetches fresh data from the server when the modal opens.
  */
 import React from 'react';
 import { Link } from 'react-router-dom';
@@ -24,9 +26,12 @@ import {
   Tv,
   X,
   ExternalLink,
-  HelpCircle
+  HelpCircle,
+  UserCheck,
+  Loader2
 } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
+import { useCollab } from '@/hooks/useCollabs';
 
 interface CollabDetailModalProps {
   collab: CommunityCollab | null;
@@ -52,14 +57,19 @@ const compensationLabels: Record<string, string> = {
 };
 
 const CollabDetailModal: React.FC<CollabDetailModalProps> = ({
-  collab,
+  collab: collabProp,
   isOpen,
   onClose,
   onApply,
   isOwnCollab = false,
 }) => {
+  // Fix #9: Fetch fresh data when the modal is open so stale card data is updated
+  const { data: freshCollab, isLoading: isFetching } = useCollab(isOpen ? (collabProp?.id ?? null) : null);
+  const collab = freshCollab ?? collabProp;
+
   if (!collab) return null;
 
+  const isHireable = collab.type === 'available_for_hire';
   const typeConfig = collabTypeConfig[collab.type] || { label: 'Opportunity', icon: Briefcase, color: 'bg-gray-600' };
   const TypeIcon = typeConfig.icon;
   const authorName = collab.profile?.display_name || collab.profile?.full_name || collab.profile?.username || 'Member';
@@ -268,7 +278,22 @@ const CollabDetailModal: React.FC<CollabDetailModalProps> = ({
             >
               Close
             </Button>
-            {!isOwnCollab && (
+            {isFetching && (
+              <Loader2 className="w-4 h-4 animate-spin text-muted-gray self-center" />
+            )}
+            {!isOwnCollab && isHireable && (
+              // Fix #2: "Available for Hire" — link to their profile, don't show Apply
+              <Button
+                className="flex-1 bg-green-600 text-white hover:bg-green-500"
+                asChild
+              >
+                <Link to={`/profile/${collab.profile?.username || ''}`} onClick={onClose}>
+                  <UserCheck className="w-4 h-4 mr-2" />
+                  View Profile
+                </Link>
+              </Button>
+            )}
+            {!isOwnCollab && !isHireable && (
               <Button
                 className="flex-1 bg-accent-yellow text-charcoal-black hover:bg-bone-white"
                 onClick={() => {

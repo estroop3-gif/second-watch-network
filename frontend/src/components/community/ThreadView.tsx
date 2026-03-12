@@ -8,6 +8,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { useThread, useReplies } from '@/hooks/useTopics';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { api } from '@/lib/api';
 import { CommunityThread, CommunityReply } from '@/types/community';
 import {
   ArrowLeft,
@@ -29,10 +31,12 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import ReportDialog from './ReportDialog';
 import { useAuth } from '@/context/AuthContext';
+import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
 
 interface ThreadViewProps {
   threadId: string;
@@ -44,11 +48,36 @@ const ThreadView: React.FC<ThreadViewProps> = ({ threadId, onBack, onEdit }) => 
   const { data: thread, isLoading: threadLoading, error: threadError } = useThread(threadId);
   const { replies, isLoading: repliesLoading, createReply, deleteReply } = useReplies(threadId);
   const { isAuthenticated } = useAuth();
+  const { profile } = useEnrichedProfile();
+  const queryClient = useQueryClient();
 
   const [replyContent, setReplyContent] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [reportDialogOpen, setReportDialogOpen] = useState(false);
+
+  const deleteThread = useMutation({
+    mutationFn: async (id: string) => {
+      await api.deleteCommunityThread(id);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['community-threads'] });
+    },
+  });
+
+  const handleDeleteThread = async () => {
+    if (!thread) return;
+    if (!confirm('Are you sure you want to delete this thread? This cannot be undone.')) return;
+    try {
+      await deleteThread.mutateAsync(thread.id);
+      toast.success('Thread deleted');
+      onBack();
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to delete thread');
+    }
+  };
+
+  const isThreadAuthor = !!profile?.id && !!thread?.user_id && thread.user_id === profile.id;
 
   const handleSubmitReply = async () => {
     if (!replyContent.trim()) {
@@ -177,6 +206,22 @@ const ThreadView: React.FC<ThreadViewProps> = ({ threadId, onBack, onEdit }) => 
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
+                  {isThreadAuthor && (
+                    <>
+                      <DropdownMenuItem onClick={() => onEdit?.(thread)}>
+                        <Edit className="h-4 w-4 mr-2" />
+                        Edit Thread
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={handleDeleteThread}
+                        className="text-red-500 focus:text-red-500 focus:bg-red-500/10"
+                      >
+                        <Trash2 className="h-4 w-4 mr-2" />
+                        Delete Thread
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                    </>
+                  )}
                   <DropdownMenuItem
                     onClick={() => setReportDialogOpen(true)}
                     className="text-red-500 focus:text-red-500 focus:bg-red-500/10"
@@ -298,6 +343,8 @@ interface ReplyCardProps {
 const ReplyCard: React.FC<ReplyCardProps> = ({ reply, onReply, onDelete, depth = 0 }) => {
   const [reportDialogOpen, setReportDialogOpen] = useState(false);
   const { isAuthenticated } = useAuth();
+  const { profile } = useEnrichedProfile();
+  const isReplyAuthor = !!profile?.id && reply.user_id === profile.id;
   const authorName = reply.author?.display_name || reply.author?.full_name || reply.author?.username || 'Member';
   const authorInitials = authorName.slice(0, 1).toUpperCase();
   const authorUsername = reply.author?.username || 'member';
@@ -340,6 +387,15 @@ const ReplyCard: React.FC<ReplyCardProps> = ({ reply, onReply, onDelete, depth =
             >
               Reply
             </button>
+            {isReplyAuthor && (
+              <button
+                onClick={() => onDelete(reply.id)}
+                className="hover:text-red-500 transition-colors flex items-center gap-1"
+              >
+                <Trash2 className="w-3 h-3" />
+                Delete
+              </button>
+            )}
             {isAuthenticated && (
               <button
                 onClick={() => setReportDialogOpen(true)}

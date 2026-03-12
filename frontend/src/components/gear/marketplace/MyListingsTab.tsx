@@ -1,6 +1,6 @@
 /**
  * MyListingsTab.tsx
- * Manage organization's marketplace listings
+ * Manage organization's marketplace listings + personal (individual) gear posts
  */
 import React, { useState } from 'react';
 import {
@@ -17,6 +17,7 @@ import {
   BadgeCheck,
   Calendar,
   Tag,
+  User,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -46,8 +47,15 @@ import {
 import { cn } from '@/lib/utils';
 
 import { useMyListings, useMarketplaceSettings } from '@/hooks/gear/useGearMarketplace';
+import {
+  usePersonalGear,
+  useEnsurePersonalOrg,
+  useDeletePersonalAsset,
+  useTogglePersonalAssetListing,
+} from '@/hooks/gear/usePersonalGear';
 import { EditListingDialog } from './EditListingDialog';
-import type { GearMarketplaceListing } from '@/types/gear';
+import { QuickAddGearDialog } from '@/components/gear/lite/QuickAddGearDialog';
+import type { GearMarketplaceListing, PersonalGearAsset } from '@/types/gear';
 
 interface MyListingsTabProps {
   orgId: string;
@@ -60,18 +68,36 @@ export function MyListingsTab({ orgId, onAddListing, onListForSale, onGoToSettin
   const { listings, isLoading: listingsLoading, deleteListing, updateListing } = useMyListings(orgId);
   const { settings, isLoading: settingsLoading } = useMarketplaceSettings(orgId);
 
+  // Personal gear hooks
+  const { data: personalGearData, isLoading: personalGearLoading } = usePersonalGear();
+  const ensureOrg = useEnsurePersonalOrg();
+  const deletePersonalAsset = useDeletePersonalAsset();
+  const togglePersonalListing = useTogglePersonalAssetListing();
+
   const isLoading = listingsLoading || settingsLoading;
 
   // State
   const [listingsMode, setListingsMode] = useState<'rent' | 'sale'>('rent');
   const [editingListing, setEditingListing] = useState<GearMarketplaceListing | null>(null);
   const [deletingListingId, setDeletingListingId] = useState<string | null>(null);
+  const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [editingPersonalAsset, setEditingPersonalAsset] = useState<PersonalGearAsset | null>(null);
+  const [deletingPersonalAssetId, setDeletingPersonalAssetId] = useState<string | null>(null);
 
-  // Filter listings by mode
+  // Filter org listings by mode
   const filteredListings = listings.filter((listing) => {
     if (listing.listing_type === 'both') return true;
     if (listingsMode === 'rent') return listing.listing_type === 'rent' || !listing.listing_type;
     return listing.listing_type === 'sale';
+  });
+
+  // Filter personal assets by mode (only show those with a listing)
+  const personalAssets: PersonalGearAsset[] = personalGearData?.assets ?? [];
+  const filteredPersonalAssets = personalAssets.filter((a) => {
+    if (!a.listing_id) return false;
+    if (a.listing_type === 'both') return true;
+    if (listingsMode === 'rent') return a.listing_type === 'rent' || !a.listing_type;
+    return a.listing_type === 'sale';
   });
 
   const handleToggleListed = async (listing: GearMarketplaceListing) => {
@@ -93,6 +119,12 @@ export function MyListingsTab({ orgId, onAddListing, onListForSale, onGoToSettin
     } catch (error) {
       console.error('Failed to delete listing:', error);
     }
+  };
+
+  const handleOpenQuickAdd = () => {
+    ensureOrg.mutate(undefined, {
+      onSuccess: () => setShowQuickAdd(true),
+    });
   };
 
   const formatPrice = (price: number) => {
@@ -132,23 +164,38 @@ export function MyListingsTab({ orgId, onAddListing, onListForSale, onGoToSettin
     );
   }
 
-  if (listings.length === 0) {
+  if (listings.length === 0 && filteredPersonalAssets.length === 0) {
     return (
-      <Card className="border-white/10 bg-white/5">
-        <CardContent className="flex flex-col items-center justify-center py-12">
-          <Package className="mb-4 h-12 w-12 text-muted-gray" />
-          <h3 className="mb-2 text-lg font-medium text-bone-white">
-            No Listings Yet
-          </h3>
-          <p className="mb-4 text-center text-sm text-muted-gray">
-            Start listing your equipment on the marketplace to receive rental requests.
-          </p>
-          <Button onClick={onAddListing} className="gap-2">
-            <Plus className="h-4 w-4" />
-            List Equipment
-          </Button>
-        </CardContent>
-      </Card>
+      <>
+        <Card className="border-white/10 bg-white/5">
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <Package className="mb-4 h-12 w-12 text-muted-gray" />
+            <h3 className="mb-2 text-lg font-medium text-bone-white">
+              No Listings Yet
+            </h3>
+            <p className="mb-4 text-center text-sm text-muted-gray">
+              List your organization's equipment or post your own personal gear for rent.
+            </p>
+            <div className="flex flex-wrap gap-3 justify-center">
+              <Button onClick={onAddListing} className="gap-2">
+                <Plus className="h-4 w-4" />
+                List Equipment
+              </Button>
+              <Button variant="outline" className="gap-2" onClick={handleOpenQuickAdd}>
+                <User className="h-4 w-4" />
+                Post Your Own Item
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <QuickAddGearDialog
+          open={showQuickAdd || !!editingPersonalAsset}
+          onClose={() => { setShowQuickAdd(false); setEditingPersonalAsset(null); }}
+          onSuccess={() => { setShowQuickAdd(false); setEditingPersonalAsset(null); }}
+          editAsset={editingPersonalAsset}
+        />
+      </>
     );
   }
 
@@ -180,7 +227,7 @@ export function MyListingsTab({ orgId, onAddListing, onListForSale, onGoToSettin
           </div>
 
           <p className="text-sm text-muted-gray">
-            {filteredListings.length} listing{filteredListings.length !== 1 ? 's' : ''}
+            {filteredListings.length + filteredPersonalAssets.length} listing{(filteredListings.length + filteredPersonalAssets.length) !== 1 ? 's' : ''}
             {settings?.is_verified && (
               <span className="ml-2 inline-flex items-center gap-1 text-green-400">
                 <BadgeCheck className="h-3.5 w-3.5" />
@@ -190,39 +237,56 @@ export function MyListingsTab({ orgId, onAddListing, onListForSale, onGoToSettin
           </p>
         </div>
 
-        {listingsMode === 'rent' ? (
-          <Button onClick={onAddListing} size="sm" className="gap-2">
-            <Plus className="h-4 w-4" />
-            Add Rental Listing
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2"
+            onClick={handleOpenQuickAdd}
+            disabled={ensureOrg.isPending}
+          >
+            {ensureOrg.isPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <User className="h-4 w-4" />
+            )}
+            Post Your Item
           </Button>
-        ) : (
-          <Button onClick={onListForSale} size="sm" className="gap-2">
-            <Plus className="h-4 w-4" />
-            List Asset for Sale
-          </Button>
-        )}
+
+          {listingsMode === 'rent' ? (
+            <Button onClick={onAddListing} size="sm" className="gap-2">
+              <Plus className="h-4 w-4" />
+              Add Rental Listing
+            </Button>
+          ) : (
+            <Button onClick={onListForSale} size="sm" className="gap-2">
+              <Plus className="h-4 w-4" />
+              List Asset for Sale
+            </Button>
+          )}
+        </div>
       </div>
 
-      {/* Listings Grid */}
+      {/* Org Listings Grid */}
       {filteredListings.length === 0 ? (
         <Card className="border-white/10 bg-white/5">
-          <CardContent className="flex flex-col items-center justify-center py-12">
-            <Package className="mb-4 h-12 w-12 text-muted-gray" />
-            <h3 className="mb-2 text-lg font-medium text-bone-white">
+          <CardContent className="flex flex-col items-center justify-center py-8">
+            <Package className="mb-3 h-10 w-10 text-muted-gray" />
+            <h3 className="mb-1 text-base font-medium text-bone-white">
               No {listingsMode === 'rent' ? 'Rental' : 'Sale'} Listings
             </h3>
-            <p className="mb-4 text-center text-sm text-muted-gray">
+            <p className="mb-3 text-center text-sm text-muted-gray">
               {listingsMode === 'rent'
-                ? 'You have no equipment listed for rent.'
-                : 'You have no equipment listed for sale.'}
+                ? 'You have no organization equipment listed for rent.'
+                : 'You have no organization equipment listed for sale.'}
             </p>
             {listingsMode === 'rent' ? (
-              <Button onClick={onAddListing} className="gap-2">
+              <Button onClick={onAddListing} size="sm" className="gap-2">
                 <Plus className="h-4 w-4" />
                 Add Rental Listing
               </Button>
             ) : (
-              <Button onClick={onListForSale} className="gap-2">
+              <Button onClick={onListForSale} size="sm" className="gap-2">
                 <Plus className="h-4 w-4" />
                 List Asset for Sale
               </Button>
@@ -245,7 +309,30 @@ export function MyListingsTab({ orgId, onAddListing, onListForSale, onGoToSettin
         </div>
       )}
 
-      {/* Edit Dialog */}
+      {/* Personal Listings Section — only shown once data is available */}
+      {filteredPersonalAssets.length > 0 && (
+        <div className="mt-6 space-y-3">
+          <div className="flex items-center gap-2 border-t border-white/10 pt-4">
+            <User className="h-4 w-4 text-muted-gray" />
+            <h4 className="text-sm font-medium text-muted-gray">Your Personal Items</h4>
+            <Badge variant="outline" className="text-xs">Individual</Badge>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {filteredPersonalAssets.map((asset) => (
+              <PersonalAssetCard
+                key={asset.id}
+                asset={asset}
+                onEdit={() => setEditingPersonalAsset(asset)}
+                onDelete={() => setDeletingPersonalAssetId(asset.id)}
+                onToggle={() => togglePersonalListing.mutate(asset.id)}
+                formatPrice={formatPrice}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Edit Org Listing Dialog */}
       {editingListing && (
         <EditListingDialog
           isOpen={!!editingListing}
@@ -255,7 +342,15 @@ export function MyListingsTab({ orgId, onAddListing, onListForSale, onGoToSettin
         />
       )}
 
-      {/* Delete Confirmation */}
+      {/* Quick Add / Edit Personal Item */}
+      <QuickAddGearDialog
+        open={showQuickAdd || !!editingPersonalAsset}
+        onClose={() => { setShowQuickAdd(false); setEditingPersonalAsset(null); }}
+        onSuccess={() => { setShowQuickAdd(false); setEditingPersonalAsset(null); }}
+        editAsset={editingPersonalAsset}
+      />
+
+      {/* Delete Org Listing Confirmation */}
       <AlertDialog open={!!deletingListingId} onOpenChange={() => setDeletingListingId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -279,12 +374,45 @@ export function MyListingsTab({ orgId, onAddListing, onListForSale, onGoToSettin
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Delete Personal Asset Confirmation */}
+      <AlertDialog
+        open={!!deletingPersonalAssetId}
+        onOpenChange={(open) => !open && setDeletingPersonalAssetId(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Personal Item?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove the item and its listing from the marketplace.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-primary-red hover:bg-primary-red/90"
+              onClick={() => {
+                if (deletingPersonalAssetId) {
+                  deletePersonalAsset.mutate(deletingPersonalAssetId, {
+                    onSuccess: () => setDeletingPersonalAssetId(null),
+                  });
+                }
+              }}
+            >
+              {deletePersonalAsset.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : null}
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
 
 // ============================================================================
-// LISTING CARD
+// LISTING CARD (Org)
 // ============================================================================
 
 interface ListingCardProps {
@@ -418,6 +546,134 @@ function ListingCard({
                     ? `${listing.deposit_percent}%`
                     : formatPrice(listing.deposit_amount || 0)}
                 </span>
+              )}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ============================================================================
+// PERSONAL ASSET CARD
+// ============================================================================
+
+interface PersonalAssetCardProps {
+  asset: PersonalGearAsset;
+  onEdit: () => void;
+  onDelete: () => void;
+  onToggle: () => void;
+  formatPrice: (price: number) => string;
+}
+
+function PersonalAssetCard({ asset, onEdit, onDelete, onToggle, formatPrice }: PersonalAssetCardProps) {
+  // photos_current may arrive as JSON string or array
+  let photos: string[] = [];
+  if (Array.isArray(asset.photos_current)) {
+    photos = asset.photos_current;
+  } else if (typeof asset.photos_current === 'string') {
+    try { photos = JSON.parse(asset.photos_current); } catch { photos = []; }
+  }
+  const primaryPhoto = photos[0];
+
+  return (
+    <Card
+      className={cn(
+        'border-white/10 bg-white/5 transition-all',
+        !asset.is_listed && 'opacity-60'
+      )}
+    >
+      <CardContent className="p-4">
+        <div className="flex gap-3">
+          {/* Image */}
+          <div className="h-16 w-16 flex-shrink-0 overflow-hidden rounded-lg bg-white/10">
+            {primaryPhoto ? (
+              <img
+                src={primaryPhoto}
+                alt={asset.name}
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center">
+                <Package className="h-6 w-6 text-muted-gray" />
+              </div>
+            )}
+          </div>
+
+          {/* Info */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start justify-between gap-1">
+              <div className="min-w-0">
+                <h4 className="text-sm font-medium text-bone-white truncate">{asset.name}</h4>
+                {(asset.manufacturer || asset.make || asset.model) && (
+                  <p className="text-xs text-muted-gray truncate">
+                    {asset.manufacturer || asset.make} {asset.model}
+                  </p>
+                )}
+              </div>
+
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0">
+                    <MoreVertical className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={onEdit}>
+                    <Edit className="h-4 w-4 mr-2" />
+                    Edit
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={onToggle}>
+                    {asset.is_listed ? (
+                      <>
+                        <EyeOff className="h-4 w-4 mr-2" />
+                        Hide from Marketplace
+                      </>
+                    ) : (
+                      <>
+                        <Eye className="h-4 w-4 mr-2" />
+                        Show on Marketplace
+                      </>
+                    )}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={onDelete} className="text-red-400">
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+
+            {/* Pricing */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              {asset.daily_rate && (
+                <Badge
+                  variant="outline"
+                  className="text-xs border-accent-yellow/50 bg-accent-yellow/10 text-accent-yellow"
+                >
+                  {formatPrice(asset.daily_rate)}/day
+                </Badge>
+              )}
+              {asset.sale_price && (
+                <Badge
+                  variant="outline"
+                  className="text-xs border-green-500/30 text-green-400"
+                >
+                  {formatPrice(asset.sale_price)}
+                </Badge>
+              )}
+              {asset.is_listed ? (
+                <Badge variant="outline" className="text-xs border-green-500/30 text-green-400">
+                  <Eye className="h-2.5 w-2.5 mr-1" />
+                  Visible
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="text-xs border-yellow-500/30 text-yellow-400">
+                  <EyeOff className="h-2.5 w-2.5 mr-1" />
+                  Hidden
+                </Badge>
               )}
             </div>
           </div>
