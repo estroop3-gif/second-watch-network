@@ -138,7 +138,7 @@ export function MarketplaceView({
   }, [quoteItems]);
 
   // Single unified search hook — only one query mounts regardless of groupByOrg
-  const { listings, organizations: groupedOrgs, total, isLoading } = useMarketplaceSearch(filters, {
+  const { listings, organizations: groupedOrgs, total, isLoading, error: searchError, refetch: refetchSearch } = useMarketplaceSearch(filters, {
     groupByOrg,
     cartOrgIds,
   });
@@ -471,6 +471,8 @@ export function MarketplaceView({
             listings={listings}
             total={total}
             isLoading={isLoading}
+            error={searchError}
+            onRetry={refetchSearch}
             viewMode={viewMode}
             selectedItems={quoteItems}
             onViewListing={handleViewListing}
@@ -596,6 +598,8 @@ interface ListingsContentProps {
   listings: GearMarketplaceListing[];
   total: number;
   isLoading: boolean;
+  error?: any;
+  onRetry?: () => void;
   viewMode: 'grid' | 'list';
   selectedItems: GearMarketplaceListing[];
   onViewListing: (listing: GearMarketplaceListing) => void;
@@ -607,6 +611,8 @@ function ListingsContent({
   listings,
   total,
   isLoading,
+  error,
+  onRetry,
   viewMode,
   selectedItems,
   onViewListing,
@@ -617,6 +623,24 @@ function ListingsContent({
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2 className="h-8 w-8 animate-spin text-muted-gray" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center rounded-lg border border-red-900/30 bg-red-950/20 py-16">
+        <Package className="mb-4 h-12 w-12 text-muted-gray" />
+        <h3 className="mb-2 text-lg font-medium text-bone-white">Failed to load listings</h3>
+        <p className="mb-4 text-sm text-muted-gray">There was a problem connecting to the server.</p>
+        {onRetry && (
+          <button
+            onClick={onRetry}
+            className="rounded bg-accent-yellow px-4 py-2 text-sm font-medium text-charcoal-black hover:bg-bone-white"
+          >
+            Try Again
+          </button>
+        )}
       </div>
     );
   }

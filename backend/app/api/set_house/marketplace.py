@@ -125,34 +125,34 @@ async def search_nearby(
     """Search for nearby marketplace listings."""
     from app.core.database import execute_query
 
-    # Haversine formula for distance calculation
+    # Haversine formula for distance calculation — distance filter in subquery WHERE
+    # (HAVING without GROUP BY is a GroupingError in PostgreSQL)
     listings = execute_query(
         """
-        SELECT ml.*, s.name as space_name, s.space_type, s.description,
-               s.square_footage, s.features, s.amenities,
-               s.photos as space_photos,
-               o.name as organization_name, o.city, o.state,
-               ms.marketplace_name, ms.is_verified,
-               (SELECT image_url FROM set_house_space_images si
-                WHERE si.space_id = s.id AND si.is_primary = TRUE
-                LIMIT 1) as primary_image_url,
-               (3959 * acos(
-                   cos(radians(:lat)) * cos(radians(COALESCE(o.latitude, 0)))
-                   * cos(radians(COALESCE(o.longitude, 0)) - radians(:lon))
-                   + sin(radians(:lat)) * sin(radians(COALESCE(o.latitude, 0)))
-               )) as distance_miles
-        FROM set_house_marketplace_listings ml
-        JOIN set_house_spaces s ON s.id = ml.space_id
-        JOIN organizations o ON o.id = ml.organization_id
-        LEFT JOIN set_house_marketplace_settings ms ON ms.organization_id = ml.organization_id
-        WHERE ml.is_listed = TRUE
-          AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
-          AND (:space_type IS NULL OR s.space_type = :space_type)
-        HAVING (3959 * acos(
-            cos(radians(:lat)) * cos(radians(COALESCE(o.latitude, 0)))
-            * cos(radians(COALESCE(o.longitude, 0)) - radians(:lon))
-            + sin(radians(:lat)) * sin(radians(COALESCE(o.latitude, 0)))
-        )) <= :radius
+        SELECT *
+        FROM (
+            SELECT ml.*, s.name as space_name, s.space_type, s.description,
+                   s.square_footage, s.features, s.amenities,
+                   s.photos as space_photos,
+                   o.name as organization_name, o.city, o.state,
+                   ms.marketplace_name, ms.is_verified,
+                   (SELECT image_url FROM set_house_space_images si
+                    WHERE si.space_id = s.id AND si.is_primary = TRUE
+                    LIMIT 1) as primary_image_url,
+                   (3959 * acos(
+                       LEAST(1.0, cos(radians(:lat)) * cos(radians(COALESCE(o.latitude, 0)))
+                       * cos(radians(COALESCE(o.longitude, 0)) - radians(:lon))
+                       + sin(radians(:lat)) * sin(radians(COALESCE(o.latitude, 0))))
+                   )) as distance_miles
+            FROM set_house_marketplace_listings ml
+            JOIN set_house_spaces s ON s.id = ml.space_id
+            JOIN organizations o ON o.id = ml.organization_id
+            LEFT JOIN set_house_marketplace_settings ms ON ms.organization_id = ml.organization_id
+            WHERE ml.is_listed = TRUE
+              AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+              AND (:space_type IS NULL OR s.space_type = :space_type)
+        ) subq
+        WHERE distance_miles <= :radius
         ORDER BY distance_miles
         LIMIT :limit
         """,
