@@ -170,9 +170,10 @@ export function useMarketplaceSearch(
   const query = useQuery({
     queryKey: ['marketplace-search', fullFilters],
     queryFn: () =>
-      fetchWithAuth(`/api/v1/gear/marketplace/search${queryString}`, token!),
+      api.get(`/api/v1/gear/marketplace/search${queryString}`),
     enabled: !!token && (opts.enabled ?? true),
     staleTime: 5 * 60 * 1000, // 5 minutes — listings don't change frequently
+    retry: 2,
   });
 
   return {
