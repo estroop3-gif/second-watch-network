@@ -16,6 +16,8 @@ import Index from "./pages/Index";
 import LandingPage from "./pages/LandingPage";
 import NotFound from "./pages/NotFound";
 import ScrollToTop from "./components/ScrollToTop";
+import ErrorBoundary from "./components/ErrorBoundary";
+import GlobalErrorSetup from "./components/layout/GlobalErrorSetup";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import AuthCallback from "./pages/AuthCallback";
@@ -132,6 +134,7 @@ const AdminEmailPage = React.lazy(() => import("./pages/admin/AdminEmail"));
 const AdminOrganizations = React.lazy(() => import("./pages/admin/Organizations"));
 const AdminBacklotTrials = React.lazy(() => import("./pages/admin/BacklotTrials"));
 const AdminCreditReview = React.lazy(() => import("./pages/admin/CreditReview"));
+const AdminErrorLogs = React.lazy(() => import("./pages/admin/ErrorLogs"));
 
 // Public Pages
 const BacklotFreeTrial = React.lazy(() => import("./pages/BacklotFreeTrial"));
@@ -304,6 +307,7 @@ const AppMountTracker = ({ children }: { children: React.ReactNode }) => {
   useEffect(() => {
     performanceMetrics.markAppMounted();
     runCleanup();
+    // GlobalErrorSetup handles window.onerror and unhandledrejection
 
     // Fallback: send initial load metrics after 5s if no API call triggers it
     const fallbackTimer = setTimeout(() => {
@@ -329,11 +333,13 @@ const App = () => (
                 <SetHouseCartProvider>
                 <PlatformStatusGate>
                   <TooltipProvider>
+            <GlobalErrorSetup />
             <Toaster />
             <Sonner />
             {import.meta.env.DEV && <DebugPanel />}
             <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
               <ScrollToTop />
+              <ErrorBoundary>
               <Suspense fallback={<LoadingSpinner />}>
               <Routes>
                 <Route path="/" element={<Index />} />
@@ -672,6 +678,7 @@ const App = () => (
                         <Route path="credit-review" element={<AdminCreditReview />} />
                         <Route path="email" element={<AdminEmailPage />} />
                         <Route path="email-logs" element={<Navigate to="/admin/email" replace />} />
+                        <Route path="errors" element={<AdminErrorLogs />} />
                         <Route path="settings" element={<SiteSettings />} />
                       </Route>
                     </Route>
@@ -681,6 +688,7 @@ const App = () => (
                 <Route path="*" element={<NotFound />} />
               </Routes>
               </Suspense>
+              </ErrorBoundary>
             </BrowserRouter>
                   </TooltipProvider>
                 </PlatformStatusGate>

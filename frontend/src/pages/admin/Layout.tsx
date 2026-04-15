@@ -21,6 +21,7 @@ import {
   Mail,
   Building2,
   BadgeCheck,
+  Bug,
 } from 'lucide-react';
 
 const AdminLayout = () => {
@@ -49,6 +50,7 @@ const AdminLayout = () => {
     { name: 'Alpha Testing', href: '/admin/alpha-testing', icon: FlaskConical },
     { name: 'Credit Review', href: '/admin/credit-review', icon: BadgeCheck },
     { name: 'Email', href: '/admin/email', icon: Mail },
+    { name: 'Error Logs', href: '/admin/errors', icon: Bug },
     { name: 'Site Settings', href: '/admin/settings', icon: Settings },
   ];
 

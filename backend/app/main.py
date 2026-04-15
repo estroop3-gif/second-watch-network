@@ -76,6 +76,8 @@ from app.api import crm, crm_admin  # CRM - Sales & Customer Relationship Manage
 from app.api import media_hub  # Media/Marketing Hub
 from app.api import subscription_billing  # Self-service subscription billing
 from app.api import filmmaker_pro  # Filmmaker Pro subscription tier
+from app.api import client_errors  # Client-side error reporting
+from app.api import admin_errors  # Admin client error log viewer
 
 # Configure structured logging
 setup_logging(level="INFO")
@@ -450,6 +452,8 @@ app.include_router(crm_admin.router, prefix=f"{settings.API_V1_PREFIX}/admin/crm
 app.include_router(media_hub.router, prefix=f"{settings.API_V1_PREFIX}/media-hub", tags=["Media Hub"])
 app.include_router(subscription_billing.router, prefix=f"{settings.API_V1_PREFIX}/subscription-billing", tags=["Subscription Billing"])
 app.include_router(filmmaker_pro.router, prefix=f"{settings.API_V1_PREFIX}/filmmaker-pro", tags=["Filmmaker Pro"])
+app.include_router(client_errors.router, prefix=f"{settings.API_V1_PREFIX}/client-errors", tags=["Client Errors"])
+app.include_router(admin_errors.router, prefix=f"{settings.API_V1_PREFIX}/admin/client-errors", tags=["Admin Client Errors"])
 
 # Mount Socket.IO for real-time communications
 try:
